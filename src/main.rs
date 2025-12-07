@@ -1,3 +1,4 @@
+mod analysis;
 use std::collections::HashMap;
 use tokio::sync::{Mutex, RwLock};
 use tree_sitter::{Language, Parser};
@@ -11,15 +12,17 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use crate::analysis::Analysis;
+
 unsafe extern "C" {
     fn tree_sitter_vhdl() -> Language;
 }
 
-// #[derive(Debug)]
 pub struct Backend {
     client: Client,
     document_map: RwLock<HashMap<Url, Rope>>,
     parser: Mutex<Parser>,
+    analysis_map: RwLock<HashMap<Url, Analysis>>,
 }
 
 #[tower_lsp::async_trait]
@@ -85,14 +88,18 @@ impl LanguageServer for Backend {
             }
             let text = rope.to_string();
             let mut parser = self.parser.lock().await;
-            if let Some(tree) = parser.parse(text, None) {
-                let tree_string = tree.root_node().to_sexp();
-                let log_msg = if tree_string.len() > 100 {
-                    format!("AST: {}...", &tree_string[0..100])
-                } else {
-                    format!("AST: {}...", &tree_string)
-                };
-                self.client.log_message(MessageType::INFO, log_msg).await;
+            if let Some(tree) = parser.parse(&text, None) {
+                let analysis = Analysis::extract(tree.root_node(), &text, rope);
+
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("Found symbols: {:?}", analysis.symbols),
+                    )
+                    .await;
+
+                let mut analysis_map = self.analysis_map.write().await;
+                analysis_map.insert(uri, analysis);
             }
         }
         self.client
@@ -120,6 +127,7 @@ async fn main() {
     let (lsp_service, socket) = LspService::new(|client| Backend {
         client,
         document_map: RwLock::new(HashMap::new()),
+        analysis_map: RwLock::new(HashMap::new()),
         parser: Mutex::new(parser),
     });
 
