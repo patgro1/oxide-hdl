@@ -1,15 +1,19 @@
 use crate::analysis::Analysis;
 use ropey::Rope;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
+use walkdir::WalkDir;
 
 pub struct Backend {
     client: Client,
-    document_map: RwLock<HashMap<Url, Rope>>,
-    parser: Mutex<Parser>,
-    analysis_map: RwLock<HashMap<Url, Analysis>>,
+    document_map: Arc<RwLock<HashMap<Url, Rope>>>,
+    parser: Arc<Mutex<Parser>>,
+    analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
+    root_uri: Arc<RwLock<Option<Url>>>,
 }
 use tower_lsp::lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
@@ -23,9 +27,10 @@ impl Backend {
     pub fn new(client: Client, parser: Parser) -> Self {
         Backend {
             client,
-            document_map: RwLock::new(HashMap::new()),
-            analysis_map: RwLock::new(HashMap::new()),
-            parser: Mutex::new(parser),
+            document_map: Arc::new(RwLock::new(HashMap::new())),
+            analysis_map: Arc::new(RwLock::new(HashMap::new())),
+            parser: Arc::new(Mutex::new(parser)),
+            root_uri: Arc::new(RwLock::new(None)),
         }
     }
     fn get_word_at_pos(&self, rope: &Rope, position: Position) -> Option<String> {
@@ -83,11 +88,76 @@ impl Backend {
             map.insert(uri, analysis);
         }
     }
+
+    pub async fn index_workspace(
+        client: Client,
+        parser: Arc<Mutex<Parser>>,
+        analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
+        root_uri: Url,
+    ) {
+        let root_path = match root_uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        let start_time = Instant::now();
+        client
+            .log_message(
+                MessageType::INFO,
+                format!("Starting index of: {:?}", root_path),
+            )
+            .await;
+        let mut count = 0;
+        for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path
+                .extension()
+                .map_or(false, |ext| ext == "vhd" || ext == "vhdl")
+            {
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    let rope = Rope::from_str(&text);
+                    if let Ok(uri) = Url::from_file_path(path) {
+                        let mut parser_guard = parser.lock().await;
+
+                        if let Some(tree) = parser_guard.parse(&text, None) {
+                            let analysis = Analysis::extract(tree.root_node(), &text, &rope);
+                            drop(parser_guard);
+                            let mut map = analysis_map.write().await;
+                            map.insert(uri, analysis);
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let duration = start_time.elapsed();
+        client
+            .log_message(
+                MessageType::INFO,
+                format!("Finished indexing {} files in : {:?}", count, duration),
+            )
+            .await;
+    }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let mut chosen_uri = params
+            .workspace_folders
+            .as_ref()
+            .and_then(|folders| folders.first())
+            .map(|f| f.uri.clone());
+        if chosen_uri.is_none() {
+            chosen_uri = params.root_uri;
+        }
+        if let Some(uri) = chosen_uri {
+            let mut root = self.root_uri.write().await;
+            *root = Some(uri);
+        } else {
+            eprintln!("Oxide HDL: No root URI or Workspace Folder found initialization.");
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -104,8 +174,24 @@ impl LanguageServer for Backend {
 
     async fn initialized(&self, _: InitializedParams) {
         self.client
-            .log_message(MessageType::INFO, "Oxide HDL is initializing!")
+            .log_message(MessageType::INFO, "Oxide HDL initialized!")
             .await;
+        let mut root_uri = {
+            let read_lock = self.root_uri.read().await;
+            read_lock.clone()
+        };
+        self.client
+            .log_message(
+                MessageType::WARNING,
+                format!("Current Root URI is {:?}", root_uri),
+            )
+            .await;
+        if let Some(uri) = root_uri {
+            let client = self.client.clone();
+            let parser = self.parser.clone();
+            let map = self.analysis_map.clone();
+            tokio::spawn(async move { Backend::index_workspace(client, parser, map, uri).await });
+        }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
