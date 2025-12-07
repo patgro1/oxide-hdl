@@ -1,7 +1,7 @@
 use ropey::Rope;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::{Position, Range, SymbolKind};
-use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, SymbolKind};
+use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator, Tree};
 
 unsafe extern "C" {
     fn tree_sitter_vhdl() -> Language;
@@ -72,5 +72,97 @@ impl Analysis {
         }
 
         Analysis { symbols }
+    }
+
+    pub fn get_diagnostics(tree: Tree, source_code: &str) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        Self::collect_errors(tree.root_node(), &mut diagnostics);
+
+        diagnostics
+    }
+
+    fn collect_errors(node: Node, diagnostics: &mut Vec<Diagnostic>) {
+        if node.is_error() || node.is_missing() {
+            let start = node.start_position();
+            let end = node.end_position();
+
+            let range = Range {
+                start: Position {
+                    line: start.row as u32,
+                    character: start.column as u32,
+                },
+                end: Position {
+                    line: end.row as u32,
+                    character: end.column as u32,
+                },
+            };
+
+            let message = if node.is_missing() {
+                format!("Missing syntax: expected something her")
+            } else {
+                format!("Syntax error: Unexpected token")
+            };
+            diagnostics.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: None,
+                code_description: None,
+                source: Some("oxide-hdl".to_string()),
+                message,
+                related_information: None,
+                tags: None,
+                data: None,
+            });
+        }
+        if node.has_error() {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                Self::collect_errors(child, diagnostics);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn setup_parser() -> Parser {
+        let mut parser = Parser::new();
+        let language = unsafe { crate::tree_sitter_vhdl() };
+        parser
+            .set_language(&language)
+            .expect("Error loading grammar");
+        parser
+    }
+
+    #[test]
+    fn test_extract_entity() {
+        let code = "
+            entity my_cpu is
+                port (clk : in std_logic);
+            end my_cpy
+        ";
+        let mut parser = setup_parser();
+        let tree = parser.parse(code, None).unwrap();
+        let rope = Rope::from_str(code);
+
+        let analysis = Analysis::extract(tree.root_node(), code, &rope);
+
+        assert_eq!(analysis.symbols.len(), 1);
+        assert!(analysis.symbols.contains_key("my_cpu"));
+        let symbol = analysis.symbols.get("my_cpu").unwrap();
+        assert_eq!(symbol.kind, SymbolKind::CLASS);
+        assert_eq!(symbol.range.start.line, 1);
+    }
+
+    #[test]
+    fn test_detect_syntax_error() {
+        let code = "entity broken is port (";
+        let mut parser = setup_parser();
+        let tree = parser.parse(code, None).unwrap();
+        let diagnostics = Analysis::get_diagnostics(tree, code);
+        assert!(!diagnostics.is_empty());
     }
 }

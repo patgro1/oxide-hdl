@@ -67,6 +67,11 @@ impl Backend {
 
         if let Some(tree) = parser.parse(&text, None) {
             let analysis = Analysis::extract(tree.root_node(), &text, &rope);
+
+            let diagnostics = Analysis::get_diagnostics(tree, &text);
+            self.client
+                .publish_diagnostics(uri.clone(), diagnostics, None)
+                .await;
             self.client
                 .log_message(
                     MessageType::INFO,
