@@ -7,7 +7,8 @@ use ropey::Rope;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MessageType,
+    GotoDefinitionParams, GotoDefinitionResponse, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -25,6 +26,59 @@ pub struct Backend {
     analysis_map: RwLock<HashMap<Url, Analysis>>,
 }
 
+impl Backend {
+    fn get_word_at_pos(&self, rope: &Rope, position: Position) -> Option<String> {
+        let line_idx = rope.try_line_to_char(position.line as usize).ok()?;
+        let char_idx = line_idx + position.character as usize;
+
+        if char_idx >= rope.len_chars() {
+            return None;
+        }
+
+        // Find the start of the word
+        let mut start = char_idx;
+        while start > 0 {
+            let c = rope.char(start - 1);
+            if !c.is_alphanumeric() && c != '_' {
+                break;
+            }
+            start -= 1;
+        }
+
+        let mut end = char_idx;
+        while end < rope.len_chars() {
+            let c = rope.char(end);
+            if !c.is_alphanumeric() && c != '_' {
+                break;
+            }
+            end += 1;
+        }
+
+        if start < end {
+            Some(rope.slice(start..end).to_string())
+        } else {
+            None
+        }
+    }
+
+    async fn on_change(&self, uri: Url, text: String, rope: Rope) {
+        let mut parser = self.parser.lock().await;
+
+        if let Some(tree) = parser.parse(&text, None) {
+            let analysis = Analysis::extract(tree.root_node(), &text, &rope);
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Indexed {} symbols in {}", analysis.symbols.len(), uri),
+                )
+                .await;
+
+            let mut map = self.analysis_map.write().await;
+            map.insert(uri, analysis);
+        }
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
@@ -33,6 +87,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
+                definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 ..ServerCapabilities::default()
@@ -56,9 +111,11 @@ impl LanguageServer for Backend {
             .await;
 
         let rope = Rope::from_str(&text);
-
-        let mut map = self.document_map.write().await;
-        map.insert(uri, rope);
+        {
+            let mut map = self.document_map.write().await;
+            map.insert(uri.clone(), rope.clone());
+        }
+        self.on_change(uri, text, rope).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -86,25 +143,49 @@ impl LanguageServer for Backend {
                     *rope = Rope::from_str(&change.text)
                 }
             }
+            let rope_clone = rope.clone();
             let text = rope.to_string();
-            let mut parser = self.parser.lock().await;
-            if let Some(tree) = parser.parse(&text, None) {
-                let analysis = Analysis::extract(tree.root_node(), &text, rope);
 
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        format!("Found symbols: {:?}", analysis.symbols),
-                    )
-                    .await;
+            drop(map);
+            self.on_change(uri, text, rope_clone).await;
+        }
+    }
 
-                let mut analysis_map = self.analysis_map.write().await;
-                analysis_map.insert(uri, analysis);
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        // Get context
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = self.get_word_at_pos(&rope, position) {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Looking up definition for: {}", word),
+                )
+                .await;
+            let map = self.analysis_map.read().await;
+            if let Some(analysis) = map.get(&uri)
+                && let Some(symbol) = analysis.symbols.get(&word)
+            {
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: uri.clone(),
+                    range: symbol.range,
+                })));
             }
         }
-        self.client
-            .log_message(MessageType::INFO, "File Updated")
-            .await;
+
+        Ok(None)
     }
 
     async fn shutdown(&self) -> Result<()> {
