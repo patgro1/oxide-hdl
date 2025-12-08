@@ -1,5 +1,6 @@
 mod analysis;
 mod backend;
+mod config;
 mod logging;
 use tree_sitter::{Language, Parser};
 

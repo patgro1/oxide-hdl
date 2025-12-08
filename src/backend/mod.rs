@@ -1,45 +1,64 @@
 pub mod parser;
 pub mod scanner;
 
-use crate::logging::log_crash;
+use crate::config::OxideConfig;
 
-use crate::analysis::Analysis;
+use crate::analysis::{Analysis, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 use walkdir::WalkDir;
 
 pub struct Backend {
     client: Client,
+    config: Arc<RwLock<Option<OxideConfig>>>,
     document_map: Arc<RwLock<HashMap<Url, Rope>>>,
-    // parser: Arc<Mutex<Parser>>,
+    parser: Arc<Mutex<Parser>>,
     analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
     root_uri: Arc<RwLock<Option<Url>>>,
     // shallow_query: Arc<Query>,
 }
 use tower_lsp::lsp_types::{
-    CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, GotoDefinitionResponse, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MessageType, OneOf, Position, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
 impl Backend {
-    pub fn new(client: Client, _parser: Parser) -> Self {
+    pub fn new(client: Client, parser: Parser) -> Self {
         Backend {
             client,
+            config: Arc::new(RwLock::new(None)),
             document_map: Arc::new(RwLock::new(HashMap::new())),
             analysis_map: Arc::new(RwLock::new(HashMap::new())),
-            // parser: Arc::new(Mutex::new(parser)),
+            parser: Arc::new(Mutex::new(parser)),
             root_uri: Arc::new(RwLock::new(None)),
             // shallow_query: Arc::new(shallow_query),
         }
     }
+    fn dump_analysis_tree(&self, analysis: &Analysis) -> String {
+        let mut output = String::new();
+        for sym in analysis.symbols.values() {
+            self.dump_symbol_recursive(sym, 0, &mut output);
+        }
+        output
+    }
+
+    fn dump_symbol_recursive(&self, sym: &Symbol, depth: usize, output: &mut String) {
+        let indent = "  ".repeat(depth);
+        output.push_str(&format!("{}{:?} {}\n", indent, sym.kind, sym.name));
+        for child in &sym.children {
+            self.dump_symbol_recursive(child, depth + 1, output);
+        }
+    }
+
     fn get_word_at_pos(&self, rope: &Rope, position: Position) -> Option<String> {
         let line_idx = rope.try_line_to_char(position.line as usize).ok()?;
         let char_idx = line_idx + position.character as usize;
@@ -74,27 +93,74 @@ impl Backend {
         }
     }
 
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let map = self.analysis_map.read().await;
+
+        if let Some(analysis) = map.get(&uri) {
+            let mut symbols = Vec::new();
+            for sym in analysis.symbols.values() {
+                symbols.push(self.to_document_symbol(sym))
+            }
+            symbols.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+            return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
+        }
+        Ok(None)
+    }
+
+    fn to_document_symbol(&self, sym: &crate::analysis::Symbol) -> DocumentSymbol {
+        #[allow(deprecated)]
+        DocumentSymbol {
+            name: sym.name.clone(),
+            detail: sym.detail.clone(),
+            kind: sym.kind.into(),
+            tags: None,
+            deprecated: None,
+            range: sym.range,
+            selection_range: sym.range,
+            children: if sym.children.is_empty() {
+                None
+            } else {
+                let mut children_list: Vec<DocumentSymbol> = sym
+                    .children
+                    .iter()
+                    .map(|child| self.to_document_symbol(child))
+                    .collect();
+                children_list.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+                Some(children_list)
+            },
+        }
+    }
+
     async fn on_change(&self, uri: Url, text: String, rope: Rope) {
         let client = self.client.clone();
         let analysis_map = self.analysis_map.clone();
         let uri_clone = uri.clone();
+        let parser_arc = self.parser.clone();
 
         tokio::task::spawn_blocking(move || {
             let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
             let thread_result = builder
                 .spawn(move || {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let mut parser = Parser::new();
-                        let language = unsafe { crate::tree_sitter_vhdl() };
-                        if let Err(_e) = parser.set_language(&language) {
-                            return None;
-                        }
+                        let tree = {
+                            let mut parser = parser_arc.blocking_lock();
+                            let language = unsafe { crate::tree_sitter_vhdl() };
+                            let _ = parser.set_language(&language);
+                            parser.parse(&text, None)
+                        };
+                        match tree {
+                            Some(t) => {
+                                let analysis =
+                                    parser::extract_document_symbols(&text, t.root_node());
 
-                        match parser.parse(&text, None) {
-                            Some(tree) => {
-                                let analysis = Analysis::extract(tree.root_node(), &text, &rope);
-                                let diagnostic = Analysis::get_diagnostics(tree, &text);
-                                Some(Box::new((analysis, diagnostic)))
+                                // TODO: Add diagnostics
+                                let diagnostics: Vec<u8> = vec![];
+
+                                Some(Box::new((analysis, diagnostics)))
                             }
                             None => None,
                         }
@@ -102,23 +168,14 @@ impl Backend {
                 })
                 .unwrap()
                 .join();
-            match thread_result {
-                Ok(Ok(Some(boxed_result))) => {
-                    let (analysis, diagnostics) = *boxed_result;
-                    tokio::spawn(async move {
-                        client
-                            .publish_diagnostics(uri_clone.clone(), diagnostics, None)
-                            .await;
-                        client
-                            .log_message(MessageType::INFO, format!("Re-indexed {}", uri_clone))
-                            .await;
-                        let mut map = analysis_map.write().await;
-                        map.insert(uri_clone, analysis);
-                    });
-                }
-                Ok(Ok(None)) => log_crash("Parser returned None"),
-                Ok(Err(e)) => log_crash(&format!("Panic caught: {:?}", e)),
-                Err(e) => log_crash(&format!("Thread join failed: {:?}", e)),
+            if let Ok(Ok(Some(boxed_result))) = thread_result {
+                let (analysis, diagnostic) = *boxed_result;
+                tokio::spawn(async move {
+                    let mut map = analysis_map.write().await;
+                    map.insert(uri_clone, analysis);
+
+                    //client.publish_diagnostics(uri, diags, version)
+                });
             }
         })
         .await
@@ -129,6 +186,7 @@ impl Backend {
         client: Client,
         analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
         root_uri: Url,
+        config: OxideConfig,
     ) {
         let root_path = match root_uri.to_file_path() {
             Ok(p) => p,
@@ -142,15 +200,31 @@ impl Backend {
 
         let max_concurrency = 16;
         let semaphone = Arc::new(Semaphore::new(max_concurrency));
+        let matcher = config.build_globset();
 
-        let paths: Vec<std::path::PathBuf> = WalkDir::new(root_path)
+        let paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
             .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "vhd" || ext == "vhdl")
+                // Filter 1 : extension
+                if let Some(ext) = e.path().extension() {
+                    let ext_str = ext.to_string_lossy().to_string();
+                    if !config.extensions.contains(&ext_str) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+
+                // Filter 2: Ignore list
+                if let Ok(relative) = e.path().strip_prefix(&root_path) {
+                    if matcher.is_match(relative) {
+                        return false;
+                    }
+                }
+
+                true
             })
             .map(|e| e.path().to_path_buf())
             .collect();
@@ -243,7 +317,20 @@ impl LanguageServer for Backend {
         if let Some(uri) = root_uri {
             let client = self.client.clone();
             let map = self.analysis_map.clone();
-            tokio::spawn(async move { Backend::index_workspace(client, map, uri).await });
+            let root_path = uri.to_file_path().unwrap();
+            let config = OxideConfig::load(&root_path);
+            client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Loaded config with {} ignore patterns", config.ignore.len()),
+                )
+                .await;
+
+            {
+                let mut w = self.config.write().await;
+                *w = Some(config.clone());
+            }
+            tokio::spawn(async move { Backend::index_workspace(client, map, uri, config).await });
         }
     }
 
@@ -315,18 +402,50 @@ impl LanguageServer for Backend {
         if let Some(word) = self.get_word_at_pos(&rope, position) {
             let target = word.to_lowercase();
             self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Looking up definition for: {}", target),
-                )
+                .log_message(MessageType::INFO, format!("🔎 Looking for: '{}'", target))
                 .await;
+
             let map = self.analysis_map.read().await;
+            if let Some(analysis) = map.get(&uri) {
+                let keys: Vec<_> = analysis.symbols.keys().take(5).collect();
+                self.client
+                    .log_message(MessageType::INFO, format!("📂 Local Keys: {:?}", keys))
+                    .await;
+                if let Some(sym) = analysis.find_symbol(&target) {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                        uri: uri.clone(),
+                        range: sym.range,
+                    })));
+                }
+            }
             for (file_uri, analysis) in map.iter() {
                 if let Some(symbol) = analysis.symbols.get(&target) {
+                    self.client
+                        .log_message(MessageType::INFO, format!("✅ Found in {}", file_uri))
+                        .await;
                     return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                         uri: file_uri.clone(),
                         range: symbol.range,
                     })));
+                }
+            }
+            // 4. FAILURE DUMP (This is the important part)
+            self.client
+                .log_message(MessageType::WARNING, format!("❌ '{}' NOT FOUND.", target))
+                .await;
+            if let Some(analysis) = map.get(&uri) {
+                let tree_dump = self.dump_analysis_tree(analysis);
+                self.client
+                    .log_message(MessageType::INFO, format!("🌳 Tree Dump:\n{}", tree_dump))
+                    .await;
+            }
+
+            // Print the first 10 keys in the database to see what IS there
+            let mut all_keys: Vec<String> = Vec::new();
+            for analysis in map.values() {
+                all_keys.extend(analysis.symbols.keys().take(3).cloned());
+                if all_keys.len() > 20 {
+                    break;
                 }
             }
         }
