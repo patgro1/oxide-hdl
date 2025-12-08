@@ -1,9 +1,14 @@
+pub mod parser;
+pub mod scanner;
+
+use crate::logging::log_crash;
+
 use crate::analysis::Analysis;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{RwLock, Semaphore};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 use walkdir::WalkDir;
@@ -11,9 +16,10 @@ use walkdir::WalkDir;
 pub struct Backend {
     client: Client,
     document_map: Arc<RwLock<HashMap<Url, Rope>>>,
-    parser: Arc<Mutex<Parser>>,
+    // parser: Arc<Mutex<Parser>>,
     analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
     root_uri: Arc<RwLock<Option<Url>>>,
+    // shallow_query: Arc<Query>,
 }
 use tower_lsp::lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
@@ -24,13 +30,14 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer};
 
 impl Backend {
-    pub fn new(client: Client, parser: Parser) -> Self {
+    pub fn new(client: Client, _parser: Parser) -> Self {
         Backend {
             client,
             document_map: Arc::new(RwLock::new(HashMap::new())),
             analysis_map: Arc::new(RwLock::new(HashMap::new())),
-            parser: Arc::new(Mutex::new(parser)),
+            // parser: Arc::new(Mutex::new(parser)),
             root_uri: Arc::new(RwLock::new(None)),
+            // shallow_query: Arc::new(shallow_query),
         }
     }
     fn get_word_at_pos(&self, rope: &Rope, position: Position) -> Option<String> {
@@ -68,30 +75,58 @@ impl Backend {
     }
 
     async fn on_change(&self, uri: Url, text: String, rope: Rope) {
-        let mut parser = self.parser.lock().await;
+        let client = self.client.clone();
+        let analysis_map = self.analysis_map.clone();
+        let uri_clone = uri.clone();
 
-        if let Some(tree) = parser.parse(&text, None) {
-            let analysis = Analysis::extract(tree.root_node(), &text, &rope);
+        tokio::task::spawn_blocking(move || {
+            let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
+            let thread_result = builder
+                .spawn(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut parser = Parser::new();
+                        let language = unsafe { crate::tree_sitter_vhdl() };
+                        if let Err(_e) = parser.set_language(&language) {
+                            return None;
+                        }
 
-            let diagnostics = Analysis::get_diagnostics(tree, &text);
-            self.client
-                .publish_diagnostics(uri.clone(), diagnostics, None)
-                .await;
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Indexed {} symbols in {}", analysis.symbols.len(), uri),
-                )
-                .await;
-
-            let mut map = self.analysis_map.write().await;
-            map.insert(uri, analysis);
-        }
+                        match parser.parse(&text, None) {
+                            Some(tree) => {
+                                let analysis = Analysis::extract(tree.root_node(), &text, &rope);
+                                let diagnostic = Analysis::get_diagnostics(tree, &text);
+                                Some(Box::new((analysis, diagnostic)))
+                            }
+                            None => None,
+                        }
+                    }))
+                })
+                .unwrap()
+                .join();
+            match thread_result {
+                Ok(Ok(Some(boxed_result))) => {
+                    let (analysis, diagnostics) = *boxed_result;
+                    tokio::spawn(async move {
+                        client
+                            .publish_diagnostics(uri_clone.clone(), diagnostics, None)
+                            .await;
+                        client
+                            .log_message(MessageType::INFO, format!("Re-indexed {}", uri_clone))
+                            .await;
+                        let mut map = analysis_map.write().await;
+                        map.insert(uri_clone, analysis);
+                    });
+                }
+                Ok(Ok(None)) => log_crash("Parser returned None"),
+                Ok(Err(e)) => log_crash(&format!("Panic caught: {:?}", e)),
+                Err(e) => log_crash(&format!("Thread join failed: {:?}", e)),
+            }
+        })
+        .await
+        .unwrap();
     }
 
     pub async fn index_workspace(
         client: Client,
-        parser: Arc<Mutex<Parser>>,
         analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
         root_uri: Url,
     ) {
@@ -100,41 +135,60 @@ impl Backend {
             Err(_) => return,
         };
 
-        let start_time = Instant::now();
+        let start = Instant::now();
         client
-            .log_message(
-                MessageType::INFO,
-                format!("Starting index of: {:?}", root_path),
-            )
+            .log_message(MessageType::INFO, "Starting indexing...")
             .await;
-        let mut count = 0;
-        for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path
-                .extension()
-                .map_or(false, |ext| ext == "vhd" || ext == "vhdl")
-            {
-                if let Ok(text) = std::fs::read_to_string(path) {
-                    let rope = Rope::from_str(&text);
-                    if let Ok(uri) = Url::from_file_path(path) {
-                        let mut parser_guard = parser.lock().await;
 
-                        if let Some(tree) = parser_guard.parse(&text, None) {
-                            let analysis = Analysis::extract(tree.root_node(), &text, &rope);
-                            drop(parser_guard);
-                            let mut map = analysis_map.write().await;
-                            map.insert(uri, analysis);
-                            count += 1;
-                        }
+        let max_concurrency = 16;
+        let semaphone = Arc::new(Semaphore::new(max_concurrency));
+
+        let paths: Vec<std::path::PathBuf> = WalkDir::new(root_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == "vhd" || ext == "vhdl")
+            })
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        let mut handles = Vec::new();
+
+        for path in paths {
+            let path_uri = match Url::from_file_path(&path) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+            let sem_clone = semaphone.clone();
+            let handle = tokio::task::spawn(async move {
+                let _permit = sem_clone.acquire_owned().await.unwrap();
+                tokio::task::spawn_blocking(move || {
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    let symbols = scanner::scan_fast(&text);
+                    let mut analysis = Analysis::new();
+                    for s in symbols {
+                        analysis.symbols.insert(s.name.clone().to_lowercase(), s);
                     }
-                }
+                    (path_uri, analysis)
+                })
+                .await
+                .unwrap()
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            if let Ok((uri, analysis)) = handle.await {
+                let mut map = analysis_map.write().await;
+                map.insert(uri, analysis);
             }
         }
-        let duration = start_time.elapsed();
+        let duration = start.elapsed();
         client
             .log_message(
                 MessageType::INFO,
-                format!("Finished indexing {} files in : {:?}", count, duration),
+                format!("Inxedx workspace in {:?}", duration),
             )
             .await;
     }
@@ -176,7 +230,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "Oxide HDL initialized!")
             .await;
-        let mut root_uri = {
+        let root_uri = {
             let read_lock = self.root_uri.read().await;
             read_lock.clone()
         };
@@ -188,9 +242,8 @@ impl LanguageServer for Backend {
             .await;
         if let Some(uri) = root_uri {
             let client = self.client.clone();
-            let parser = self.parser.clone();
             let map = self.analysis_map.clone();
-            tokio::spawn(async move { Backend::index_workspace(client, parser, map, uri).await });
+            tokio::spawn(async move { Backend::index_workspace(client, map, uri).await });
         }
     }
 
@@ -260,20 +313,21 @@ impl LanguageServer for Backend {
         };
 
         if let Some(word) = self.get_word_at_pos(&rope, position) {
+            let target = word.to_lowercase();
             self.client
                 .log_message(
                     MessageType::INFO,
-                    format!("Looking up definition for: {}", word),
+                    format!("Looking up definition for: {}", target),
                 )
                 .await;
             let map = self.analysis_map.read().await;
-            if let Some(analysis) = map.get(&uri)
-                && let Some(symbol) = analysis.symbols.get(&word)
-            {
-                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range: symbol.range,
-                })));
+            for (file_uri, analysis) in map.iter() {
+                if let Some(symbol) = analysis.symbols.get(&target) {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                        uri: file_uri.clone(),
+                        range: symbol.range,
+                    })));
+                }
             }
         }
 

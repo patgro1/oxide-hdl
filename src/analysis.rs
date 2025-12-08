@@ -7,11 +7,44 @@ unsafe extern "C" {
     fn tree_sitter_vhdl() -> Language;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OxideSymbolKind {
+    Entity,
+    Package,
+    Component,
+    Port,
+    Generic,
+    Architecture,
+    Struct,
+    Constant,
+    Function,
+    Signal,
+}
+
+impl From<OxideSymbolKind> for SymbolKind {
+    fn from(kind: OxideSymbolKind) -> Self {
+        match kind {
+            OxideSymbolKind::Entity => SymbolKind::CLASS,
+            OxideSymbolKind::Package => SymbolKind::MODULE,
+            OxideSymbolKind::Component => SymbolKind::INTERFACE,
+            OxideSymbolKind::Port => SymbolKind::FIELD,
+            OxideSymbolKind::Generic => SymbolKind::CONSTANT,
+            OxideSymbolKind::Constant => SymbolKind::CONSTANT,
+            OxideSymbolKind::Architecture => SymbolKind::CLASS,
+            OxideSymbolKind::Function => SymbolKind::FUNCTION,
+            OxideSymbolKind::Struct => SymbolKind::STRUCT,
+            OxideSymbolKind::Signal => SymbolKind::VARIABLE,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: String,
-    pub kind: SymbolKind,
+    pub kind: OxideSymbolKind,
+    pub detail: Option<String>, // i.e std_logic_vector(31 downto 0)
     pub range: Range,
+    pub children: Vec<Symbol>, // Ports/generics go here
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +67,7 @@ impl Analysis {
         // Find all entities declared in the file
         let query_string = "
             (entity_declaration
-                name: (identifier) @entity_name
+                entity: (identifier) @entity_name
             )
         ";
         let language = unsafe { tree_sitter_vhdl() };
@@ -63,8 +96,10 @@ impl Analysis {
                     };
                     let symbol = Symbol {
                         name: name_text.clone(),
-                        kind: SymbolKind::CLASS,
+                        kind: OxideSymbolKind::Entity,
+                        detail: None,
                         range,
+                        children: Vec::new(),
                     };
                     symbols.insert(name_text, symbol);
                 }
@@ -153,7 +188,7 @@ mod tests {
         assert_eq!(analysis.symbols.len(), 1);
         assert!(analysis.symbols.contains_key("my_cpu"));
         let symbol = analysis.symbols.get("my_cpu").unwrap();
-        assert_eq!(symbol.kind, SymbolKind::CLASS);
+        assert_eq!(symbol.kind, OxideSymbolKind::Entity);
         assert_eq!(symbol.range.start.line, 1);
     }
 

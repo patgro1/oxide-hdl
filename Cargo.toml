@@ -4,11 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+regex = "1"
+lazy_static = "1.4"
 ropey = "1.6.1"
 tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"
 tree-sitter = "0.25.10"
 walkdir = "2.5.0"
+clap = { version = "4.0", features = ["derive"] }
+chrono = "0.4.42"
 
 [build-dependencies]
 cc = "1.0"
