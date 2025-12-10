@@ -93,24 +93,6 @@ impl Backend {
         }
     }
 
-    async fn document_symbol(
-        &self,
-        params: DocumentSymbolParams,
-    ) -> Result<Option<DocumentSymbolResponse>> {
-        let uri = params.text_document.uri;
-        let map = self.analysis_map.read().await;
-
-        if let Some(analysis) = map.get(&uri) {
-            let mut symbols = Vec::new();
-            for sym in analysis.symbols.values() {
-                symbols.push(self.to_document_symbol(sym))
-            }
-            symbols.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-            return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
-        }
-        Ok(None)
-    }
-
     fn to_document_symbol(&self, sym: &crate::analysis::Symbol) -> DocumentSymbol {
         #[allow(deprecated)]
         DocumentSymbol {
@@ -304,9 +286,14 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
+                // Goto def
                 definition_provider: Some(OneOf::Left(true)),
+                // Hover
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                // Completion
                 completion_provider: Some(CompletionOptions::default()),
+                // Document symbol
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -415,44 +402,26 @@ impl LanguageServer for Backend {
         if let Some(word) = self.get_word_at_pos(&rope, position) {
             let target = word.to_lowercase();
             self.client
-                .log_message(MessageType::INFO, format!("🔎 Looking for: '{}'", target))
+                .log_message(MessageType::INFO, format!("Looking for: '{}'", target))
                 .await;
 
             let map = self.analysis_map.read().await;
-            if let Some(analysis) = map.get(&uri) {
-                let keys: Vec<_> = analysis.symbols.keys().take(5).collect();
-                self.client
-                    .log_message(MessageType::INFO, format!("📂 Local Keys: {:?}", keys))
-                    .await;
-                if let Some(sym) = analysis.find_symbol(&target) {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: uri.clone(),
-                        range: sym.range,
-                    })));
-                }
+            if let Some(analysis) = map.get(&uri)
+                && let Some(sym) = analysis.find_symbol(&target)
+            {
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: uri.clone(),
+                    range: sym.range,
+                })));
             }
             for (file_uri, analysis) in map.iter() {
                 if let Some(symbol) = analysis.symbols.get(&target) {
-                    self.client
-                        .log_message(MessageType::INFO, format!("✅ Found in {}", file_uri))
-                        .await;
                     return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                         uri: file_uri.clone(),
                         range: symbol.range,
                     })));
                 }
             }
-            // 4. FAILURE DUMP (This is the important part)
-            self.client
-                .log_message(MessageType::WARNING, format!("❌ '{}' NOT FOUND.", target))
-                .await;
-            if let Some(analysis) = map.get(&uri) {
-                let tree_dump = self.dump_analysis_tree(analysis);
-                self.client
-                    .log_message(MessageType::INFO, format!("🌳 Tree Dump:\n{}", tree_dump))
-                    .await;
-            }
-
             // Print the first 10 keys in the database to see what IS there
             let mut all_keys: Vec<String> = Vec::new();
             for analysis in map.values() {
@@ -463,6 +432,24 @@ impl LanguageServer for Backend {
             }
         }
 
+        Ok(None)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let map = self.analysis_map.read().await;
+
+        if let Some(analysis) = map.get(&uri) {
+            let mut symbols = Vec::new();
+            for sym in analysis.symbols.values() {
+                symbols.push(self.to_document_symbol(sym))
+            }
+            symbols.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+            return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
+        }
         Ok(None)
     }
 
