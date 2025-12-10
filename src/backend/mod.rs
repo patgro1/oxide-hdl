@@ -255,6 +255,19 @@ impl Backend {
         for handle in handles {
             if let Ok((uri, analysis)) = handle.await {
                 let mut map = analysis_map.write().await;
+                // NOTE:We need to check if better data is available to prevent
+                // a race condition where we open a file, it gets parse and then
+                // the fast indexer reaches that file and overwrite good data
+                // with shallow data.
+                if let Some(exisiting_analysis) = map.get(&uri) {
+                    let existing_is_deep = exisiting_analysis
+                        .symbols
+                        .values()
+                        .any(|s| !s.children.is_empty());
+                    if existing_is_deep {
+                        continue;
+                    }
+                }
                 map.insert(uri, analysis);
             }
         }
