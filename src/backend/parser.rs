@@ -121,6 +121,8 @@ fn extract_details(
 
     let mut name_nodes = Vec::new();
 
+    let get_text = |n: Node| n.utf8_text(text.as_bytes()).unwrap_or("").to_string();
+
     // Special case for architecture name extraction
     if let Some(arch) = node.child_by_field_name("architecture") {
         name_nodes.push(arch)
@@ -167,9 +169,35 @@ fn extract_details(
         }
     }
 
-    // Now we can try to extract the details
     let mut detail_text = None;
-    let get_text = |n: Node| n.utf8_text(text.as_bytes()).unwrap_or("").to_string();
+    // Handle instantiation
+    // We need to make sure we capture also the entity name
+    if kind == OxideSymbolKind::ComponentInstantiation {
+        if let Some(comp_node) = node.child_by_field_name("component") {
+            detail_text = Some(get_text(comp_node));
+        } else if let Some(ent_node) = node.child_by_field_name("entity") {
+            let raw = get_text(ent_node);
+            // Remove any library from the compoenent name
+            let clean = raw.split('.').next_back().unwrap_or(&raw).to_string();
+            detail_text = Some(clean);
+        } else {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "instantiated_unit" {
+                    let mut inner_cursor = child.walk();
+                    for inner in child.named_children(&mut inner_cursor) {
+                        if let Some(name_node) = inner.child_by_field_name("name") {
+                            let raw = get_text(name_node);
+                            let clean = raw.split('.').next_back().unwrap_or(&raw).to_string();
+                            detail_text = Some(clean);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Now we can try to extract the details
     if let Some(type_node) = node.child_by_field_name("type") {
         detail_text = Some(get_text(type_node));
     } else {
