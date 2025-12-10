@@ -25,9 +25,9 @@ pub struct Backend {
 use tower_lsp::lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, Position, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Url,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MarkupContent, MessageType, OneOf, Position, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -432,6 +432,66 @@ impl LanguageServer for Backend {
             }
         }
 
+        Ok(None)
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = self.get_word_at_pos(&rope, position) {
+            let target = word.to_lowercase();
+            let map = self.analysis_map.read().await;
+
+            let mut found_symbol: Option<&Symbol> = None;
+
+            // Local indexing
+            if let Some(analysis) = map.get(&uri)
+                && let Some(sym) = analysis.find_symbol(&target)
+            {
+                found_symbol = Some(sym);
+            }
+
+            // Global indexing
+            if found_symbol.is_none() {
+                for analysis in map.values() {
+                    if let Some(sym) = analysis.symbols.get(&target) {
+                        found_symbol = Some(sym);
+                        break;
+                    }
+                }
+            }
+
+            // Format the symbol
+            if let Some(sym) = found_symbol {
+                let type_info = sym.detail.as_deref().unwrap_or("void");
+
+                // Markdown format
+                // **NAME**
+                // ```vhdl
+                // kind: type_info
+                // ```
+                let markdown = format!(
+                    "**{}**\n\n```vhdl\n{} : {}\n```",
+                    sym.name, sym.kind, type_info
+                );
+                return Ok(Some(Hover {
+                    contents: tower_lsp::lsp_types::HoverContents::Markup(MarkupContent {
+                        kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                        value: markdown,
+                    }),
+                    range: None,
+                }));
+            }
+        }
         Ok(None)
     }
 

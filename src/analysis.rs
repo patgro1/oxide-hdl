@@ -1,3 +1,4 @@
+use core::fmt;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{Range, SymbolKind};
 use tree_sitter::Language;
@@ -23,6 +24,28 @@ pub enum OxideSymbolKind {
     Constant,
     Function,
     Signal,
+}
+
+impl fmt::Display for OxideSymbolKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            OxideSymbolKind::Entity => "entity",
+            OxideSymbolKind::Package => "package",
+            OxideSymbolKind::Component => "component",
+            OxideSymbolKind::ComponentInstantiation => "instantiation",
+            OxideSymbolKind::Port => "port",
+            OxideSymbolKind::Generic => "generic",
+            OxideSymbolKind::Constant => "constant",
+            OxideSymbolKind::Architecture => "architecture",
+            OxideSymbolKind::Block => "block",
+            OxideSymbolKind::Generate => "generate",
+            OxideSymbolKind::Process => "process",
+            OxideSymbolKind::Function => "function",
+            OxideSymbolKind::Struct => "record",
+            OxideSymbolKind::Signal => "signal",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 impl From<OxideSymbolKind> for SymbolKind {

@@ -169,26 +169,29 @@ fn extract_details(
 
     // Now we can try to extract the details
     let mut detail_text = None;
+    let get_text = |n: Node| n.utf8_text(text.as_bytes()).unwrap_or("").to_string();
     if let Some(type_node) = node.child_by_field_name("type") {
-        detail_text = Some(
-            type_node
-                .utf8_text(text.as_bytes())
-                .unwrap_or("")
-                .to_string(),
-        );
+        detail_text = Some(get_text(type_node));
     } else {
         // Fallback to subtype indication
         let mut cursor = node.walk();
-        if let Some(type_node) = node
-            .children(&mut cursor)
-            .find(|n| n.kind().contains("type") || n.kind().contains("subtype"))
-        {
-            detail_text = Some(
-                type_node
-                    .utf8_text(text.as_bytes())
-                    .unwrap_or("")
-                    .to_string(),
-            );
+        for child in node.named_children(&mut cursor) {
+            let k = child.kind();
+            // Direct hit on the type
+            if k.contains("subtype") || k.contains("type") {
+                detail_text = Some(get_text(child));
+                break;
+            }
+            // Port and generics might be deeper
+            if k == "simple_mode_indication" {
+                let mut inner_cursor = child.walk();
+                for inner in child.named_children(&mut inner_cursor) {
+                    if inner.kind() == "subtype_indication" {
+                        detail_text = Some(get_text(inner));
+                        break;
+                    }
+                }
+            }
         }
     }
 
