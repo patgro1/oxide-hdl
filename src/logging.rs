@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 
 // We need a unique, persistent file for the LSP crash logs
+#[allow(dead_code)]
 pub fn log_crash(msg: &str) {
     let path = "/tmp/oxide_hdl_crash.log";
     match OpenOptions::new().create(true).append(true).open(path) {

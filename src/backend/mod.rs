@@ -31,6 +31,37 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer};
 
+// Debugger helper function
+#[allow(dead_code)]
+pub fn dump_symbol_recursive(sym: &Symbol, depth: usize, output: &mut String) {
+    let indent = "  ".repeat(depth);
+    output.push_str(&format!("{}{:?} {}\n", indent, sym.kind, sym.name));
+    for child in &sym.children {
+        dump_symbol_recursive(child, depth + 1, output);
+    }
+}
+
+pub fn to_document_symbol(sym: &crate::analysis::Symbol) -> DocumentSymbol {
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name: sym.name.clone(),
+        detail: sym.detail.clone(),
+        kind: sym.kind.into(),
+        tags: None,
+        deprecated: None,
+        range: sym.range,
+        selection_range: sym.range,
+        children: if sym.children.is_empty() {
+            None
+        } else {
+            let mut children_list: Vec<DocumentSymbol> =
+                sym.children.iter().map(to_document_symbol).collect();
+            children_list.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+            Some(children_list)
+        },
+    }
+}
+
 impl Backend {
     pub fn new(client: Client, parser: Parser) -> Self {
         Backend {
@@ -43,20 +74,15 @@ impl Backend {
             // shallow_query: Arc::new(shallow_query),
         }
     }
+
+    // Debugger helper function
+    #[allow(dead_code)]
     fn dump_analysis_tree(&self, analysis: &Analysis) -> String {
         let mut output = String::new();
         for sym in analysis.symbols.values() {
-            self.dump_symbol_recursive(sym, 0, &mut output);
+            dump_symbol_recursive(sym, 0, &mut output);
         }
         output
-    }
-
-    fn dump_symbol_recursive(&self, sym: &Symbol, depth: usize, output: &mut String) {
-        let indent = "  ".repeat(depth);
-        output.push_str(&format!("{}{:?} {}\n", indent, sym.kind, sym.name));
-        for child in &sym.children {
-            self.dump_symbol_recursive(child, depth + 1, output);
-        }
     }
 
     fn get_word_at_pos(&self, rope: &Rope, position: Position) -> Option<String> {
@@ -93,32 +119,7 @@ impl Backend {
         }
     }
 
-    fn to_document_symbol(&self, sym: &crate::analysis::Symbol) -> DocumentSymbol {
-        #[allow(deprecated)]
-        DocumentSymbol {
-            name: sym.name.clone(),
-            detail: sym.detail.clone(),
-            kind: sym.kind.into(),
-            tags: None,
-            deprecated: None,
-            range: sym.range,
-            selection_range: sym.range,
-            children: if sym.children.is_empty() {
-                None
-            } else {
-                let mut children_list: Vec<DocumentSymbol> = sym
-                    .children
-                    .iter()
-                    .map(|child| self.to_document_symbol(child))
-                    .collect();
-                children_list.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-                Some(children_list)
-            },
-        }
-    }
-
-    async fn on_change(&self, uri: Url, text: String, rope: Rope) {
-        let client = self.client.clone();
+    async fn on_change(&self, uri: Url, text: String) {
         let analysis_map = self.analysis_map.clone();
         let uri_clone = uri.clone();
         let parser_arc = self.parser.clone();
@@ -151,7 +152,7 @@ impl Backend {
                 .unwrap()
                 .join();
             if let Ok(Ok(Some(boxed_result))) = thread_result {
-                let (analysis, diagnostic) = *boxed_result;
+                let (analysis, _) = *boxed_result;
                 tokio::spawn(async move {
                     let mut map = analysis_map.write().await;
                     map.insert(uri_clone, analysis);
@@ -200,10 +201,10 @@ impl Backend {
                 }
 
                 // Filter 2: Ignore list
-                if let Ok(relative) = e.path().strip_prefix(&root_path) {
-                    if matcher.is_match(relative) {
-                        return false;
-                    }
+                if let Ok(relative) = e.path().strip_prefix(&root_path)
+                    && matcher.is_match(relative)
+                {
+                    return false;
                 }
 
                 true
@@ -347,7 +348,7 @@ impl LanguageServer for Backend {
             let mut map = self.document_map.write().await;
             map.insert(uri.clone(), rope.clone());
         }
-        self.on_change(uri, text, rope).await;
+        self.on_change(uri, text).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -375,11 +376,10 @@ impl LanguageServer for Backend {
                     *rope = Rope::from_str(&change.text)
                 }
             }
-            let rope_clone = rope.clone();
             let text = rope.to_string();
 
             drop(map);
-            self.on_change(uri, text, rope_clone).await;
+            self.on_change(uri, text).await;
         }
     }
 
@@ -445,7 +445,7 @@ impl LanguageServer for Backend {
         if let Some(analysis) = map.get(&uri) {
             let mut symbols = Vec::new();
             for sym in analysis.symbols.values() {
-                symbols.push(self.to_document_symbol(sym))
+                symbols.push(to_document_symbol(sym))
             }
             symbols.sort_by(|a, b| a.range.start.cmp(&b.range.start));
             return Ok(Some(DocumentSymbolResponse::Nested(symbols)));

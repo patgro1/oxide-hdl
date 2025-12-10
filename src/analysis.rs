@@ -1,8 +1,8 @@
-use ropey::Rope;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, SymbolKind};
-use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator, Tree};
+use tower_lsp::lsp_types::{Range, SymbolKind};
+use tree_sitter::Language;
 
+#[allow(dead_code)]
 unsafe extern "C" {
     fn tree_sitter_vhdl() -> Language;
 }
@@ -62,6 +62,18 @@ pub struct Analysis {
     pub symbols: HashMap<String, Symbol>,
 }
 
+pub fn find_recursive<'a>(parent: &'a Symbol, target: &str) -> Option<&'a Symbol> {
+    for child in &parent.children {
+        if child.name.to_lowercase() == *target {
+            return Some(child);
+        }
+        if let Some(found) = find_recursive(child, target) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl Analysis {
     pub fn new() -> Self {
         Self {
@@ -75,119 +87,11 @@ impl Analysis {
             return Some(s);
         }
         for s in self.symbols.values() {
-            if let Some(found) = self.find_recursive(s, &target) {
+            if let Some(found) = find_recursive(s, &target) {
                 return Some(found);
             }
         }
         None
-    }
-
-    fn find_recursive<'a>(&self, parent: &'a Symbol, target: &str) -> Option<&'a Symbol> {
-        for child in &parent.children {
-            if child.name.to_lowercase() == *target {
-                return Some(child);
-            }
-            if let Some(found) = self.find_recursive(child, target) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    pub fn extract(root_node: Node, source_code: &str, rope: &Rope) -> Self {
-        let mut symbols = HashMap::new();
-
-        // Find all entities declared in the file
-        let query_string = "
-            (entity_declaration
-                entity: (identifier) @entity_name
-            )
-        ";
-        let language = unsafe { tree_sitter_vhdl() };
-        let query = Query::new(&language, query_string).expect("Invalid query");
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, root_node, source_code.as_bytes());
-        while let Some(m) = &matches.next() {
-            for capture in m.captures.iter() {
-                let node = capture.node;
-                if let Ok(name_text) = node.utf8_text(source_code.as_bytes()) {
-                    let name_text = name_text.to_string();
-                    let start_line = node.start_position().row;
-                    let start_col = node.start_position().column;
-                    let end_line = node.end_position().row;
-                    let end_col = node.end_position().column;
-
-                    let range = Range {
-                        start: Position {
-                            line: start_line as u32,
-                            character: start_col as u32,
-                        },
-                        end: Position {
-                            line: end_line as u32,
-                            character: end_col as u32,
-                        },
-                    };
-                    let symbol = Symbol {
-                        name: name_text.clone(),
-                        kind: OxideSymbolKind::Entity,
-                        detail: None,
-                        range,
-                        children: Vec::new(),
-                    };
-                    symbols.insert(name_text, symbol);
-                }
-            }
-        }
-
-        Analysis { symbols }
-    }
-
-    pub fn get_diagnostics(tree: Tree, source_code: &str) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        Self::collect_errors(tree.root_node(), &mut diagnostics);
-
-        diagnostics
-    }
-
-    fn collect_errors(node: Node, diagnostics: &mut Vec<Diagnostic>) {
-        if node.is_error() || node.is_missing() {
-            let start = node.start_position();
-            let end = node.end_position();
-
-            let range = Range {
-                start: Position {
-                    line: start.row as u32,
-                    character: start.column as u32,
-                },
-                end: Position {
-                    line: end.row as u32,
-                    character: end.column as u32,
-                },
-            };
-
-            let message = if node.is_missing() {
-                format!("Missing syntax: expected something her")
-            } else {
-                format!("Syntax error: Unexpected token")
-            };
-            diagnostics.push(Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: None,
-                code_description: None,
-                source: Some("oxide-hdl".to_string()),
-                message,
-                related_information: None,
-                tags: None,
-                data: None,
-            });
-        }
-        if node.has_error() {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                Self::collect_errors(child, diagnostics);
-            }
-        }
     }
 }
 

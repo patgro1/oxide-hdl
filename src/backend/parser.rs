@@ -597,7 +597,7 @@ end incomplete;
         assert!(arch.children.iter().any(|s| s.name == "valid_sig"));
 
         // The process should exist
-        let proc = arch
+        let _proc = arch
             .children
             .iter()
             .find(|s| s.kind == OxideSymbolKind::Process)
