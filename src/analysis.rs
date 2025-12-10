@@ -62,16 +62,28 @@ pub struct Analysis {
     pub symbols: HashMap<String, Symbol>,
 }
 
-pub fn find_recursive<'a>(parent: &'a Symbol, target: &str) -> Option<&'a Symbol> {
-    for child in &parent.children {
-        if child.name.to_lowercase() == *target {
-            return Some(child);
+impl Symbol {
+    pub fn find_recursive<'a>(&'a self, target: &str) -> Option<&'a Symbol> {
+        for child in &self.children {
+            if child.name.to_lowercase() == target {
+                return Some(child);
+            }
+            if let Some(found) = child.find_recursive(target) {
+                return Some(found);
+            }
         }
-        if let Some(found) = find_recursive(child, target) {
-            return Some(found);
+        None
+    }
+
+    // Debugger helper function
+    #[allow(dead_code)]
+    pub fn dump_symbol_recursive(&self, depth: usize, output: &mut String) {
+        let indent = "  ".repeat(depth);
+        output.push_str(&format!("{}{:?} {}\n", indent, self.kind, self.name));
+        for child in self.children.clone() {
+            child.dump_symbol_recursive(depth + 1, output);
         }
     }
-    None
 }
 
 impl Analysis {
@@ -87,7 +99,7 @@ impl Analysis {
             return Some(s);
         }
         for s in self.symbols.values() {
-            if let Some(found) = find_recursive(s, &target) {
+            if let Some(found) = s.find_recursive(&target) {
                 return Some(found);
             }
         }
