@@ -83,7 +83,9 @@ fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
                     let kind = determine_interface_kind(node);
                     (kind, false)
                 }
-                "component_instantiation_statement" => (Some(OxideSymbolKind::Component), false),
+                "component_instantiation_statement" => {
+                    (Some(OxideSymbolKind::ComponentInstantiation), false)
+                }
                 _ => (None, true),
             };
 

@@ -12,6 +12,7 @@ pub enum OxideSymbolKind {
     Entity,
     Package,
     Component,
+    ComponentInstantiation,
     Port,
     Generic,
     Architecture,
@@ -27,9 +28,10 @@ pub enum OxideSymbolKind {
 impl From<OxideSymbolKind> for SymbolKind {
     fn from(kind: OxideSymbolKind) -> Self {
         match kind {
-            OxideSymbolKind::Entity => SymbolKind::CLASS,
+            OxideSymbolKind::Entity => SymbolKind::INTERFACE,
             OxideSymbolKind::Package => SymbolKind::MODULE,
             OxideSymbolKind::Component => SymbolKind::INTERFACE,
+            OxideSymbolKind::ComponentInstantiation => SymbolKind::FIELD,
             OxideSymbolKind::Port => SymbolKind::FIELD,
             OxideSymbolKind::Generic => SymbolKind::CONSTANT,
             OxideSymbolKind::Constant => SymbolKind::CONSTANT,
