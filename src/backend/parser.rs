@@ -36,7 +36,7 @@ fn determine_interface_kind(node: Node) -> Option<OxideSymbolKind> {
             "port_clause" => return Some(OxideSymbolKind::Port),
             "generic_clause" => return Some(OxideSymbolKind::Generic),
             "subprogram_header" | "function_specification" | "procedure_specification" => {
-                return Some(OxideSymbolKind::Function);
+                return Some(OxideSymbolKind::Port);
             }
 
             "entity_declaration" | "architecture_body" | "package_declaration" => return None,
@@ -197,26 +197,40 @@ fn extract_details(
         }
     }
 
-    // Now we can try to extract the details
-    if let Some(type_node) = node.child_by_field_name("type") {
-        detail_text = Some(get_text(type_node));
-    } else {
-        // Fallback to subtype indication
+    if kind == OxideSymbolKind::Function {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            let k = child.kind();
-            // Direct hit on the type
-            if k.contains("subtype") || k.contains("type") {
-                detail_text = Some(get_text(child));
+            if child.kind().contains("specification") {
+                if let Some(return_type) = child.child_by_field_name("type") {
+                    detail_text = Some(get_text(return_type));
+                }
                 break;
             }
-            // Port and generics might be deeper
-            if k == "simple_mode_indication" {
-                let mut inner_cursor = child.walk();
-                for inner in child.named_children(&mut inner_cursor) {
-                    if inner.kind() == "subtype_indication" {
-                        detail_text = Some(get_text(inner));
-                        break;
+        }
+    }
+
+    // Now we can try to extract the details
+    if detail_text.is_none() {
+        if let Some(type_node) = node.child_by_field_name("type") {
+            detail_text = Some(get_text(type_node));
+        } else {
+            // Fallback to subtype indication
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                let k = child.kind();
+                // Direct hit on the type
+                if k.contains("subtype") || k.contains("type") {
+                    detail_text = Some(get_text(child));
+                    break;
+                }
+                // Port and generics might be deeper
+                if k == "simple_mode_indication" {
+                    let mut inner_cursor = child.walk();
+                    for inner in child.named_children(&mut inner_cursor) {
+                        if inner.kind() == "subtype_indication" {
+                            detail_text = Some(get_text(inner));
+                            break;
+                        }
                     }
                 }
             }
@@ -416,7 +430,7 @@ end Structure;
         let inst = &arch.children[0];
 
         assert_eq!(inst.name, "u_uart"); // The label
-        assert_eq!(inst.kind, OxideSymbolKind::Component);
+        assert_eq!(inst.kind, OxideSymbolKind::ComponentInstantiation);
 
         // Bonus: Check if we can verify the target entity?
         // Your current extractor might not put "uart_tx" in the name,

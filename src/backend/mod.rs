@@ -164,7 +164,41 @@ impl Backend {
         }
 
         md.push_str("end entity;\n");
-        md.push_str("```");
+        md.push_str("\n```");
+        md
+    }
+
+    fn format_function_hover(&self, sym: &Symbol) -> String {
+        use crate::analysis::OxideSymbolKind;
+        let mut md = String::new();
+        // Header
+        md.push_str(&format!("**{}** (Function)\n\n", sym.name));
+        md.push_str("```vhdl\n");
+        let params: Vec<&Symbol> = sym
+            .children
+            .iter()
+            .filter(|c| c.kind == OxideSymbolKind::Port)
+            .collect();
+
+        // params
+        if !params.is_empty() {
+            md.push_str(" (\n");
+            for (i, p) in params.iter().enumerate() {
+                let type_info = p.detail.as_deref().unwrap_or("?");
+                let sep = if i < params.len() - 1 { ";" } else { "" };
+                md.push_str(&format!("    {} : {}{}\n", p.name, type_info, sep));
+            }
+            md.push_str(")\n");
+        }
+
+        // return type
+        if let Some(ret_type) = &sym.detail {
+            md.push_str(&format!("\nreturn: {};\n", ret_type));
+        } else {
+            md.push(';');
+        }
+
+        md.push_str("\n```");
         md
     }
 
@@ -620,6 +654,19 @@ impl LanguageServer for Backend {
                             let hover_text = self.format_instantiation_hover(&sym.name, def_sym);
                             return self.markup(hover_text);
                         }
+                    }
+                }
+                // Hovering functions
+                if sym.kind == crate::analysis::OxideSymbolKind::Function
+                    && let Some(ref def_uri) = found_uri
+                {
+                    self.ensure_fully_parsed(def_uri).await;
+                    let map = self.analysis_map.read().await;
+                    if let Some(analysis) = map.get(def_uri)
+                        && let Some(deep_sym) = analysis.find_symbol(&sym.name)
+                    {
+                        let hover_text = self.format_function_hover(deep_sym);
+                        return self.markup(hover_text);
                     }
                 }
                 // Hovering the instance entity
