@@ -2,13 +2,20 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 use std::path::Path;
 
+/// Configuration for the Oxide HDL Language Server.
+///
+/// This struct dictates which files should be indexed and which should be ignored
+/// to improve performance and accuracy (e.g., ignoring simulation artifacts).
+/// It is usually loaded from an `oxide.toml` file in the workspace root.
 #[derive(Deserialize, Debug, Clone)]
 pub struct OxideConfig {
-    // Default: ["build", "sim", "synth", "target", ".git"]
+    /// List of glob patterns to ignore during indexing.
+    /// Default: `["**/build/**", "**/sim/**", "**/synth/**", "**/target/**", "**/.git/**"]`, ".git"]
     #[serde(default = "default_ignores")]
     pub ignore: Vec<String>,
 
-    // Default: ["vhd", "vhdl"]
+    /// List of file extensions to treat as VHDL source files.
+    /// Default: `["vhd", "vhdl"]`
     #[serde(default = "default_extensions")]
     pub extensions: Vec<String>,
 }
@@ -28,6 +35,18 @@ fn default_extensions() -> Vec<String> {
 }
 
 impl OxideConfig {
+    /// Loads configuration from an `oxide.toml` file in the given root directory.
+    ///
+    /// If the file does not exist or contains invalid TOML, it falls back to the
+    /// default configuration safe defaults.
+    ///
+    /// # Arguments
+    ///
+    /// * `root_path` - The root directory of the workspace (where `oxide.toml` looks for).
+    ///
+    /// # Returns
+    ///
+    /// An `OxideConfig` struct populated from the file or defaults.
     pub fn load(root_path: &Path) -> Self {
         let config_path = root_path.join("oxide.toml");
 
@@ -39,13 +58,33 @@ impl OxideConfig {
         }
     }
 
+    /// Returns the default configuration.
+    ///
+    /// Used when no config file is found or when deserialization fails.
+    ///
+    /// # Returns
+    ///
+    /// A new `OxideConfig` with standard ignore patterns and VHDL extensions.
     pub fn default() -> Self {
         OxideConfig {
             ignore: default_ignores(),
-            extensions: default_ignores(),
+            extensions: default_extensions(),
         }
     }
 
+    /// Compiles the string-based ignore patterns into a highly optimized `GlobSet`.
+    ///
+    /// This is used by the `workspace` scanner to filter files efficiently during
+    /// the directory walk.
+    ///
+    /// # Returns
+    ///
+    /// A `globset::GlobSet` ready for matching paths.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `GlobSet` cannot be built (e.g., if valid glob limits are exceeded),
+    /// though individual invalid patterns are skipped silently.
     pub fn build_globset(&self) -> GlobSet {
         let mut builder = GlobSetBuilder::new();
         for pattern in &self.ignore {

@@ -1,7 +1,18 @@
+// src/backend/syntax/parser.rs
+
 use crate::analysis::{Analysis, OxideSymbolKind, Symbol};
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::{Node, TreeCursor};
 
+/// Converts a Tree-sitter `Node` into a standard LSP `Range`.
+///
+/// Tree-sitter uses row/column (0-indexed), which matches the LSP protocol.
+///
+/// # Arguments
+/// * `node` - The Tree-sitter node to convert.
+///
+/// # Returns
+/// An LSP `Range` struct covering the start and end positions of the node.
 pub fn node_to_range(node: Node) -> Range {
     let start = node.start_position();
     let end = node.end_position();
@@ -17,6 +28,23 @@ pub fn node_to_range(node: Node) -> Range {
     }
 }
 
+/// Recursively extracts all VHDL symbols from a parsed syntax tree.
+///
+/// This is the main entry point for the "Deep Parse" phase. It walks the entire
+/// AST, identifying symbols (Entities, Architectures, Signals, etc.) and building
+/// a hierarchical `Analysis` struct.
+///
+/// # Logic
+/// 1. Initializes a `TreeCursor` to walk the tree efficiently.
+/// 2. Calls the recursive `visit_node` function to traverse the AST.
+/// 3. Flattens the top-level symbols into a HashMap for O(1) lookup.
+///
+/// # Arguments
+/// * `text` - The full source code of the document (used to extract names/types).
+/// * `root_node` - The root node of the Tree-sitter tree.
+///
+/// # Returns
+/// An `Analysis` struct containing a map of all top-level symbols found.
 pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     let mut analysis = Analysis::new();
     let mut cursor = root_node.walk();
@@ -29,6 +57,18 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     analysis
 }
 
+/// Helper to determine the semantic kind of an `interface_declaration` node.
+///
+/// In VHDL, `interface_declaration` is generic and can represent Ports, Generics,
+/// or Function Parameters depending on its context. This function walks up the
+/// ancestry chain to find the defining clause (e.g., `port_clause` vs `generic_clause`).
+///
+/// # Arguments
+/// * `node` - The `interface_declaration` node to inspect.
+///
+/// # Returns
+/// * `Some(OxideSymbolKind)` - The specific kind (Port, Generic, Function Parameter).
+/// * `None` - If the context could not be determined.
 fn determine_interface_kind(node: Node) -> Option<OxideSymbolKind> {
     let mut current_node = node.parent();
     while let Some(n) = current_node {
@@ -49,6 +89,24 @@ fn determine_interface_kind(node: Node) -> Option<OxideSymbolKind> {
     None
 }
 
+/// Recursively walks the AST to find and extract symbols.
+///
+/// This function implements a Depth-First Search (DFS) using the Tree-sitter cursor.
+/// It identifies nodes that represent symbols, determines if they are containers
+/// (like Architectures) or leaves (like Signals), and recurses accordingly.
+///
+/// # Recursion Logic
+/// * If a node is a **Container** (e.g., Entity), it calls `visit_node` on a *new*
+///   cursor starting at that node to collect its children.
+/// * If a node is **Structural** (e.g., `block_statement`), it recurses but does not
+///   create a symbol itself, bubbling up any symbols found inside.
+///
+/// # Arguments
+/// * `cursor` - A mutable reference to the `TreeCursor` used for traversal.
+/// * `text` - The source code string.
+///
+/// # Returns
+/// A vector of `Symbol` structs found at this level of the tree.
 fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
     if cursor.goto_first_child() {
@@ -111,6 +169,27 @@ fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
     symbols
 }
 
+/// Extracts detailed information (name, type, children) from a specific AST node.
+///
+/// This function handles the complex logic of extracting symbol names from various
+/// VHDL constructs (which might use `label`, `name`, `identifier_list`, etc.).
+/// It also handles type extraction (`std_logic_vector`) and attaching nested children.
+///
+/// # Structural Guard
+/// Crucially, this function enforces a "One Symbol Out" rule for containers like
+/// Architectures and Entities. It consumes the `children` vector and ensures that
+/// leaked siblings (like signals found during the fallback scan) do not pollute
+/// the parent list.
+///
+/// # Arguments
+/// * `node` - The Tree-sitter node to extract from.
+/// * `kind` - The identified `OxideSymbolKind` of the symbol.
+/// * `text` - The source code string.
+/// * `children` - A list of symbols found recursively inside this node.
+///
+/// # Returns
+/// A vector of `Symbol` structs. (Returns a vector because a single declaration like
+/// `signal x, y : bit` produces multiple symbols).
 fn extract_details(
     node: Node,
     kind: OxideSymbolKind,

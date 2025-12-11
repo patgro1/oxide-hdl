@@ -4,16 +4,44 @@ use regex::Regex;
 use tower_lsp::lsp_types::{Position, Range};
 
 lazy_static! {
-    // 1. Structural
-    static ref RE_ENTITY: Regex = Regex::new(r"(?im)(?i)^\s*entity\s+(\w+)").unwrap();
-    static ref RE_PACKAGE: Regex = Regex::new(r"(?im)(?i)^\s*package\s+(\w+)").unwrap();
-    static ref RE_ARCH: Regex = Regex::new(r"(?im)(?i)^\s*architecture\s+(\w+)\s+of\s+(\w+)").unwrap();
-    // 2. Types & Constants (Critical for linking)
-    static ref RE_TYPE: Regex = Regex::new(r"(?im)(?i)^\s*(?:type|subtype)\s+(\w+)").unwrap();
-    static ref RE_CONSTANT: Regex = Regex::new(r"(?im)(?i)^\s*constant\s+(\w+)").unwrap();
-    static ref RE_SUBPROGRAM: Regex = Regex::new(r"(?im)(?i)^\s*(?:function|procedure)\s+(\w+)").unwrap();
+    // 1. Structural Regexes
+    // (?im) -> Case Insensitive (i) AND Multi-line mode (m).
+    // The 'm' flag is critical: it allows '^' to match the start of any line,
+    // not just the absolute start of the file.
+
+    // Matches "entity Name is" (Requires 'is' to avoid matching 'end entity Name')
+    static ref RE_ENTITY: Regex = Regex::new(r"(?im)^\s*entity\s+(\w+)\s+is").unwrap();
+
+    // Matches "package Name is"
+    static ref RE_PACKAGE: Regex = Regex::new(r"(?im)^\s*package\s+(\w+)\s+is").unwrap();
+
+    // Matches "architecture Name of Entity is"
+    // Capture group 1: Arch Name, Capture group 2: Entity Name
+    static ref RE_ARCH: Regex = Regex::new(r"(?im)^\s*architecture\s+(\w+)\s+of\s+(\w+)\s+is").unwrap();
+
+    // Matches "component Name is" (Needed for instantiation lookups)
+    static ref RE_COMPONENT: Regex = Regex::new(r"(?im)^\s*component\s+(\w+)").unwrap();
+
+    // 2. Types & Constants (Critical for Global Linking)
+    // Matches "type Name is" or "subtype Name is"
+    static ref RE_TYPE: Regex = Regex::new(r"(?im)^\s*(?:type|subtype)\s+(\w+)").unwrap();
+
+    // Matches "constant Name : Type"
+    static ref RE_CONSTANT: Regex = Regex::new(r"(?im)^\s*constant\s+(\w+)").unwrap();
+
+    // Matches "function Name" or "procedure Name" (for global package functions)
+    static ref RE_SUBPROGRAM: Regex = Regex::new(r"(?im)^\s*(?:function|procedure)\s+(\w+)").unwrap();
 }
 
+/// Helper to convert a byte offset into a rough LSP `Range`.
+///
+/// # Limitations
+/// This function counts newlines to find the line number, which is O(N) for the start of the file.
+/// It creates a zero-width range at the start of the identifier line.
+///
+/// # Arguments
+/// * `text` - The full source code string.
+/// * `start_byte` - The byte index where the regex match starts.
 fn byte_to_range(text: &str, start_byte: usize) -> Range {
     let line = text[..start_byte].bytes().filter(|&b| b == b'\n').count() as u32;
     Range {
@@ -22,6 +50,22 @@ fn byte_to_range(text: &str, start_byte: usize) -> Range {
     }
 }
 
+/// Scans a VHDL file using Regular Expressions to find top-level symbols.
+///
+/// This is the "Fast Lane" of the LSP. It ignores the VHDL grammar structure and simply
+/// greps for keywords like `entity`, `package`, `type`.
+///
+/// # Why Regex?
+/// * **Speed:** Can scan 3,000 files in ~100ms. Tree-sitter would take ~60s.
+/// * **Concurrency:** Regex is pure Rust and thread-safe. Tree-sitter C-bindings require a Global Mutex.
+///
+/// # Trade-offs
+/// * **Accuracy:** Can be fooled by comments (e.g. `-- entity Foo is`).
+/// * **Depth:** Cannot find nested signals/variables. Returns shallow symbols with empty `children`.
+///
+/// # Returns
+/// A vector of `Symbol` structs. These symbols are marked as "Shallow" (empty children)
+/// and will be upgraded to "Deep" symbols by the JIT parser when the file is opened.
 pub fn scan_fast(text: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
     let mut add_sym = |re: &Regex, kind: OxideSymbolKind, detail: &str| {

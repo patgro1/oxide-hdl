@@ -1,6 +1,8 @@
+// src/backend/workspace.rs
+
 use crate::analysis::Analysis;
+use crate::backend::AnalysisMap;
 use crate::backend::syntax::{parser, scanner};
-use crate::backend::{AnalysisMap, Backend};
 use crate::config::OxideConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +12,25 @@ use tower_lsp::Client;
 use tower_lsp::lsp_types::{MessageType, Url};
 use walkdir::WalkDir;
 
+/// Scans the entire workspace using a fast, multi-threaded Regex scanner.
+///
+/// # The Hybrid Architecture (Phase 1)
+/// This function represents the "Cold Start" phase of indexing. Instead of running the heavy
+/// Tree-sitter parser on every file (which would take ~60s and require a global mutex),
+/// this function uses **Regex** to find top-level symbols (Entities, Packages) in milliseconds.
+///
+/// * **Speed:** ~100ms for 3,000 files.
+/// * **Concurrency:** 16 Threads (Safe because Regex is pure Rust).
+/// * **Safety:** It implements **Overwrite Protection**. If a file is already open
+///   in the editor (and thus has a deep Tree-sitter parse), this scanner skips it
+///   to avoid overwriting rich data with shallow data.
+///
+/// # Arguments
+///
+/// * `client` - The LSP client handle for logging progress.
+/// * `analysis_map` - The global symbol table to populate.
+/// * `root_uri` - The workspace root directory.
+/// * `config` - Configuration for file extensions and ignore patterns.
 pub async fn index_workspace(
     client: Client,
     analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
@@ -108,6 +129,24 @@ pub async fn index_workspace(
         .await;
 }
 
+/// Parses a single document using the full Tree-sitter grammar and updates the global map.
+///
+/// # The Deep Parse (Phase 2)
+/// This function is called when a file is opened or edited. It performs a full, recursive
+/// AST walk to extract detailed structure (Ports, Signals, Nested Processes).
+///
+/// # Concurrency Strategy
+/// * Uses `spawn_blocking` to offload CPU-intensive work.
+/// * Acquires a **Global Mutex** on the `tree_sitter::Parser` because the underlying
+///   C-library is not thread-safe.
+/// * Uses a 128MB stack to handle deep recursion in complex VHDL files.
+///
+/// # Arguments
+///
+/// * `analysis_map` - The global symbol table to update with the new data.
+/// * `parser` - The shared, mutex-protected Tree-sitter parser instance.
+/// * `uri` - The URI of the file being parsed.
+/// * `text` - The full content of the file as an owned String.
 pub async fn parse_and_update_document(
     analysis_map: Arc<RwLock<AnalysisMap>>,
     parser: Arc<Mutex<crate::backend::Parser>>,
@@ -153,76 +192,102 @@ pub async fn parse_and_update_document(
     .unwrap();
 }
 
-impl Backend {
-    pub async fn ensure_fully_parsed(&self, uri: &Url) {
-        // Check if the file was shallow index or fully parsed
-        let needs_parsing = {
-            let map = self.analysis_map.read().await;
-            if let Some(analysis) = map.get(uri) {
-                // NOTE: They heuristic used to decide on the shallow parse is that
-                // no symbol has any children
-                analysis.symbols.values().all(|s| s.children.is_empty())
-            } else {
-                true
-            }
-        };
-
-        if !needs_parsing {
-            return;
+/// Checks if a file has only been Shallow-Indexed and performs a JIT upgrade if needed.
+///
+/// # Just-In-Time (JIT) Parsing
+/// When `index_workspace` runs, it only captures top-level names using Regex. It does not
+/// capture Ports, Generics, or Function Signatures to save time (~100ms startup).
+///
+/// When a user hovers over a symbol defined in another file (e.g., `u_tx : uart_tx`),
+/// the LSP checks that target file. If it finds it is "Shallow" (symbols have no children),
+/// it calls this function to parse it *immediately* using Tree-sitter to retrieve the
+/// rich interface details.
+///
+/// # Concurrency & Safety
+/// * **Blocking:** Spawns a `tokio::task::spawn_blocking` thread to handle the CPU-heavy parsing.
+/// * **Locking:** Acquires the Global Parser Mutex to prevent C-Library race conditions.
+/// * **Integrity:** Includes a "Do No Harm" check—if the JIT parse returns 0 symbols (failure),
+///   it aborts the update to prevent overwriting the valid Regex index with empty data.
+///
+/// # Arguments
+///
+/// * `client` - The LSP client handle used to log progress and errors.
+/// * `analysis_map` - The global symbol table to check and update.
+/// * `parser` - The shared, mutex-protected Tree-sitter parser instance.
+/// * `uri` - The URI of the file that needs to be checked and potentially upgraded.
+pub async fn ensure_fully_parsed(
+    client: &Client,
+    analysis_map: &Arc<RwLock<AnalysisMap>>,
+    parser: &Arc<Mutex<crate::backend::Parser>>,
+    uri: &Url,
+) {
+    // Check if the file was shallow index or fully parsed
+    let needs_parsing = {
+        let map = analysis_map.read().await;
+        if let Some(analysis) = map.get(uri) {
+            // NOTE: They heuristic used to decide on the shallow parse is that
+            // no symbol has any children
+            analysis.symbols.values().all(|s| s.children.is_empty())
+        } else {
+            true
         }
+    };
 
-        // Now we force a parse on the current file
+    if !needs_parsing {
+        return;
+    }
 
-        let path = match uri.to_file_path() {
+    // Now we force a parse on the current file
+
+    let path = match uri.to_file_path() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    let parser_arc = parser.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(_) => return,
+            Err(_) => return None,
         };
 
-        let parser_arc = self.parser.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let text = match std::fs::read_to_string(&path) {
-                Ok(t) => t,
-                Err(_) => return None,
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let tree = {
+                let mut parser = parser_arc.blocking_lock();
+                let language = unsafe { crate::tree_sitter_vhdl() };
+                let _ = parser.set_language(&language);
+                parser.parse(&text, None)
             };
-
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let tree = {
-                    let mut parser = parser_arc.blocking_lock();
-                    let language = unsafe { crate::tree_sitter_vhdl() };
-                    let _ = parser.set_language(&language);
-                    parser.parse(&text, None)
-                };
-                tree.map(|t| parser::extract_document_symbols(&text, t.root_node()))
-            }))
-            .unwrap_or(None)
-        })
-        .await
-        .unwrap();
-        if let Some(analysis) = result {
-            if analysis.symbols.is_empty() {
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!(
-                            "JIT Parse returned 0 symbols for {}. Keeping existing index",
-                            uri
-                        ),
-                    )
-                    .await;
-                return;
-            }
-            self.client
+            tree.map(|t| parser::extract_document_symbols(&text, t.root_node()))
+        }))
+        .unwrap_or(None)
+    })
+    .await
+    .unwrap();
+    if let Some(analysis) = result {
+        if analysis.symbols.is_empty() {
+            client
                 .log_message(
-                    MessageType::INFO,
+                    MessageType::WARNING,
                     format!(
-                        "JIT Parse returned {} symbols for {}. Updating index.",
-                        analysis.symbols.len(),
+                        "JIT Parse returned 0 symbols for {}. Keeping existing index",
                         uri
                     ),
                 )
                 .await;
-            let mut map = self.analysis_map.write().await;
-            map.insert(uri.clone(), analysis);
+            return;
         }
+        client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "JIT Parse returned {} symbols for {}. Updating index.",
+                    analysis.symbols.len(),
+                    uri
+                ),
+            )
+            .await;
+        let mut map = analysis_map.write().await;
+        map.insert(uri.clone(), analysis);
     }
 }

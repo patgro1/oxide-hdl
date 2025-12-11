@@ -5,12 +5,38 @@ use crate::{
     backend::AnalysisMap,
 };
 
+/// Represents the result of a hover lookup operation.
+///
+/// This struct acts as a bridge between the initial lookup (which might be based on a shallow
+/// Regex scan) and the final display (which requires a deep Tree-sitter parse).
+///
+/// It carries the symbol found, and crucially, the location (`definition_uri`) where the
+/// rich definition resides, allowing the backend to trigger a JIT parse if needed.
 pub struct HoverResolution {
     pub symbol: Symbol,
     pub definition_uri: Option<Url>,
     pub target_definition_key: Option<String>,
 }
 
+/// Formats a basic hover tooltip for generic symbols (Signals, Variables, etc.).
+///
+/// Displays the name, kind, and type detail in a simple Markdown block.
+///
+/// # Arguments
+///
+/// * `sym` - The symbol to format.
+///
+/// # Returns
+///
+/// A `String` containing the Markdown formatted hover text.
+///
+/// # Example Output
+/// ```markdown
+/// **clk**
+///
+/// ```vhdl
+/// port : in std_logic
+/// ```
 pub fn format_basic(sym: &Symbol) -> String {
     let type_info = sym.detail.as_deref().unwrap_or("void");
     format!(
@@ -19,6 +45,19 @@ pub fn format_basic(sym: &Symbol) -> String {
     )
 }
 
+/// Formats a rich hover tooltip for Component Instantiations.
+///
+/// Reconstructs the `entity` interface (Generics and Ports) from the definition symbol
+/// to show the user exactly what they are instantiating.
+///
+/// # Arguments
+///
+/// * `instance_name` - The label of the instantiation (e.g., "u_uart").
+/// * `definition` - The `Entity` or `Component` symbol that defines the interface.
+///
+/// # Returns
+///
+/// A `String` containing the Markdown formatted VHDL interface.
 pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> String {
     let mut md = String::new();
     // Title: "inst_ent (Instaance of entity)"
@@ -66,6 +105,18 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
     md
 }
 
+/// Formats a rich hover tooltip for Function or Procedure calls.
+///
+/// Reconstructs the function signature (parameters and return type) from the
+/// definition symbol's children and details.
+///
+/// # Arguments
+///
+/// * `sym` - The Function/Procedure symbol containing parameters as children.
+///
+/// # Returns
+///
+/// A `String` containing the Markdown formatted VHDL function signature.
 pub fn format_function_hover(sym: &Symbol) -> String {
     let mut md = String::new();
     // Header
@@ -99,6 +150,25 @@ pub fn format_function_hover(sym: &Symbol) -> String {
     md
 }
 
+/// Resolves the symbol under the cursor to one or more candidate definitions.
+///
+/// This function performs the core "Lookup Logic" for hover requests:
+/// 1. **Local Search:** Checks the current file first (shadowing global symbols).
+///    If found locally, it returns immediately (Winner Takes All).
+/// 2. **Global Search:** If not found locally, it scans the entire workspace index.
+///    This handles overloads (multiple functions with same name) and split packages
+///    (finding functions inside package bodies or headers).
+///
+/// # Arguments
+///
+/// * `target` - The identifier string to look up (e.g. "clk", "uart_tx").
+/// * `current_uri` - The URI of the file where the cursor is located.
+/// * `map` - The global `AnalysisMap` containing all indexed files.
+///
+/// # Returns
+///
+/// A `Vec<HoverResolution>`. A vector is returned to support cases like function
+/// overloading where multiple valid definitions might exist globally.
 pub fn resolve_rich_hover(
     target: &str,
     current_uri: &Url,
@@ -154,7 +224,7 @@ pub fn resolve_rich_hover(
         // Nested match
         for root_sym in f_analysis.symbols.values() {
             if root_sym.kind == OxideSymbolKind::Package
-                && let Some(child) = root_sym.find_recursive(&lower_target)
+                && let Some(child) = root_sym.find_child(&lower_target)
             {
                 results.push(HoverResolution {
                     symbol: child.clone(),

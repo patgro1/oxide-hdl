@@ -25,6 +25,16 @@ use tower_lsp::{Client, LanguageServer};
 
 pub type AnalysisMap = HashMap<Url, Analysis>;
 
+/// The main language server controller.
+///
+/// This struct holds the shared state of the server, including the document cache,
+/// the symbol table (`analysis_map`), and the configuration. It implements the
+/// `tower_lsp::LanguageServer` trait to handle incoming JSON-RPC requests.
+///
+/// # Thread Safety
+/// * `parser`: Protected by a `Mutex` because the underlying C-library is not thread-safe.
+/// * `analysis_map`: Protected by an `RwLock` to allow massive concurrent reads (e.g. 16 regex threads)
+///   while ensuring safe writes during parsing.
 pub struct Backend {
     client: Client,
     config: Arc<RwLock<Option<OxideConfig>>>,
@@ -44,6 +54,25 @@ pub fn dump_symbol_recursive(sym: &Symbol, depth: usize, output: &mut String) {
     }
 }
 
+/// Recursively converts an internal [`Symbol`] to an LSP [`DocumentSymbol`].
+///
+/// This helper is used by the `document_symbol` handler to generate the data structure
+/// required for the **Outline View** and **Breadcrumbs**.
+///
+/// # Behavior
+/// * **Recursion:** It traverses the `children` vector of the symbol and converts them
+///   depth-first.
+/// * **Sorting:** It sorts children by their start position (`range.start`). This ensures
+///   that the Outline View lists items in the order they appear in the file, which is
+///   critical for readability in VHDL (e.g., ports appearing in order).
+///
+/// # Arguments
+///
+/// * `sym` - The internal symbol struct produced by the parser or scanner.
+///
+/// # Returns
+///
+/// A `DocumentSymbol` struct compliant with the Language Server Protocol.
 pub fn to_document_symbol(sym: &crate::analysis::Symbol) -> DocumentSymbol {
     #[allow(deprecated)]
     DocumentSymbol {
@@ -66,6 +95,11 @@ pub fn to_document_symbol(sym: &crate::analysis::Symbol) -> DocumentSymbol {
 }
 
 impl Backend {
+    /// Creates a new instance of the Backend.
+    ///
+    /// # Arguments
+    /// * `client` - The handle to the LSP client.
+    /// * `parser` - An initialized Tree-sitter parser with the VHDL language set.
     pub fn new(client: Client, parser: Parser) -> Self {
         Backend {
             client,
@@ -88,6 +122,14 @@ impl Backend {
         output
     }
 
+    /// Orchestrates the full parsing of a document when it is opened or changed.
+    ///
+    /// This function delegates the heavy lifting to the workspace module to ensure
+    /// proper threading and stack management.
+    ///
+    /// # Arguments
+    /// * `uri` - The URI of the document being updated.
+    /// * `text` - The full text content of the document.
     async fn on_change(&self, uri: Url, text: String) {
         workspace::parse_and_update_document(
             self.analysis_map.clone(),
@@ -98,6 +140,13 @@ impl Backend {
         .await;
     }
 
+    /// Helper to construct a consistent `Hover` response object.
+    ///
+    /// # Arguments
+    /// * `text` - The Markdown string content to display.
+    ///
+    /// # Returns
+    /// A `tower_lsp::lsp_types::Hover` object containing the markdown content.
     fn markup(&self, text: String) -> tower_lsp::lsp_types::Hover {
         tower_lsp::lsp_types::Hover {
             contents: tower_lsp::lsp_types::HoverContents::Markup(
@@ -230,6 +279,19 @@ impl LanguageServer for Backend {
         }
     }
 
+    /// Handles the "Go to Definition" request.
+    ///
+    /// # Logic
+    /// 1. Identifies the word under the cursor using `get_word_at_pos`.
+    /// 2. Delegates the lookup strategy to `features::goto::lookup_definition`.
+    /// 3. Returns a list of `Location` candidates (supporting overloads/multiple matches).
+    ///
+    /// # Arguments
+    /// * `params` - Contains the cursor position and text document URI.
+    ///
+    /// # Returns
+    /// * `Ok(Some(Array))` - A list of locations where the symbol is defined.
+    /// * `Ok(None)` - If no definition is found.
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -260,6 +322,21 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
+    /// Handles the "Hover" request to show documentation/type info.
+    ///
+    /// # Logic
+    /// 1. Identifies the word under the cursor.
+    /// 2. Resolves candidates using `features::hover::resolve_rich_hover`.
+    /// 3. **JIT Parsing:** If a candidate points to a file that is only "Shallowly" indexed
+    ///    (Regex scan), it triggers `workspace::ensure_fully_parsed` to parse it immediately.
+    /// 4. Re-fetches the rich data and formats it using `features::hover` formatters.
+    ///
+    /// # Arguments
+    /// * `params` - Contains the cursor position and text document URI.
+    ///
+    /// # Returns
+    /// * `Ok(Some(Hover))` - The markdown formatted documentation.
+    /// * `Ok(None)` - If no symbol or documentation is found.
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
@@ -285,7 +362,13 @@ impl LanguageServer for Backend {
             for resolution in candidates {
                 // JIT parse if we have a separate def uri
                 if let Some(def_uri) = resolution.definition_uri {
-                    self.ensure_fully_parsed(&def_uri).await;
+                    workspace::ensure_fully_parsed(
+                        &self.client,
+                        &self.analysis_map,
+                        &self.parser,
+                        &def_uri,
+                    )
+                    .await;
 
                     // Fetch data and render
                     let map = self.analysis_map.read().await;
@@ -316,6 +399,18 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
+    /// Handles the "Document Symbols" request (Outline View / Breadcrumbs).
+    ///
+    /// Returns the hierarchical symbol tree for the current file, converted into
+    /// LSP `DocumentSymbol` types. This relies on the Deep Parse having run successfully
+    /// during `did_open` or `did_change`.
+    ///
+    /// # Arguments
+    /// * `params` - Contains the text document URI.
+    ///
+    /// # Returns
+    /// * `Ok(Some(Nested))` - A tree of document symbols.
+    /// * `Ok(None)` - If the file has not been parsed or has no symbols.
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
