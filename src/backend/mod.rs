@@ -1,27 +1,19 @@
-pub mod parser;
-pub mod scanner;
+pub mod features;
+pub mod syntax;
+pub mod workspace;
 
 use crate::config::OxideConfig;
+use features::hover;
+use syntax::utils::get_word_at_pos;
 
-use crate::analysis::{Analysis, Symbol};
+use crate::analysis::{Analysis, OxideSymbolKind, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
-use walkdir::WalkDir;
 
-pub struct Backend {
-    client: Client,
-    config: Arc<RwLock<Option<OxideConfig>>>,
-    document_map: Arc<RwLock<HashMap<Url, Rope>>>,
-    parser: Arc<Mutex<Parser>>,
-    analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
-    root_uri: Arc<RwLock<Option<Url>>>,
-    // shallow_query: Arc<Query>,
-}
 use tower_lsp::lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
@@ -30,6 +22,17 @@ use tower_lsp::lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
+
+pub type AnalysisMap = HashMap<Url, Analysis>;
+
+pub struct Backend {
+    client: Client,
+    config: Arc<RwLock<Option<OxideConfig>>>,
+    document_map: Arc<RwLock<HashMap<Url, Rope>>>,
+    parser: Arc<Mutex<Parser>>,
+    analysis_map: Arc<RwLock<AnalysisMap>>,
+    root_uri: Arc<RwLock<Option<Url>>>,
+}
 
 // Debugger helper function
 #[allow(dead_code)]
@@ -85,325 +88,18 @@ impl Backend {
         output
     }
 
-    fn get_word_at_pos(&self, rope: &Rope, position: Position) -> Option<String> {
-        let line_idx = rope.try_line_to_char(position.line as usize).ok()?;
-        let char_idx = line_idx + position.character as usize;
-
-        if char_idx >= rope.len_chars() {
-            return None;
-        }
-
-        // Find the start of the word
-        let mut start = char_idx;
-        while start > 0 {
-            let c = rope.char(start - 1);
-            if !c.is_alphanumeric() && c != '_' {
-                break;
-            }
-            start -= 1;
-        }
-
-        let mut end = char_idx;
-        while end < rope.len_chars() {
-            let c = rope.char(end);
-            if !c.is_alphanumeric() && c != '_' {
-                break;
-            }
-            end += 1;
-        }
-
-        if start < end {
-            Some(rope.slice(start..end).to_string())
-        } else {
-            None
-        }
-    }
-
-    fn format_instantiation_hover(&self, instance_name: &str, definition: &Symbol) -> String {
-        use crate::analysis::OxideSymbolKind;
-
-        let mut md = String::new();
-        // Title: "inst_ent (Instaance of entity)"
-        md.push_str(&format!(
-            "**{}** (Instance of `{}`)\n\n",
-            instance_name, definition.name
-        ));
-        md.push_str("```vhdl\n");
-        // Pseudo header "entity ent is"
-        md.push_str(&format!("entity {} is\n", definition.name));
-
-        // Generics
-        let generics: Vec<&Symbol> = definition
-            .children
-            .iter()
-            .filter(|c| c.kind == OxideSymbolKind::Generic || c.kind == OxideSymbolKind::Constant)
-            .collect();
-        if !generics.is_empty() {
-            md.push_str("generics (\n");
-            for (i, g) in generics.iter().enumerate() {
-                let type_info = g.detail.as_deref().unwrap_or("?");
-                let sep = if i < generics.len() - 1 { ";" } else { "" };
-                md.push_str(&format!("    {} : {}{}\n", g.name, type_info, sep));
-            }
-            md.push_str(");\n");
-        }
-        // Ports
-        let ports: Vec<&Symbol> = definition
-            .children
-            .iter()
-            .filter(|c| c.kind == OxideSymbolKind::Port)
-            .collect();
-        if !ports.is_empty() {
-            md.push_str("ports (\n");
-            for (i, p) in ports.iter().enumerate() {
-                let type_info = p.detail.as_deref().unwrap_or("?");
-                let sep = if i < generics.len() - 1 { ";" } else { "" };
-                md.push_str(&format!("    {} : {}{}\n", p.name, type_info, sep));
-            }
-            md.push_str(");\n");
-        }
-
-        md.push_str("end entity;\n");
-        md.push_str("\n```");
-        md
-    }
-
-    fn format_function_hover(&self, sym: &Symbol) -> String {
-        use crate::analysis::OxideSymbolKind;
-        let mut md = String::new();
-        // Header
-        md.push_str(&format!("**{}** (Function)\n\n", sym.name));
-        md.push_str("```vhdl\n");
-        let params: Vec<&Symbol> = sym
-            .children
-            .iter()
-            .filter(|c| c.kind == OxideSymbolKind::Port)
-            .collect();
-
-        // params
-        if !params.is_empty() {
-            md.push_str(" (\n");
-            for (i, p) in params.iter().enumerate() {
-                let type_info = p.detail.as_deref().unwrap_or("?");
-                let sep = if i < params.len() - 1 { ";" } else { "" };
-                md.push_str(&format!("    {} : {}{}\n", p.name, type_info, sep));
-            }
-            md.push_str(")\n");
-        }
-
-        // return type
-        if let Some(ret_type) = &sym.detail {
-            md.push_str(&format!("\nreturn: {};\n", ret_type));
-        } else {
-            md.push(';');
-        }
-
-        md.push_str("\n```");
-        md
-    }
-
     async fn on_change(&self, uri: Url, text: String) {
-        let analysis_map = self.analysis_map.clone();
-        let uri_clone = uri.clone();
-        let parser_arc = self.parser.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
-            let thread_result = builder
-                .spawn(move || {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let tree = {
-                            let mut parser = parser_arc.blocking_lock();
-                            let language = unsafe { crate::tree_sitter_vhdl() };
-                            let _ = parser.set_language(&language);
-                            parser.parse(&text, None)
-                        };
-                        match tree {
-                            Some(t) => {
-                                let analysis =
-                                    parser::extract_document_symbols(&text, t.root_node());
-
-                                // TODO: Add diagnostics
-                                let diagnostics: Vec<u8> = vec![];
-
-                                Some(Box::new((analysis, diagnostics)))
-                            }
-                            None => None,
-                        }
-                    }))
-                })
-                .unwrap()
-                .join();
-            if let Ok(Ok(Some(boxed_result))) = thread_result {
-                let (analysis, _) = *boxed_result;
-                tokio::spawn(async move {
-                    let mut map = analysis_map.write().await;
-                    map.insert(uri_clone, analysis);
-
-                    //client.publish_diagnostics(uri, diags, version)
-                });
-            }
-        })
-        .await
-        .unwrap();
+        workspace::parse_and_update_document(
+            self.analysis_map.clone(),
+            self.parser.clone(),
+            &uri,
+            text,
+        )
+        .await;
     }
 
-    pub async fn index_workspace(
-        client: Client,
-        analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
-        root_uri: Url,
-        config: OxideConfig,
-    ) {
-        let root_path = match root_uri.to_file_path() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-
-        let start = Instant::now();
-        client
-            .log_message(MessageType::INFO, "Starting indexing...")
-            .await;
-
-        let max_concurrency = 16;
-        let semaphone = Arc::new(Semaphore::new(max_concurrency));
-        let matcher = config.build_globset();
-
-        let paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                // Filter 1 : extension
-                if let Some(ext) = e.path().extension() {
-                    let ext_str = ext.to_string_lossy().to_string();
-                    if !config.extensions.contains(&ext_str) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-
-                // Filter 2: Ignore list
-                if let Ok(relative) = e.path().strip_prefix(&root_path)
-                    && matcher.is_match(relative)
-                {
-                    return false;
-                }
-
-                true
-            })
-            .map(|e| e.path().to_path_buf())
-            .collect();
-        let mut handles = Vec::new();
-
-        for path in paths {
-            let path_uri = match Url::from_file_path(&path) {
-                Ok(u) => u,
-                Err(_) => continue,
-            };
-            let sem_clone = semaphone.clone();
-            let handle = tokio::task::spawn(async move {
-                let _permit = sem_clone.acquire_owned().await.unwrap();
-                tokio::task::spawn_blocking(move || {
-                    let text = std::fs::read_to_string(&path).unwrap_or_default();
-                    let symbols = scanner::scan_fast(&text);
-                    let mut analysis = Analysis::new();
-                    for s in symbols {
-                        analysis.symbols.insert(s.name.clone().to_lowercase(), s);
-                    }
-                    (path_uri, analysis)
-                })
-                .await
-                .unwrap()
-            });
-            handles.push(handle);
-        }
-        for handle in handles {
-            if let Ok((uri, analysis)) = handle.await {
-                let mut map = analysis_map.write().await;
-                // NOTE:We need to check if better data is available to prevent
-                // a race condition where we open a file, it gets parse and then
-                // the fast indexer reaches that file and overwrite good data
-                // with shallow data.
-                if let Some(exisiting_analysis) = map.get(&uri) {
-                    let existing_is_deep = exisiting_analysis
-                        .symbols
-                        .values()
-                        .any(|s| !s.children.is_empty());
-                    if existing_is_deep {
-                        continue;
-                    }
-                }
-                map.insert(uri, analysis);
-            }
-        }
-        let duration = start.elapsed();
-        client
-            .log_message(
-                MessageType::INFO,
-                format!("Inxedx workspace in {:?}", duration),
-            )
-            .await;
-    }
-
-    async fn ensure_fully_parsed(&self, uri: &Url) {
-        // Check if the file was shallow index or fully parsed
-        let needs_parsing = {
-            let map = self.analysis_map.read().await;
-            if let Some(analysis) = map.get(uri) {
-                // NOTE: They heuristic used to decide on the shallow parse is that
-                // no symbol has any children
-                analysis.symbols.values().all(|s| s.children.is_empty())
-            } else {
-                true
-            }
-        };
-
-        if !needs_parsing {
-            return;
-        }
-
-        // Now we force a parse on the current file
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!(" JIT Parsing (Rich Hover): {}", uri),
-            )
-            .await;
-
-        let path = match uri.to_file_path() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-
-        let parser_arc = self.parser.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let text = match std::fs::read_to_string(&path) {
-                Ok(t) => t,
-                Err(_) => return None,
-            };
-
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let tree = {
-                    let mut parser = parser_arc.blocking_lock();
-                    let language = unsafe { crate::tree_sitter_vhdl() };
-                    let _ = parser.set_language(&language);
-                    parser.parse(&text, None)
-                };
-                tree.map(|t| parser::extract_document_symbols(&text, t.root_node()))
-            }))
-            .unwrap_or(None)
-        })
-        .await
-        .unwrap();
-        if let Some(analysis) = result {
-            let mut map = self.analysis_map.write().await;
-            map.insert(uri.clone(), analysis);
-        }
-    }
-
-    fn markup(&self, text: String) -> Result<Option<tower_lsp::lsp_types::Hover>> {
-        Ok(Some(tower_lsp::lsp_types::Hover {
+    fn markup(&self, text: String) -> tower_lsp::lsp_types::Hover {
+        tower_lsp::lsp_types::Hover {
             contents: tower_lsp::lsp_types::HoverContents::Markup(
                 tower_lsp::lsp_types::MarkupContent {
                     kind: tower_lsp::lsp_types::MarkupKind::Markdown,
@@ -411,7 +107,7 @@ impl Backend {
                 },
             ),
             range: None,
-        }))
+        }
     }
 }
 
@@ -482,7 +178,7 @@ impl LanguageServer for Backend {
                 let mut w = self.config.write().await;
                 *w = Some(config.clone());
             }
-            tokio::spawn(async move { Backend::index_workspace(client, map, uri, config).await });
+            tokio::spawn(async move { workspace::index_workspace(client, map, uri, config).await });
         }
     }
 
@@ -550,36 +246,14 @@ impl LanguageServer for Backend {
             }
         };
 
-        if let Some(word) = self.get_word_at_pos(&rope, position) {
-            let target = word.to_lowercase();
-            self.client
-                .log_message(MessageType::INFO, format!("Looking for: '{}'", target))
-                .await;
-
+        if let Some(word) = get_word_at_pos(&rope, position) {
             let map = self.analysis_map.read().await;
-            if let Some(analysis) = map.get(&uri)
-                && let Some(sym) = analysis.find_symbol(&target)
-            {
-                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range: sym.range,
-                })));
-            }
-            for (file_uri, analysis) in map.iter() {
-                if let Some(symbol) = analysis.symbols.get(&target) {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: file_uri.clone(),
-                        range: symbol.range,
-                    })));
-                }
-            }
-            // Print the first 10 keys in the database to see what IS there
-            let mut all_keys: Vec<String> = Vec::new();
-            for analysis in map.values() {
-                all_keys.extend(analysis.symbols.keys().take(3).cloned());
-                if all_keys.len() > 20 {
-                    break;
-                }
+            self.client
+                .log_message(MessageType::INFO, format!("Looking for: '{}'", word))
+                .await;
+            let locations = features::goto::lookup_definition(&word, &uri, &map);
+            if !locations.is_empty() {
+                return Ok(Some(GotoDefinitionResponse::Array(locations)));
             }
         }
 
@@ -598,100 +272,45 @@ impl LanguageServer for Backend {
             }
         };
 
-        if let Some(word) = self.get_word_at_pos(&rope, position) {
+        if let Some(word) = get_word_at_pos(&rope, position) {
             let target = word.to_lowercase();
 
-            let mut found_symbol: Option<Symbol> = None;
-            let mut found_uri: Option<Url> = None;
+            let candidates = {
+                let map = self.analysis_map.read().await;
+                hover::resolve_rich_hover(&target, &uri, &map)
+            };
 
-            let map_guard = self.analysis_map.read().await;
-            // Local indexing
-            if let Some(analysis) = map_guard.get(&uri)
-                && let Some(sym) = analysis.find_symbol(&target)
-            {
-                found_symbol = Some(sym.clone());
-                found_uri = Some(uri.clone());
-            }
-            // Global indexing
-            if found_symbol.is_none() {
-                for (f_uri, analysis) in map_guard.iter() {
-                    if let Some(sym) = analysis.symbols.get(&target) {
-                        found_symbol = Some(sym.clone());
-                        found_uri = Some(f_uri.clone());
-                        break;
-                    }
-                }
-            }
-            drop(map_guard);
+            let mut fallback_markdown: Option<String> = None;
 
-            if let Some(sym) = found_symbol {
-                // Hovering the instance name
-                if sym.kind == crate::analysis::OxideSymbolKind::ComponentInstantiation
-                    && let Some(target_name) = &sym.detail
-                {
-                    let def_key = target_name.to_lowercase();
-
-                    // Find definition location
-                    let mut def_uri: Option<Url> = None;
-                    {
-                        let map = self.analysis_map.read().await;
-                        for (f_uri, f_analysis) in map.iter() {
-                            if f_analysis.symbols.contains_key(&def_key) {
-                                def_uri = Some(f_uri.clone());
-                                break;
-                            }
-                        }
-                    }
-                    // Validate if we already have fully parsed the file,
-                    // if not do it (JIT parsing)
-                    if let Some(d_uri) = def_uri {
-                        self.ensure_fully_parsed(&d_uri).await;
-
-                        let map = self.analysis_map.read().await;
-                        if let Some(analysis) = map.get(&d_uri)
-                            && let Some(def_sym) = analysis.symbols.get(&def_key)
-                        {
-                            let hover_text = self.format_instantiation_hover(&sym.name, def_sym);
-                            return self.markup(hover_text);
-                        }
-                    }
-                }
-                // Hovering functions
-                if sym.kind == crate::analysis::OxideSymbolKind::Function
-                    && let Some(ref def_uri) = found_uri
-                {
-                    self.ensure_fully_parsed(def_uri).await;
-                    let map = self.analysis_map.read().await;
-                    if let Some(analysis) = map.get(def_uri)
-                        && let Some(deep_sym) = analysis.find_symbol(&sym.name)
-                    {
-                        let hover_text = self.format_function_hover(deep_sym);
-                        return self.markup(hover_text);
-                    }
-                }
-                // Hovering the instance entity
-                if (sym.kind == crate::analysis::OxideSymbolKind::Entity
-                    || sym.kind == crate::analysis::OxideSymbolKind::Component)
-                    && let Some(def_uri) = found_uri
-                {
+            for resolution in candidates {
+                // JIT parse if we have a separate def uri
+                if let Some(def_uri) = resolution.definition_uri {
                     self.ensure_fully_parsed(&def_uri).await;
 
+                    // Fetch data and render
                     let map = self.analysis_map.read().await;
-                    if let Some(analysis) = map.get(&def_uri) {
-                        let lookup_key = sym.name.to_lowercase();
-                        if let Some(rich_sym) = analysis.symbols.get(&lookup_key) {
-                            let hover_text =
-                                self.format_instantiation_hover(&rich_sym.name, rich_sym);
-                            return self.markup(hover_text);
+                    if let Some(analysis) = map.get(&def_uri)
+                        && let Some(deep_sym) = analysis.find_symbol(&target)
+                    {
+                        let is_rich = !deep_sym.children.is_empty() || deep_sym.detail.is_some();
+                        let markdown = if deep_sym.kind == OxideSymbolKind::Function {
+                            hover::format_function_hover(deep_sym)
+                        } else {
+                            hover::format_instantiation_hover(&resolution.symbol.name, deep_sym)
+                        };
+                        if is_rich {
+                            return Ok(Some(self.markup(markdown)));
+                        } else if fallback_markdown.is_none() {
+                            fallback_markdown = Some(markdown)
                         }
                     }
+                } else {
+                    let markdown = hover::format_basic(&resolution.symbol);
+                    return Ok(Some(self.markup(markdown)));
                 }
-                let type_info = sym.detail.as_deref().unwrap_or("");
-                let markdown = format!(
-                    "**{}**\n\n```vhdl\n{}  :  {}\n```",
-                    sym.name, sym.kind, type_info
-                );
-                return self.markup(markdown);
+            }
+            if let Some(md) = fallback_markdown {
+                return Ok(Some(self.markup(md)));
             }
         }
         Ok(None)

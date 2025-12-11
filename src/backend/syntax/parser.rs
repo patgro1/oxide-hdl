@@ -778,7 +778,7 @@ end A;
         );
     }
     #[test]
-    fn test_debug_complex_signal() {
+    fn test_15_debug_complex_signal() {
         // Valid VHDL wrapper so Tree-sitter is happy
         let src = r#"
 architecture DebugArch of Chip is
@@ -822,5 +822,29 @@ end DebugArch;
             );
             panic!("Parser failed to extract the complex signal.");
         }
+    }
+    #[test]
+    fn test_16_debug_package_children() {
+        let src = r#"
+package MyMath is
+    function log2_and_ceil(x: integer) return integer;
+    constant PI : real := 3.14;
+end MyMath;
+"#;
+        let (tree, _) = parse_text(src);
+        let analysis = extract_document_symbols(src, tree.root_node());
+
+        // 1. Find Package
+        let pkg = analysis.symbols.get("mymath").expect("Package not found");
+
+        // 2. Check Children count
+        println!("Package '{}' has {} children", pkg.name, pkg.children.len());
+        for c in &pkg.children {
+            println!(" - Child: {} ({:?})", c.name, c.kind);
+        }
+
+        // If this asserts 0, we found the bug.
+        assert!(pkg.children.len() > 0, "Package children were dropped!");
+        assert_eq!(pkg.children.len(), 2);
     }
 }
