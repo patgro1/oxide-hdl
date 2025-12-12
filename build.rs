@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 fn main() {
-    let dir: PathBuf = ["tree-sitter-vhdl", "src"].iter().collect();
+    let dir: PathBuf = ["headers", "tree-sitter-vhdl"].iter().collect();
 
     cc::Build::new()
         .include(&dir)
