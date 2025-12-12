@@ -15,11 +15,11 @@ use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
-    CompletionOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol,
-    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, Position, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -427,6 +427,18 @@ impl LanguageServer for Backend {
             return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
         }
         Ok(None)
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let map = self.analysis_map.read().await;
+
+        if let Some(analysis) = map.get(&uri) {
+            let items = features::completion::complete_local_scope(analysis);
+            return Ok(Some(CompletionResponse::Array(items)));
+        }
+
+        return Ok(None);
     }
 
     async fn shutdown(&self) -> Result<()> {
