@@ -1,5 +1,5 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position,
+    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Range,
 };
 use tree_sitter::{Node, Point};
 
@@ -97,7 +97,6 @@ pub fn get_completion_context(text: &str, root: Node, pos: Position) -> Completi
     // Walk the tree to find the scope
     let mut current = Some(node);
     while let Some(n) = current {
-        println!("{:?} ( {} )", n, n.kind());
         match n.kind() {
             "process_statement" => return CompletionContext::Process,
             "subprogram_body" => return CompletionContext::Process,
@@ -126,13 +125,21 @@ pub fn get_completion_context(text: &str, root: Node, pos: Position) -> Completi
 /// * `analysis` - The deep analysis of the current file.
 /// # Return
 /// Vector of completion items
-pub fn complete_local_scope(analysis: &Analysis) -> Vec<CompletionItem> {
+pub fn complete_local_scope(
+    analysis: &Analysis,
+    context: &CompletionContext,
+    position: Position,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
     // Iterate over all top-level symbols
     for sym in analysis.symbols.values() {
-        collect_symbols(sym, &mut items);
+        collect_symbols(sym, context, position, &mut items);
     }
+
+    // Clean up duplicates
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
 
     items
 }
@@ -141,16 +148,97 @@ pub fn complete_local_scope(analysis: &Analysis) -> Vec<CompletionItem> {
 /// # Arguments
 /// * `symbol` - The top level symbol we want to collect symbols from
 /// * `items` - Mutable reference to the a vector of completion items
-fn collect_symbols(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
+fn collect_symbols(
+    symbol: &Symbol,
+    context: &CompletionContext,
+    position: Position,
+    items: &mut Vec<CompletionItem>,
+) {
+    let is_strict_scope = match symbol.kind {
+        OxideSymbolKind::Architecture
+        | OxideSymbolKind::Block
+        | OxideSymbolKind::Generate
+        | OxideSymbolKind::Process => true,
+        _ => false,
+    };
+    // Check if the symbol is outside the container and stop to
+    // prevent poluting the suggestions with out-of-scope values.
+    if is_strict_scope && !range_contains(symbol.range, position) {
+        return;
+    }
     // Current symbol is a completion item
-    if let Some(item) = symbol_to_completion(symbol) {
+    // We usually do not suggest the container itself but we check visibility
+    if is_visible(symbol, context)
+        && !is_strict_scope // Dont suggest the arcvhitecture name itself...
+        && let Some(item) = symbol_to_completion(symbol)
+    {
         items.push(item);
     }
 
     // Recurse into children
     for child in &symbol.children {
-        collect_symbols(child, items);
+        collect_symbols(child, context, position, items);
     }
+}
+
+/// Helper function that gives the completion visibility of a symbol
+/// depending on the context of the completion.
+/// # Arguments
+/// * `symbol` - The symbol on which we are requesting visibility
+/// * `context` - The current completion context
+/// # Return
+/// True if the symbol should be visible in the completion
+fn is_visible(sym: &Symbol, context: &CompletionContext) -> bool {
+    match context {
+        CompletionContext::Architecture => match sym.kind {
+            OxideSymbolKind::Component => true,
+            OxideSymbolKind::Entity => true,
+            OxideSymbolKind::Package => true,
+            OxideSymbolKind::Constant => true,
+            OxideSymbolKind::Port => true,
+            OxideSymbolKind::Signal => true,
+            OxideSymbolKind::Variable => false,
+            _ => false,
+        },
+        CompletionContext::Process => match sym.kind {
+            OxideSymbolKind::Signal => true,
+            OxideSymbolKind::Variable => true,
+            OxideSymbolKind::Constant => true,
+            OxideSymbolKind::Port => true,
+            OxideSymbolKind::Component => false,
+            _ => false,
+        },
+        CompletionContext::PortMap => {
+            matches!(
+                sym.kind,
+                OxideSymbolKind::Signal | OxideSymbolKind::Constant | OxideSymbolKind::Port
+            )
+        }
+        _ => true,
+    }
+}
+
+/// Checks if a position is contained within a range
+/// # Arguments
+/// * `range` The range the position needs to be checked against
+/// * 'position` The position we want to check
+/// # Return
+/// True of the position is within the range
+fn range_contains(range: Range, position: Position) -> bool {
+    if position.line < range.start.line || position.line > range.end.line {
+        return false;
+    }
+
+    // edge case on start line
+    if position.line == range.start.line && position.character < range.start.character {
+        return false;
+    }
+
+    // edge case on end line
+    if position.character == range.end.line && position.character > range.end.character {
+        return false;
+    }
+    true
 }
 
 fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {

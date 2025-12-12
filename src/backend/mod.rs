@@ -431,10 +431,34 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
-        let map = self.analysis_map.read().await;
+        let position = params.text_document_position.position;
 
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        let context = {
+            let mut parser = self.parser.lock().await;
+            let lang = unsafe { crate::tree_sitter_vhdl() };
+            let _ = parser.set_language(&lang);
+
+            let text = rope.to_string();
+            let tree = parser.parse(&text, None).unwrap();
+
+            features::completion::get_completion_context(&text, tree.root_node(), position)
+        };
+
+        self.client
+            .log_message(MessageType::INFO, format!("Context: {:?}", context))
+            .await;
+
+        let map = self.analysis_map.read().await;
         if let Some(analysis) = map.get(&uri) {
-            let items = features::completion::complete_local_scope(analysis);
+            let items = features::completion::complete_local_scope(analysis, &context, position);
             return Ok(Some(CompletionResponse::Array(items)));
         }
 
