@@ -355,16 +355,13 @@ fn extract_details(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tree_sitter::Parser;
 
-    // 1. Global Lock for the Test Suite
-    // This forces tests to run the C-parsing part serially.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    use crate::backend::test_utils::SHARED_PARSER_LOCK;
 
     // Helper to parse string to tree
     fn parse_text(code: &str) -> (tree_sitter::Tree, Parser) {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
         let mut parser = Parser::new();
         let lang = unsafe { crate::tree_sitter_vhdl() };
         parser.set_language(&lang).unwrap();

@@ -445,3 +445,13 @@ impl LanguageServer for Backend {
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub mod test_utils {
+    use lazy_static::lazy_static;
+    use std::sync::Mutex;
+
+    lazy_static! {
+        pub static ref SHARED_PARSER_LOCK: Mutex<()> = Mutex::new(());
+    }
+}
