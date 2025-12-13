@@ -19,6 +19,16 @@ unsafe extern "C" {
     fn tree_sitter_vhdl() -> Language;
 }
 
+/// Represents the way the analysis was made
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseLevel {
+    /// Analysis obtained quickly via regex on high-level stuff  (entities, components, packages,
+    /// functions)
+    Shallow, // Regex based parseing
+    /// Deep tree-sitter analysis was made on the file
+    Deep, // Tree-sitter parsing
+}
+
 /// Represents the semantic kind of a VHDL symbol.
 ///
 /// This enum maps VHDL constructs (like Entity, Signal, Process) to an internal representation
@@ -134,6 +144,9 @@ pub struct Analysis {
     /// Using lowercase keys ensures case-insensitive lookup, while the `Symbol` struct
     /// preserves the original display name.
     pub symbols: HashMap<String, Symbol>,
+
+    /// How the file was parsed
+    pub parse_level: ParseLevel,
 }
 
 impl Symbol {
@@ -183,6 +196,7 @@ impl Analysis {
     pub fn new() -> Self {
         Self {
             symbols: HashMap::new(),
+            parse_level: ParseLevel::Shallow,
         }
     }
 

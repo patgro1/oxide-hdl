@@ -1,6 +1,6 @@
 // src/backend/workspace.rs
 
-use crate::analysis::Analysis;
+use crate::analysis::{Analysis, ParseLevel};
 use crate::backend::AnalysisMap;
 use crate::backend::syntax::{parser, scanner};
 use crate::config::OxideConfig;
@@ -225,9 +225,7 @@ pub async fn ensure_fully_parsed(
     let needs_parsing = {
         let map = analysis_map.read().await;
         if let Some(analysis) = map.get(uri) {
-            // NOTE: They heuristic used to decide on the shallow parse is that
-            // no symbol has any children
-            analysis.symbols.values().all(|s| s.children.is_empty())
+            analysis.parse_level == ParseLevel::Shallow
         } else {
             true
         }

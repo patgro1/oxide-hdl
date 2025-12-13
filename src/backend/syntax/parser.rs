@@ -1,6 +1,6 @@
 // src/backend/syntax/parser.rs
 
-use crate::analysis::{Analysis, OxideSymbolKind, Symbol};
+use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel, Symbol};
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::{Node, TreeCursor};
 
@@ -47,6 +47,7 @@ pub fn node_to_range(node: Node) -> Range {
 /// An `Analysis` struct containing a map of all top-level symbols found.
 pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     let mut analysis = Analysis::new();
+    analysis.parse_level = ParseLevel::Deep;
     let mut cursor = root_node.walk();
     let symbols = visit_node(&mut cursor, text);
 
