@@ -54,46 +54,6 @@ pub fn dump_symbol_recursive(sym: &Symbol, depth: usize, output: &mut String) {
     }
 }
 
-/// Recursively converts an internal [`Symbol`] to an LSP [`DocumentSymbol`].
-///
-/// This helper is used by the `document_symbol` handler to generate the data structure
-/// required for the **Outline View** and **Breadcrumbs**.
-///
-/// # Behavior
-/// * **Recursion:** It traverses the `children` vector of the symbol and converts them
-///   depth-first.
-/// * **Sorting:** It sorts children by their start position (`range.start`). This ensures
-///   that the Outline View lists items in the order they appear in the file, which is
-///   critical for readability in VHDL (e.g., ports appearing in order).
-///
-/// # Arguments
-///
-/// * `sym` - The internal symbol struct produced by the parser or scanner.
-///
-/// # Returns
-///
-/// A `DocumentSymbol` struct compliant with the Language Server Protocol.
-pub fn to_document_symbol(sym: &crate::analysis::Symbol) -> DocumentSymbol {
-    #[allow(deprecated)]
-    DocumentSymbol {
-        name: sym.name.clone(),
-        detail: sym.detail.clone(),
-        kind: sym.kind.into(),
-        tags: None,
-        deprecated: None,
-        range: sym.range,
-        selection_range: sym.range,
-        children: if sym.children.is_empty() {
-            None
-        } else {
-            let mut children_list: Vec<DocumentSymbol> =
-                sym.children.iter().map(to_document_symbol).collect();
-            children_list.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-            Some(children_list)
-        },
-    }
-}
-
 impl Backend {
     /// Creates a new instance of the Backend.
     ///
@@ -431,10 +391,7 @@ impl LanguageServer for Backend {
         let map = self.analysis_map.read().await;
 
         if let Some(analysis) = map.get(&uri) {
-            let mut symbols = Vec::new();
-            for sym in analysis.symbols.values() {
-                symbols.push(to_document_symbol(sym))
-            }
+            let mut symbols = features::symbol::collect_document_symbol(analysis);
             symbols.sort_by(|a, b| a.range.start.cmp(&b.range.start));
             return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
         }
