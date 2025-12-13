@@ -53,6 +53,8 @@ pub enum OxideSymbolKind {
     Function,
     /// An internal Signal or Variable.
     Signal,
+    /// Variable withing a process
+    Variable,
     /// Fallback for generic classes.
     Class,
 }
@@ -74,6 +76,7 @@ impl fmt::Display for OxideSymbolKind {
             OxideSymbolKind::Function => "function",
             OxideSymbolKind::Struct => "record",
             OxideSymbolKind::Signal => "signal",
+            OxideSymbolKind::Variable => "variable",
             OxideSymbolKind::Class => "class",
         };
         write!(f, "{}", s)
@@ -97,6 +100,7 @@ impl From<OxideSymbolKind> for SymbolKind {
             OxideSymbolKind::Function => SymbolKind::FUNCTION,
             OxideSymbolKind::Struct => SymbolKind::STRUCT,
             OxideSymbolKind::Signal => SymbolKind::VARIABLE,
+            OxideSymbolKind::Variable => SymbolKind::VARIABLE,
             OxideSymbolKind::Class => SymbolKind::CLASS,
         }
     }
