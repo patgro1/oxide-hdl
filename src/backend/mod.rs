@@ -1,3 +1,6 @@
+//! * [`features`]: All functions related to feature support (completion, hover etc)
+//! * [`syntax`]: Everything needed to parsed files
+//! * [`workspace`]: Function related to the workspace
 pub mod features;
 pub mod syntax;
 pub mod workspace;
@@ -16,10 +19,11 @@ use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
+    ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -163,6 +167,8 @@ impl LanguageServer for Backend {
                 }),
                 // Document symbol
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // Workspace symbol
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -396,6 +402,28 @@ impl LanguageServer for Backend {
             return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
         }
         Ok(None)
+    }
+
+    /// Handles the "Workspace Symbols" request (Outline View / Breadcrumbs).
+    ///
+    /// Returns the hierarchical symbol tree for the current file, converted into
+    /// LSP `DocumentSymbol` types. This relies on the Deep Parse having run successfully
+    /// during `did_open` or `did_change`.
+    ///
+    /// # Arguments
+    /// * `params` - Contains the text document URI.
+    ///
+    /// # Returns
+    /// * `Ok(Some(Nested))` - A tree of document symbols.
+    /// * `Ok(None)` - If the file has not been parsed or has no symbols.
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let map = self.analysis_map.read().await;
+        let query = params.query;
+        let symbols = features::symbol::collect_workspace_symb(&map, &query);
+        return Ok(Some(symbols));
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
