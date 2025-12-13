@@ -7,6 +7,44 @@ use tree_sitter::{Node, Point};
 use crate::analysis::{OxideSymbolKind, Symbol};
 use crate::backend::AnalysisMap;
 
+// =============================================================================
+// Node Kind Constants
+// =============================================================================
+// Centralized constants for tree-sitter node kinds to avoid stringly-typed
+// comparisons scattered throughout the code.
+
+mod node_kinds {
+    pub const DESIGN_FILE: &str = "design_file";
+    pub const ARCHITECTURE_BODY: &str = "architecture_body";
+    pub const ARCHITECTURE_DEFINITION: &str = "architecture_definition";
+    pub const BLOCK_STATEMENT: &str = "block_statement";
+    pub const GENERATE_STATEMENT: &str = "generate_statement";
+    pub const PROCESS_STATEMENT: &str = "process_statement";
+    pub const SUBPROGRAM_BODY: &str = "subprogram_body";
+    pub const CONCURRENT_BLOCK: &str = "concurrent_block";
+    pub const COMPONENT_INSTANTIATION: &str = "component_instantiation_statement";
+    pub const SIGNAL_ASSIGNMENT: &str = "concurrent_simple_signal_assignment";
+    pub const ASSOCIATION_LIST: &str = "association_list";
+    pub const ASSOCIATION_ELEMENT: &str = "association_element";
+    pub const GENERIC_MAP_ASPECT: &str = "generic_map_aspect";
+    pub const PORT_MAP_ASPECT: &str = "port_map_aspect";
+    pub const INSTANTIATED_UNIT: &str = "instantiated_unit";
+    pub const SELECTED_NAME: &str = "selected_name";
+    pub const SELECTION: &str = "selection";
+    pub const ERROR: &str = "ERROR";
+    pub const NAME: &str = "name";
+    pub const IDENTIFIER: &str = "identifier";
+    pub const DOT: &str = ".";
+    pub const ARROW: &str = "=>";
+    pub const COMMA: &str = ",";
+}
+
+use node_kinds::*;
+
+// =============================================================================
+// Completion Context Types
+// =============================================================================
+
 /// Representation of the context of a completion, guiding the language server
 /// on what symbols and keywords to suggest.
 #[derive(Debug, PartialEq, Eq)]
@@ -47,243 +85,78 @@ pub enum CompletionContext {
 enum DetectedMapKind {
     Generic,
     Port,
-    Unknown,
 }
 
-/// Helper function to extract the instantiated unit name from a component instantiation node.
-/// e.g. "u0: entity work.my_comp(rtl)" -> returns "my_comp"
+// =============================================================================
+// Helper Functions - LHS/RHS Detection
+// =============================================================================
+
+/// Determines if the cursor is on the right-hand side of an association (after `=>`).
+///
+/// This function looks backward from the cursor position to find the start of the
+/// current association element (after the last `,` or `(`), then checks if there's
+/// an `=>` arrow in that segment.
 ///
 /// # Arguments
-/// * `node` - The component instantiation node.
-/// * `text` - The text representing the parsed file.
-///
-/// # Return
-/// `Some(String)` with the valid instantiated unit name, or `None` if the extraction failed.
-fn get_instantiated_name(node: Node, text: &str) -> Option<String> {
-    // 1. Try to find the complex "instantiated_unit" (e.g., "entity work.comp")
-    let unit_node = node.child_by_field_name("unit").or_else(|| {
-        let mut cursor = node.walk();
-        node.children(&mut cursor)
-            .find(|child| child.kind() == "instantiated_unit")
-    });
-
-    if let Some(unit_node) = unit_node {
-        // --- CASE 1: Entity Instantiation ---
-        let raw_text = unit_node.utf8_text(text.as_bytes()).ok()?;
-
-        // Clean up "entity work.my_comp(rtl)"
-        let trimmed = raw_text.trim();
-        let remainder = if trimmed.to_lowercase().starts_with("entity") {
-            trimmed[6..].trim()
-        } else {
-            trimmed
-        };
-        let text_no_arch = remainder.split('(').next().unwrap_or(remainder);
-        let final_name = text_no_arch.split('.').next_back().unwrap_or(text_no_arch);
-
-        let res = final_name.trim().to_string();
-        return Some(res);
-    }
-
-    // 2. Fallback: Try to find a simple "name" node (e.g., "my_comp")
-    let mut cursor = node.walk();
-    if let Some(name_node) = node.children(&mut cursor).find(|c| c.kind() == "name") {
-        // --- CASE 2: Simple Component Instantiation ---
-        let raw_text = name_node.utf8_text(text.as_bytes()).ok()?;
-
-        // Even simple components might have an architecture suffix: "my_comp(rtl)"
-        let text_no_arch = raw_text.split('(').next().unwrap_or(raw_text);
-
-        let res = text_no_arch.trim().to_string();
-        return Some(res);
-    }
-
-    None
-}
-
-/// Walks up the tree (or uses text heuristic) to find the component name and the map kind (Generic/Port).
-/// This function encapsulates the complexity of handling broken ASTs and extracting the component name.
-///
-/// # Arguments
-/// * `node` - The starting AST node (usually an association list, ERROR, or statement).
 /// * `text` - The full source code.
-/// * `cursor_offset` - The byte offset of the cursor.
+/// * `cursor_offset` - The byte offset of the cursor position.
 ///
-/// # Return
-/// `Some((String, DetectedMapKind))` containing the component name and the map type, or `None`.
-fn find_component_declaration(
-    node: Node,
-    text: &str,
-    cursor_offset: usize,
-) -> Option<(String, DetectedMapKind)> {
-    eprintln!(
-        "  [DEBUG][find_component_declaration] Start. Node kind: {}",
-        node.kind()
-    );
+/// # Returns
+/// `true` if the cursor is after an `=>` in the current association element.
+///
+/// # Example
+/// ```text
+/// port map (clk => sig, data => |)
+///                               ^ cursor here, returns true
+/// port map (clk => sig, | => rst)
+///                       ^ cursor here, returns false
+/// ```
+fn is_rhs_of_association(text: &str, cursor_offset: usize) -> bool {
+    let limit = cursor_offset.min(text.len());
+    let prefix = &text[..limit];
 
-    // 1. Try Tree Traversal
-    let mut map_kind = DetectedMapKind::Unknown;
-    let mut current = Some(node);
+    // Find the start of the current association element
+    let last_comma = prefix.rfind(',');
+    let last_paren = prefix.rfind('(');
+    let start_idx = match (last_comma, last_paren) {
+        (Some(c), Some(p)) => c.max(p),
+        (Some(c), None) => c,
+        (None, Some(p)) => p,
+        (None, None) => 0,
+    };
 
-    while let Some(n) = current {
-        let kind = n.kind();
-
-        if kind == "generic_map_aspect" {
-            map_kind = DetectedMapKind::Generic;
-        }
-        if kind == "port_map_aspect" {
-            map_kind = DetectedMapKind::Port;
-        }
-
-        // CASE A: Normal Instantiation
-        if kind == "component_instantiation_statement" {
-            if let Some(name) = get_instantiated_name(n, text) {
-                eprintln!(
-                    "  [DEBUG][find_component_declaration] Found via tree: {}",
-                    name
-                );
-                return Some((name, map_kind));
-            }
-            break;
-        }
-
-        // CASE B: Mis-parsed as Signal Assignment (Handles broken trees where instantiation is wrapped)
-        if kind == "concurrent_simple_signal_assignment" {
-            let has_generic = has_descendant_kind(n, "generic_map_aspect");
-            let has_port = has_descendant_kind(n, "port_map_aspect");
-
-            if map_kind == DetectedMapKind::Unknown {
-                if has_generic && !has_port {
-                    map_kind = DetectedMapKind::Generic;
-                } else if has_port {
-                    map_kind = DetectedMapKind::Port;
-                }
-            }
-
-            if has_generic || has_port {
-                let mut start_search = n.start_byte();
-                if let Some(label) = n.child_by_field_name("label") {
-                    start_search = label.end_byte();
-                }
-
-                let mut cursor = n.walk();
-                for child in n.children(&mut cursor) {
-                    if child.start_byte() >= start_search {
-                        if child.kind() == "ERROR" {
-                            let mut err_cursor = child.walk();
-                            for err_child in child.children(&mut err_cursor) {
-                                if err_child.kind() == "name" || err_child.kind() == "identifier" {
-                                    let name =
-                                        err_child.utf8_text(text.as_bytes()).ok()?.to_string();
-                                    return Some((name, map_kind));
-                                }
-                            }
-                        }
-                        if child.kind() == "name" || child.kind() == "identifier" {
-                            let name = child.utf8_text(text.as_bytes()).ok()?.to_string();
-                            return Some((name, map_kind));
-                        }
-                    }
-                }
-            }
-        }
-        current = n.parent();
-    }
-
-    // 2. Fallback: Text Search (Used when tree structure is too broken to traverse)
-    let search_limit = cursor_offset.min(text.len());
-    let text_before = &text[..search_limit];
-
-    eprintln!(
-        "  [DEBUG][find_component_declaration] Text fallback. Limit: {}. Tail: {:?}",
-        search_limit,
-        text_before.lines().last().unwrap_or("")
-    );
-
-    if let Some(colon_idx) = text_before.rfind(':') {
-        let after_colon = &text_before[colon_idx + 1..];
-        let lower = after_colon.to_lowercase();
-
-        let gmap_idx = lower.rfind("generic map");
-        let pmap_idx = lower.rfind("port map");
-
-        let (cut_idx, found_kind) = match (gmap_idx, pmap_idx) {
-            (Some(g), Some(p)) => {
-                if g > p {
-                    (g, DetectedMapKind::Generic)
-                } else {
-                    (p, DetectedMapKind::Port)
-                }
-            }
-            (Some(g), None) => (g, DetectedMapKind::Generic),
-            (None, Some(p)) => (p, DetectedMapKind::Port),
-            (None, None) => return None,
-        };
-
-        let final_kind = if map_kind == DetectedMapKind::Unknown {
-            found_kind
-        } else {
-            map_kind
-        };
-
-        let raw_decl = &after_colon[..cut_idx];
-        let raw_text = raw_decl.trim();
-        let mut parts = raw_text.split_whitespace();
-        let first_word = parts.next().unwrap_or("");
-
-        let name_part = if first_word.eq_ignore_ascii_case("entity") {
-            if let Some(entity_idx) = raw_text.to_lowercase().find("entity") {
-                let after = &raw_text[entity_idx + 6..];
-                after.trim()
-            } else {
-                parts.next().unwrap_or("")
-            }
-        } else {
-            raw_text
-        };
-
-        let text_no_arch = name_part.split('(').next().unwrap_or(name_part);
-        let final_name = text_no_arch.split('.').next_back().unwrap_or(text_no_arch);
-        let final_clean = final_name.trim();
-
-        if !final_clean.is_empty() && final_clean.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            eprintln!(
-                "  [DEBUG][find_component_declaration] Found via text: {} ({:?})",
-                final_clean, final_kind
-            );
-            return Some((final_clean.to_string(), final_kind));
-        }
-    }
-
-    None
+    let current_segment = &prefix[start_idx..];
+    current_segment.contains("=>")
 }
 
-/// Helper to check deep structure without cloning everything
+/// Builds the appropriate `CompletionContext` for a map association.
+///
+/// This is a helper to avoid repeating the same if/else logic for building
+/// Generic/Port and Lhs/Rhs combinations throughout the codebase.
 ///
 /// # Arguments
-/// * `node` - The node we want to traverse.
-/// * `kind` - The kind we want to find in the node.
+/// * `component_name` - The name of the component/entity being instantiated.
+/// * `map_kind` - Whether this is a generic map or port map.
+/// * `is_rhs` - Whether the cursor is on the right-hand side of the association.
 ///
-/// # Return
-/// `true` if a child or grand-child (via ERROR node) of the node is of kind `kind`.
-fn has_descendant_kind(node: Node, kind: &str) -> bool {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return true;
-        }
-        // Check 1 level deep inside ERROR nodes
-        if child.kind() == "ERROR" {
-            let mut sub = child.walk();
-            for sub_child in child.children(&mut sub) {
-                if sub_child.kind() == kind {
-                    return true;
-                }
-            }
-        }
+/// # Returns
+/// The appropriate `CompletionContext` variant.
+fn build_map_context(
+    component_name: String,
+    map_kind: DetectedMapKind,
+    is_rhs: bool,
+) -> CompletionContext {
+    match (map_kind, is_rhs) {
+        (DetectedMapKind::Generic, true) => CompletionContext::GenericMapRhs,
+        (DetectedMapKind::Generic, false) => CompletionContext::GenericMapLhs(component_name),
+        (DetectedMapKind::Port, true) => CompletionContext::PortMapRhs,
+        (DetectedMapKind::Port, false) => CompletionContext::PortMapLhs(component_name),
     }
-    false
 }
+
+// =============================================================================
+// Helper Functions - Tree Navigation
+// =============================================================================
 
 /// Converts an LSP position (line/character) into a byte offset within the source text.
 ///
@@ -291,7 +164,7 @@ fn has_descendant_kind(node: Node, kind: &str) -> bool {
 /// * `text` - The full source code.
 /// * `pos` - The LSP `Position`.
 ///
-/// # Return
+/// # Returns
 /// The byte offset (`usize`).
 fn position_to_offset(text: &str, pos: Position) -> usize {
     let mut offset = 0;
@@ -338,10 +211,348 @@ fn get_tree_node(root: Node, pos: Position) -> Option<Node> {
     }
 }
 
-/// Recursively traverses descendants to find map context in broken trees (starting at 'design_file').
+/// Checks if a tree-sitter Point is contained within a Node's range.
 ///
 /// # Arguments
-/// * `start_node` - The node to start the recursive descent from.
+/// * `node` - The node to check against.
+/// * `point` - The point to check.
+///
+/// # Returns
+/// `true` if the point is within the node's start and end positions.
+fn node_contains_point(node: &Node, point: Point) -> bool {
+    let start = node.start_position();
+    let end = node.end_position();
+
+    let after_start =
+        point.row > start.row || (point.row == start.row && point.column >= start.column);
+    let before_end = point.row < end.row || (point.row == end.row && point.column <= end.column);
+
+    after_start && before_end
+}
+
+/// Helper to check if a node has a descendant of a specific kind.
+///
+/// Checks direct children and one level deep inside ERROR nodes.
+///
+/// # Arguments
+/// * `node` - The node to traverse.
+/// * `kind` - The kind to search for.
+///
+/// # Returns
+/// `true` if a matching descendant is found.
+fn has_descendant_kind(node: Node, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            return true;
+        }
+        // Check 1 level deep inside ERROR nodes
+        if child.kind() == ERROR {
+            let mut sub = child.walk();
+            for sub_child in child.children(&mut sub) {
+                if sub_child.kind() == kind {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Checks if a node kind represents a scope container (architecture, block, etc.).
+///
+/// # Arguments
+/// * `kind` - The node kind string.
+///
+/// # Returns
+/// `true` if the kind represents a scope container.
+fn is_scope_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        ARCHITECTURE_BODY
+            | ARCHITECTURE_DEFINITION
+            | BLOCK_STATEMENT
+            | GENERATE_STATEMENT
+            | CONCURRENT_BLOCK
+    )
+}
+
+/// Checks if a node kind represents a sequential scope (process, subprogram).
+///
+/// # Arguments
+/// * `kind` - The node kind string.
+///
+/// # Returns
+/// `true` if the kind represents a sequential scope.
+fn is_sequential_scope(kind: &str) -> bool {
+    matches!(kind, PROCESS_STATEMENT | SUBPROGRAM_BODY)
+}
+
+// =============================================================================
+// Component Name Extraction
+// =============================================================================
+
+/// Extracts the instantiated unit name from a component instantiation node.
+///
+/// Handles various VHDL instantiation forms:
+/// - `u0: my_comp` (simple component)
+/// - `u0: entity work.my_comp` (direct entity instantiation)
+/// - `u0: entity work.my_comp(rtl)` (with architecture)
+///
+/// # Arguments
+/// * `node` - The component instantiation node.
+/// * `text` - The source code text.
+///
+/// # Returns
+/// `Some(String)` with the component/entity name, or `None` if extraction failed.
+fn get_instantiated_name(node: Node, text: &str) -> Option<String> {
+    // 1. Try to find the complex "instantiated_unit" (e.g., "entity work.comp")
+    let unit_node = node.child_by_field_name("unit").or_else(|| {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .find(|child| child.kind() == INSTANTIATED_UNIT)
+    });
+
+    if let Some(unit_node) = unit_node {
+        let raw_text = unit_node.utf8_text(text.as_bytes()).ok()?;
+        return Some(extract_component_name_from_text(raw_text));
+    }
+
+    // 2. Fallback: Try to find a simple "name" node (e.g., "my_comp")
+    let mut cursor = node.walk();
+    if let Some(name_node) = node.children(&mut cursor).find(|c| c.kind() == NAME) {
+        let raw_text = name_node.utf8_text(text.as_bytes()).ok()?;
+        let text_no_arch = raw_text.split('(').next().unwrap_or(raw_text);
+        return Some(text_no_arch.trim().to_string());
+    }
+
+    None
+}
+
+/// Extracts a clean component name from raw instantiation text.
+///
+/// Handles text like:
+/// - `"entity work.my_comp(rtl)"` → `"my_comp"`
+/// - `"work.my_comp"` → `"my_comp"`
+/// - `"my_comp(rtl)"` → `"my_comp"`
+///
+/// # Arguments
+/// * `raw_text` - The raw text from the instantiated unit node.
+///
+/// # Returns
+/// The cleaned component name.
+fn extract_component_name_from_text(raw_text: &str) -> String {
+    let trimmed = raw_text.trim();
+
+    // Remove "entity" keyword if present
+    let remainder = if trimmed.to_lowercase().starts_with("entity") {
+        trimmed[6..].trim()
+    } else {
+        trimmed
+    };
+
+    // Remove architecture specification (e.g., "(rtl)")
+    let text_no_arch = remainder.split('(').next().unwrap_or(remainder);
+
+    // Get the last part after any dots (e.g., "work.my_comp" → "my_comp")
+    let final_name = text_no_arch.split('.').next_back().unwrap_or(text_no_arch);
+
+    final_name.trim().to_string()
+}
+
+// =============================================================================
+// Component Declaration Finding
+// =============================================================================
+
+/// Result of component declaration search, containing the component name and map kind.
+type ComponentDeclaration = (String, DetectedMapKind);
+
+/// Walks up the tree (or uses text heuristic) to find the component name and map kind.
+///
+/// This function encapsulates the complexity of handling broken ASTs and extracting
+/// the component name. It tries tree traversal first, then falls back to text search.
+///
+/// # Arguments
+/// * `node` - The starting AST node.
+/// * `text` - The full source code.
+/// * `cursor_offset` - The byte offset of the cursor.
+///
+/// # Returns
+/// `Some((component_name, map_kind))` if found, or `None`.
+fn find_component_declaration(
+    node: Node,
+    text: &str,
+    cursor_offset: usize,
+) -> Option<ComponentDeclaration> {
+    // 1. Try Tree Traversal
+    if let Some(result) = find_component_via_tree(node, text) {
+        return Some(result);
+    }
+
+    // 2. Fallback: Text Search
+    find_component_via_text(text, cursor_offset)
+}
+
+/// Attempts to find component declaration by walking up the AST.
+///
+/// # Arguments
+/// * `node` - The starting node.
+/// * `text` - The source code.
+///
+/// # Returns
+/// `Some((component_name, map_kind))` if found via tree traversal.
+fn find_component_via_tree(node: Node, text: &str) -> Option<ComponentDeclaration> {
+    let mut map_kind: Option<DetectedMapKind> = None;
+    let mut current = Some(node);
+
+    while let Some(n) = current {
+        let kind = n.kind();
+
+        // Track which map type we're in
+        if kind == GENERIC_MAP_ASPECT {
+            map_kind = Some(DetectedMapKind::Generic);
+        }
+        if kind == PORT_MAP_ASPECT {
+            map_kind = Some(DetectedMapKind::Port);
+        }
+
+        // CASE A: Normal Instantiation
+        if kind == COMPONENT_INSTANTIATION {
+            if let Some(name) = get_instantiated_name(n, text) {
+                return Some((name, map_kind.unwrap_or(DetectedMapKind::Port)));
+            }
+            break;
+        }
+
+        // CASE B: Mis-parsed as Signal Assignment
+        if kind == SIGNAL_ASSIGNMENT
+            && let Some(result) = try_extract_from_misparsed_assignment(n, text, map_kind)
+        {
+            return Some(result);
+        }
+
+        current = n.parent();
+    }
+
+    None
+}
+
+/// Tries to extract component info from a mis-parsed signal assignment.
+///
+/// When tree-sitter can't fully parse an instantiation, it sometimes wraps
+/// it in a `concurrent_simple_signal_assignment` node.
+///
+/// # Arguments
+/// * `node` - The signal assignment node.
+/// * `text` - The source code.
+/// * `current_map_kind` - The map kind detected so far (if any).
+///
+/// # Returns
+/// `Some((component_name, map_kind))` if extraction succeeded.
+fn try_extract_from_misparsed_assignment(
+    node: Node,
+    text: &str,
+    current_map_kind: Option<DetectedMapKind>,
+) -> Option<ComponentDeclaration> {
+    let has_generic = has_descendant_kind(node, GENERIC_MAP_ASPECT);
+    let has_port = has_descendant_kind(node, PORT_MAP_ASPECT);
+
+    if !has_generic && !has_port {
+        return None;
+    }
+
+    let map_kind = current_map_kind.unwrap_or({
+        if has_generic && !has_port {
+            DetectedMapKind::Generic
+        } else {
+            DetectedMapKind::Port
+        }
+    });
+
+    let mut start_search = node.start_byte();
+    if let Some(label) = node.child_by_field_name("label") {
+        start_search = label.end_byte();
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.start_byte() >= start_search {
+            if child.kind() == ERROR {
+                let mut err_cursor = child.walk();
+                for err_child in child.children(&mut err_cursor) {
+                    if err_child.kind() == NAME || err_child.kind() == IDENTIFIER {
+                        let name = err_child.utf8_text(text.as_bytes()).ok()?.to_string();
+                        return Some((name, map_kind));
+                    }
+                }
+            }
+            if child.kind() == NAME || child.kind() == IDENTIFIER {
+                let name = child.utf8_text(text.as_bytes()).ok()?.to_string();
+                return Some((name, map_kind));
+            }
+        }
+    }
+
+    None
+}
+
+/// Attempts to find component declaration using text-based search.
+///
+/// This is the fallback when tree traversal fails due to broken syntax.
+/// It searches backward from the cursor for patterns like `label: entity work.comp`.
+///
+/// # Arguments
+/// * `text` - The full source code.
+/// * `cursor_offset` - The byte offset of the cursor.
+///
+/// # Returns
+/// `Some((component_name, map_kind))` if found via text search.
+fn find_component_via_text(text: &str, cursor_offset: usize) -> Option<ComponentDeclaration> {
+    let search_limit = cursor_offset.min(text.len());
+    let text_before = &text[..search_limit];
+
+    let colon_idx = text_before.rfind(':')?;
+    let after_colon = &text_before[colon_idx + 1..];
+    let lower = after_colon.to_lowercase();
+
+    let gmap_idx = lower.rfind("generic map");
+    let pmap_idx = lower.rfind("port map");
+
+    let (cut_idx, map_kind) = match (gmap_idx, pmap_idx) {
+        (Some(g), Some(p)) => {
+            if g > p {
+                (g, DetectedMapKind::Generic)
+            } else {
+                (p, DetectedMapKind::Port)
+            }
+        }
+        (Some(g), None) => (g, DetectedMapKind::Generic),
+        (None, Some(p)) => (p, DetectedMapKind::Port),
+        (None, None) => return None,
+    };
+
+    let raw_decl = &after_colon[..cut_idx];
+    let name = extract_component_name_from_text(raw_decl);
+
+    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        Some((name, map_kind))
+    } else {
+        None
+    }
+}
+
+// =============================================================================
+// Context Detection - Deep Scan
+// =============================================================================
+
+/// Recursively traverses descendants to find map context in broken trees.
+///
+/// This function is called when the cursor node is at `design_file` level,
+/// typically indicating a broken parse tree. It scans downward looking for
+/// instantiation patterns.
+///
+/// # Arguments
+/// * `start_node` - The node to start scanning from.
 /// * `text` - The full source code.
 /// * `point` - The Tree-sitter `Point` of the cursor.
 /// * `cursor_offset` - The byte offset of the cursor.
@@ -357,62 +568,13 @@ fn deep_scan_for_map_context(
     let mut cursor = start_node.walk();
 
     for child in start_node.children(&mut cursor) {
-        eprintln!(
-            "[DEBUG] Deep Scan child: '{}' at ({},{})-({},{})",
-            child.kind(),
-            child.start_position().row,
-            child.start_position().column,
-            child.end_position().row,
-            child.end_position().column
-        );
+        let kind = child.kind();
 
-        // 1. Check if the current child spans the point
-        let child_start = child.start_position();
-        let child_end = child.end_position();
-
-        let is_point_contained = (point.row > child_start.row
-            || (point.row == child_start.row && point.column >= child_start.column))
-            && (point.row < child_end.row
-                || (point.row == child_end.row && point.column <= child_end.column));
-
-        // 2. For ERROR nodes, ALWAYS try to extract map context regardless of point containment
-        //    This handles cases where the ERROR node's boundaries might be off due to broken syntax
-        if child.kind() == "ERROR" {
-            eprintln!("[DEBUG] Deep Scan: Found ERROR node, checking for map context");
-            if let Some((name, map_kind)) = find_component_declaration(child, text, cursor_offset) {
-                let limit = cursor_offset.min(text.len());
-                let prefix = &text[..limit];
-                let last_comma = prefix.rfind(',');
-                let last_paren = prefix.rfind('(');
-                let start_idx = match (last_comma, last_paren) {
-                    (Some(c), Some(p)) => c.max(p),
-                    (Some(c), None) => c,
-                    (None, Some(p)) => p,
-                    (None, None) => 0,
-                };
-
-                let current_segment = &prefix[start_idx..];
-                let is_rhs = current_segment.contains("=>");
-                let is_generic = map_kind == DetectedMapKind::Generic;
-
-                eprintln!(
-                    "[DEBUG] Deep Scan ERROR: Name: {}, is_rhs: {}, is_generic: {}",
-                    name, is_rhs, is_generic
-                );
-
-                if is_rhs {
-                    return Some(if is_generic {
-                        CompletionContext::GenericMapRhs
-                    } else {
-                        CompletionContext::PortMapRhs
-                    });
-                } else {
-                    return Some(if is_generic {
-                        CompletionContext::GenericMapLhs(name)
-                    } else {
-                        CompletionContext::PortMapLhs(name)
-                    });
-                }
+        // For ERROR nodes, ALWAYS try to extract map context regardless of point containment.
+        // ERROR node boundaries are unreliable in broken syntax.
+        if kind == ERROR {
+            if let Some(ctx) = try_build_context_from_node(child, text, cursor_offset) {
+                return Some(ctx);
             }
             // Also recurse into ERROR node
             if let Some(ctx) = deep_scan_for_map_context(child, text, point, cursor_offset) {
@@ -420,12 +582,11 @@ fn deep_scan_for_map_context(
             }
         }
 
-        if !is_point_contained {
-            // If the cursor is not in this node, check its children if it's a scope node
-            if (child.kind() == "architecture_body"
-                || child.kind() == "block_statement"
-                || child.kind() == "generate_statement"
-                || child.kind() == "process_statement")
+        let is_contained = node_contains_point(&child, point);
+
+        if !is_contained {
+            // If cursor not in this node, recurse into scope containers
+            if (is_scope_container(kind) || kind == PROCESS_STATEMENT || kind == ERROR)
                 && let Some(ctx) = deep_scan_for_map_context(child, text, point, cursor_offset)
             {
                 return Some(ctx);
@@ -433,54 +594,15 @@ fn deep_scan_for_map_context(
             continue;
         }
 
-        // 3. Point is contained: check if it's a map context
-        let is_map_context = child.kind() == "component_instantiation_statement"
-            || child.kind() == "concurrent_simple_signal_assignment";
-
-        if is_map_context {
-            eprintln!("[DEBUG] Deep Scan Found matching node: '{}'", child.kind());
-            if let Some((name, map_kind)) = find_component_declaration(child, text, cursor_offset) {
-                let limit = cursor_offset.min(text.len());
-                let prefix = &text[..limit];
-                let last_comma = prefix.rfind(',');
-                let last_paren = prefix.rfind('(');
-                let start_idx = match (last_comma, last_paren) {
-                    (Some(c), Some(p)) => c.max(p),
-                    (Some(c), None) => c,
-                    (None, Some(p)) => p,
-                    (None, None) => 0,
-                };
-
-                let current_segment = &prefix[start_idx..];
-                let is_rhs = current_segment.contains("=>");
-                let is_generic = map_kind == DetectedMapKind::Generic;
-
-                eprintln!(
-                    "[DEBUG] Deep Scan Final Context: Name: {}, is_rhs: {}, is_generic: {}",
-                    name, is_rhs, is_generic
-                );
-
-                if is_rhs {
-                    return Some(if is_generic {
-                        CompletionContext::GenericMapRhs
-                    } else {
-                        CompletionContext::PortMapRhs
-                    });
-                } else {
-                    return Some(if is_generic {
-                        CompletionContext::GenericMapLhs(name)
-                    } else {
-                        CompletionContext::PortMapLhs(name)
-                    });
-                }
-            }
+        // Point is contained: check if it's a map context
+        if (kind == COMPONENT_INSTANTIATION || kind == SIGNAL_ASSIGNMENT)
+            && let Some(ctx) = try_build_context_from_node(child, text, cursor_offset)
+        {
+            return Some(ctx);
         }
 
-        // 4. If the point is contained and it's a scope node, recurse deeper
-        if (child.kind() == "architecture_body"
-            || child.kind() == "block_statement"
-            || child.kind() == "generate_statement"
-            || child.kind() == "process_statement")
+        // Recurse into scope containers
+        if (is_scope_container(kind) || kind == PROCESS_STATEMENT)
             && let Some(ctx) = deep_scan_for_map_context(child, text, point, cursor_offset)
         {
             return Some(ctx);
@@ -489,8 +611,35 @@ fn deep_scan_for_map_context(
     None
 }
 
-/// Handles the upward traversal of the AST for contexts that are not at the root level.
-/// This applies the main scope logic (Architecture, Process) and the map logic for valid structures.
+/// Attempts to build a CompletionContext from a node that might be an instantiation.
+///
+/// # Arguments
+/// * `node` - The node to analyze.
+/// * `text` - The source code.
+/// * `cursor_offset` - The byte offset of the cursor.
+///
+/// # Returns
+/// `Some(CompletionContext)` if the node contains a valid map context.
+fn try_build_context_from_node(
+    node: Node,
+    text: &str,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let (name, map_kind) = find_component_declaration(node, text, cursor_offset)?;
+    let is_rhs = is_rhs_of_association(text, cursor_offset);
+
+    Some(build_map_context(name, map_kind, is_rhs))
+}
+
+// =============================================================================
+// Context Detection - Upward Traversal
+// =============================================================================
+
+/// Handles upward traversal of the AST for context detection.
+///
+/// This is the main logic for determining completion context when we have
+/// a valid (or partially valid) parse tree. It walks up from the cursor
+/// position to find the enclosing scope.
 ///
 /// # Arguments
 /// * `node` - The starting node (must not be `design_file`).
@@ -507,214 +656,206 @@ fn handle_upward_traversal(
     cursor_offset: usize,
 ) -> CompletionContext {
     let mut current = Some(node);
+
     while let Some(n) = current {
-        eprintln!("[DEBUG] Walking Up... Current Kind: '{}'", n.kind());
-        match n.kind() {
-            "process_statement" | "subprogram_body" => return CompletionContext::Process,
-            "architecture_definition"
-            | "architecture_body"
-            | "block_statement"
-            | "generate_statement"
-            | "concurrent_block" => return CompletionContext::Architecture,
+        let kind = n.kind();
 
-            // Handle Broken/Mis-parsed Trees (If found via UPWARD walk)
-            "ERROR" | "concurrent_simple_signal_assignment" => {
-                if let Some((name, map_kind)) = find_component_declaration(n, text, cursor_offset) {
-                    // Heuristic: Check for arrow '=>' in the current text segment
-                    let limit = cursor_offset.min(text.len());
-                    let prefix = &text[..limit];
-
-                    let last_comma = prefix.rfind(',');
-                    let last_paren = prefix.rfind('(');
-                    let start_idx = match (last_comma, last_paren) {
-                        (Some(c), Some(p)) => c.max(p),
-                        (Some(c), None) => c,
-                        (None, Some(p)) => p,
-                        (None, None) => 0,
-                    };
-
-                    let current_segment = &prefix[start_idx..];
-                    let is_rhs = current_segment.contains("=>");
-
-                    eprintln!(
-                        "[DEBUG] UPWARD ERROR/Assign Logic: Name: {}, is_rhs: {}",
-                        name, is_rhs
-                    );
-
-                    let is_generic = map_kind == DetectedMapKind::Generic;
-
-                    if is_rhs {
-                        return if is_generic {
-                            CompletionContext::GenericMapRhs
-                        } else {
-                            CompletionContext::PortMapRhs
-                        };
-                    } else {
-                        return if is_generic {
-                            CompletionContext::GenericMapLhs(name)
-                        } else {
-                            CompletionContext::PortMapLhs(name)
-                        };
-                    }
-                }
-            }
-
-            "association_element" => {
-                let cursor_col = point.column;
-                let mut is_rhs = false;
-                let mut cursor = n.walk();
-                for child in n.children(&mut cursor) {
-                    if child.kind() == "=>" {
-                        let arrow_end = child.end_position().column;
-                        if cursor_col >= arrow_end {
-                            is_rhs = true;
-                        }
-                    }
-                }
-
-                if let Some((name, map_kind)) = find_component_declaration(n, text, cursor_offset) {
-                    let is_generic = match map_kind {
-                        DetectedMapKind::Generic => true,
-                        DetectedMapKind::Port => false,
-                        DetectedMapKind::Unknown => {
-                            let p_kind = n
-                                .parent()
-                                .map(|p| p.parent().map(|pp| pp.kind()).unwrap_or(""))
-                                .unwrap_or("");
-                            p_kind == "generic_map_aspect"
-                        }
-                    };
-                    eprintln!(
-                        "[DEBUG] association_element Logic: Name: {}, is_rhs: {}",
-                        name, is_rhs
-                    );
-
-                    if is_rhs {
-                        return if is_generic {
-                            CompletionContext::GenericMapRhs
-                        } else {
-                            CompletionContext::PortMapRhs
-                        };
-                    } else {
-                        return if is_generic {
-                            CompletionContext::GenericMapLhs(name)
-                        } else {
-                            CompletionContext::PortMapLhs(name)
-                        };
-                    }
-                }
-                return CompletionContext::PortMapRhs;
-            }
-
-            "association_list" => {
-                eprintln!("[DEBUG] Inside association_list.");
-                let mut is_rhs = false;
-                let mut cursor_chk = n.walk();
-                for child in n.children(&mut cursor_chk) {
-                    let start = child.start_position();
-                    let end = child.end_position();
-                    let strictly_after = start.row > point.row
-                        || (start.row == point.row && start.column > point.column);
-                    let at_start = start.row == point.row && start.column == point.column;
-
-                    if strictly_after || (at_start && child.kind() == ",") {
-                        if child.kind() == "ERROR" {
-                            let mut sub = child.walk();
-                            for sub_child in child.children(&mut sub) {
-                                if sub_child.kind() == "=>" {
-                                    is_rhs = false;
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    if child.kind() == "," {
-                        is_rhs = false;
-                        continue;
-                    }
-                    if child.kind() == "association_element" {
-                        let mut has_arrow = false;
-                        let mut sub = child.walk();
-                        for sub_child in child.children(&mut sub) {
-                            if sub_child.kind() == "=>" {
-                                has_arrow = true;
-                                if sub_child.end_position().column <= point.column {
-                                    is_rhs = true;
-                                }
-                            }
-                        }
-                        // If we are inside the element and found an arrow, check position relative to arrow end
-                        let is_inside = !(point.row > end.row
-                            || (point.row == end.row && point.column > end.column));
-                        if is_inside && has_arrow {
-                            // is_rhs already calculated above relative to arrow end
-                        } else if is_inside && !has_arrow {
-                            is_rhs = false; // LHS or no arrow yet
-                        } else if !is_inside && has_arrow {
-                            is_rhs = true; // After the element but before the next comma, treat as RHS
-                        }
-                    }
-                    if child.kind() == "ERROR" {
-                        let mut sub = child.walk();
-                        for sub_child in child.children(&mut sub) {
-                            if sub_child.kind() == "=>"
-                                && point.column >= sub_child.end_position().column
-                            {
-                                is_rhs = true;
-                            }
-                        }
-                    }
-                }
-
-                if let Some((name, map_kind)) = find_component_declaration(n, text, cursor_offset) {
-                    let final_map_kind = if map_kind == DetectedMapKind::Unknown {
-                        let parent_kind = n.parent().map(|p| p.kind()).unwrap_or("");
-                        if parent_kind == "generic_map_aspect" {
-                            DetectedMapKind::Generic
-                        } else {
-                            DetectedMapKind::Port
-                        }
-                    } else {
-                        map_kind
-                    };
-                    let is_generic = final_map_kind == DetectedMapKind::Generic;
-
-                    if is_rhs {
-                        return if is_generic {
-                            CompletionContext::GenericMapRhs
-                        } else {
-                            CompletionContext::PortMapRhs
-                        };
-                    } else {
-                        return if is_generic {
-                            CompletionContext::GenericMapLhs(name)
-                        } else {
-                            CompletionContext::PortMapLhs(name)
-                        };
-                    }
-                }
-                return CompletionContext::PortMapRhs;
-            }
-
-            "component_instantiation_statement" | "port_map_aspect" | "generic_map_aspect" => {
-                if let Some((name, _)) = find_component_declaration(n, text, cursor_offset) {
-                    return CompletionContext::PortMapLhs(name);
-                }
-            }
-            _ => {}
+        // Check for sequential scope (process, subprogram)
+        if is_sequential_scope(kind) {
+            return CompletionContext::Process;
         }
+
+        // Check for architecture/concurrent scope
+        if is_scope_container(kind) {
+            return CompletionContext::Architecture;
+        }
+
+        // Handle various map-related nodes
+        if let Some(ctx) = handle_map_node(n, text, point, cursor_offset) {
+            return ctx;
+        }
+
         current = n.parent();
     }
 
-    eprintln!("[DEBUG] Walk finished. Returning Unresolved.");
     CompletionContext::Unresolved
 }
 
+/// Handles map-related nodes during upward traversal.
+///
+/// # Arguments
+/// * `node` - The current node being examined.
+/// * `text` - The source code.
+/// * `point` - The cursor point.
+/// * `cursor_offset` - The cursor byte offset.
+///
+/// # Returns
+/// `Some(CompletionContext)` if the node is a map context, `None` to continue traversal.
+fn handle_map_node(
+    node: Node,
+    text: &str,
+    point: Point,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let kind = node.kind();
+
+    match kind {
+        ERROR | SIGNAL_ASSIGNMENT => handle_error_or_assignment_node(node, text, cursor_offset),
+        ASSOCIATION_ELEMENT => handle_association_element(node, text, point, cursor_offset),
+        ASSOCIATION_LIST => handle_association_list(node, text, point, cursor_offset),
+        COMPONENT_INSTANTIATION | PORT_MAP_ASPECT | GENERIC_MAP_ASPECT => {
+            if let Some((name, map_kind)) = find_component_declaration(node, text, cursor_offset) {
+                let is_rhs = is_rhs_of_association(text, cursor_offset);
+                Some(build_map_context(name, map_kind, is_rhs))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Handles ERROR or mis-parsed signal assignment nodes.
+fn handle_error_or_assignment_node(
+    node: Node,
+    text: &str,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let (name, map_kind) = find_component_declaration(node, text, cursor_offset)?;
+    let is_rhs = is_rhs_of_association(text, cursor_offset);
+
+    Some(build_map_context(name, map_kind, is_rhs))
+}
+
+/// Handles association_element nodes to determine LHS/RHS position.
+fn handle_association_element(
+    node: Node,
+    text: &str,
+    point: Point,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let cursor_col = point.column;
+    let mut is_rhs = false;
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == ARROW {
+            let arrow_end = child.end_position().column;
+            if cursor_col >= arrow_end {
+                is_rhs = true;
+            }
+        }
+    }
+
+    if let Some((name, map_kind)) = find_component_declaration(node, text, cursor_offset) {
+        return Some(build_map_context(name, map_kind, is_rhs));
+    }
+
+    // Fallback: determine map kind from parent
+    let parent_kind = node
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|pp| pp.kind())
+        .unwrap_or("");
+
+    let map_kind = if parent_kind == GENERIC_MAP_ASPECT {
+        DetectedMapKind::Generic
+    } else {
+        DetectedMapKind::Port
+    };
+
+    Some(build_map_context(String::new(), map_kind, is_rhs))
+}
+
+/// Handles association_list nodes with complex LHS/RHS detection.
+fn handle_association_list(
+    node: Node,
+    text: &str,
+    point: Point,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let is_rhs = determine_rhs_in_association_list(node, point);
+
+    if let Some((name, map_kind)) = find_component_declaration(node, text, cursor_offset) {
+        return Some(build_map_context(name, map_kind, is_rhs));
+    }
+
+    // Fallback: determine map kind from parent
+    let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
+    let map_kind = if parent_kind == GENERIC_MAP_ASPECT {
+        DetectedMapKind::Generic
+    } else {
+        DetectedMapKind::Port
+    };
+
+    Some(build_map_context(String::new(), map_kind, is_rhs))
+}
+
+/// Determines if cursor is on RHS within an association list by analyzing children.
+fn determine_rhs_in_association_list(node: Node, point: Point) -> bool {
+    let mut is_rhs = false;
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        let start = child.start_position();
+
+        // Check if we've passed the cursor position
+        let strictly_after =
+            start.row > point.row || (start.row == point.row && start.column > point.column);
+        let at_start = start.row == point.row && start.column == point.column;
+
+        if strictly_after || (at_start && child.kind() == COMMA) {
+            break;
+        }
+
+        if child.kind() == COMMA {
+            is_rhs = false;
+            continue;
+        }
+
+        if child.kind() == ASSOCIATION_ELEMENT {
+            is_rhs = check_rhs_in_association_element(child, point);
+        }
+
+        if child.kind() == ERROR {
+            is_rhs = check_rhs_in_error_node(child, point);
+        }
+    }
+
+    is_rhs
+}
+
+/// Checks if cursor is on RHS within a single association element.
+fn check_rhs_in_association_element(element: Node, point: Point) -> bool {
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() == ARROW && child.end_position().column <= point.column {
+            return true;
+        }
+    }
+    false
+}
+
+/// Checks if cursor is on RHS within an ERROR node containing an arrow.
+fn check_rhs_in_error_node(error_node: Node, point: Point) -> bool {
+    let mut cursor = error_node.walk();
+    for child in error_node.children(&mut cursor) {
+        if child.kind() == ARROW && point.column >= child.end_position().column {
+            return true;
+        }
+    }
+    false
+}
+
+// =============================================================================
+// Main Context Detection
+// =============================================================================
+
 /// Determines the semantic context of the cursor position by analyzing the AST.
 ///
-/// This function converts the LSP position into a Tree-sitter point, finds the
-/// smallest syntax node at that location, and dispatches the request to the
-/// appropriate handling function (Dot Access, Deep Scan, or Upward Traversal).
+/// This is the main entry point for completion context detection. It converts
+/// the LSP position into a Tree-sitter point, finds the smallest syntax node
+/// at that location, and dispatches to the appropriate handler.
 ///
 /// # Arguments
 /// * `text` - The full source code of the file.
@@ -735,35 +876,59 @@ pub fn get_completion_context(text: &str, root: Node, pos: Position) -> Completi
         None => return CompletionContext::Unresolved,
     };
 
-    // --- 1. Handle Dot Access (Needs to be first and fast) ---
-    let kind = node.kind();
-    let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
-    if kind == "." || parent_kind == "selected_name" || parent_kind == "selection" {
+    // 1. Handle Dot Access (fast path)
+    if is_dot_access_context(&node, text, pos) {
         return CompletionContext::DotAccess;
     }
-    // Text-based fallback for dot access, e.g., typing `r.f|`
+
+    // 2. Handle Broken Tree (deep scan from root)
+    if node.kind() == DESIGN_FILE
+        && let Some(context) = deep_scan_for_map_context(node, text, point, cursor_offset)
+    {
+        return context;
+    }
+
+    // 3. Walk the tree upwards (default/valid tree logic)
+    handle_upward_traversal(node, text, point, cursor_offset)
+}
+
+/// Checks if the cursor is in a dot-access context (e.g., `record.field`).
+///
+/// # Arguments
+/// * `node` - The node at cursor position.
+/// * `text` - The source code.
+/// * `pos` - The cursor position.
+///
+/// # Returns
+/// `true` if this is a dot-access context.
+fn is_dot_access_context(node: &Node, text: &str, pos: Position) -> bool {
+    let kind = node.kind();
+    let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
+
+    // Direct dot or selected name
+    if kind == DOT || parent_kind == SELECTED_NAME || parent_kind == SELECTION {
+        return true;
+    }
+
+    // Text-based fallback for typing `r.f|`
     if let Some(line) = text.lines().nth(pos.line as usize)
         && pos.character as usize <= line.len()
     {
         let prefix = &line[..pos.character as usize];
         let trimmed = prefix.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
         if trimmed.ends_with('.') {
-            return CompletionContext::DotAccess;
+            return true;
         }
     }
 
-    // --- 2. Handle Broken Tree (Deep Scan from Root) ---
-    if node.kind() == "design_file"
-        && let Some(context) = deep_scan_for_map_context(node, text, point, cursor_offset)
-    {
-        return context;
-    }
-
-    // --- 3. Walk the tree UPWARDS (Default/Valid Tree Logic) ---
-    handle_upward_traversal(node, text, point, cursor_offset)
+    false
 }
 
-/// Generates completion items based on the global context.
+// =============================================================================
+// Completion Item Generation
+// =============================================================================
+
+/// Generates completion items based on the detected context.
 ///
 /// # Arguments
 /// * `analysis_map` - The global map of all file analyses.
@@ -771,7 +936,7 @@ pub fn get_completion_context(text: &str, root: Node, pos: Position) -> Completi
 /// * `context` - The determined `CompletionContext`.
 /// * `position` - The cursor position.
 ///
-/// # Return
+/// # Returns
 /// Vector of completion items appropriate for the context.
 pub fn complete_scope(
     analysis_map: &AnalysisMap,
@@ -782,7 +947,7 @@ pub fn complete_scope(
     let mut items = Vec::new();
 
     if let Some(current_analysis) = analysis_map.get(current_uri) {
-        // Handle Map LHS Lookups (Requires searching all files)
+        // Handle Map LHS Lookups (requires searching all files)
         match context {
             CompletionContext::PortMapLhs(target_name)
             | CompletionContext::GenericMapLhs(target_name) => {
@@ -805,26 +970,22 @@ pub fn complete_scope(
             _ => {}
         }
 
-        // Handle general scope lookups (Only searches current file analysis)
+        // Handle general scope lookups (only searches current file)
         for sym in current_analysis.symbols.values() {
             collect_symbols(sym, context, position, &mut items);
         }
     }
 
-    // Clean up duplicates
+    // Remove duplicates
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items.dedup_by(|a, b| a.label == b.label);
 
     items
 }
 
-/// Recursive helper to extract ONLY the ports from a symbol (for LHS completion).
-///
-/// # Arguments
-/// * `symbol` - The top level symbol to traverse.
-/// * `items` - Mutable reference to the vector of completion items.
+/// Recursively extracts ports from a symbol for LHS completion.
 fn collect_ports(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
-    if (symbol.kind == OxideSymbolKind::Port)
+    if symbol.kind == OxideSymbolKind::Port
         && let Some(item) = symbol_to_completion(symbol)
     {
         items.push(item);
@@ -834,13 +995,9 @@ fn collect_ports(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
     }
 }
 
-/// Recursive helper to extract ONLY the generics from a symbol (for LHS completion).
-///
-/// # Arguments
-/// * `symbol` - The top level symbol to traverse.
-/// * `items` - Mutable reference to the vector of completion items.
+/// Recursively extracts generics from a symbol for LHS completion.
 fn collect_generics(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
-    if (symbol.kind == OxideSymbolKind::Generic)
+    if symbol.kind == OxideSymbolKind::Generic
         && let Some(item) = symbol_to_completion(symbol)
     {
         items.push(item);
@@ -850,13 +1007,7 @@ fn collect_generics(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
     }
 }
 
-/// Recursive helper to flatten the symbol tree into suggestions based on the context.
-///
-/// # Arguments
-/// * `symbol` - The top level symbol we want to collect symbols from.
-/// * `context` - The current completion context.
-/// * `position` - The current cursor position.
-/// * `items` - Mutable reference to the a vector of completion items.
+/// Recursively flattens the symbol tree into suggestions based on context.
 fn collect_symbols(
     symbol: &Symbol,
     context: &CompletionContext,
@@ -870,15 +1021,15 @@ fn collect_symbols(
             | OxideSymbolKind::Generate
             | OxideSymbolKind::Process
     );
-    // Check if the symbol is outside the container and stop to
-    // prevent poluting the suggestions with out-of-scope values.
+
+    // Stop if symbol is outside the containing scope
     if is_strict_scope && !range_contains(symbol.range, position) {
         return;
     }
-    // Current symbol is a completion item
-    // We usually do not suggest the container itself but we check visibility
+
+    // Add symbol if visible in current context
     if is_visible(symbol, context)
-        && !is_strict_scope // Don't suggest the architecture name itself...
+        && !is_strict_scope
         && let Some(item) = symbol_to_completion(symbol)
     {
         items.push(item);
@@ -890,15 +1041,7 @@ fn collect_symbols(
     }
 }
 
-/// Helper function that gives the completion visibility of a symbol
-/// depending on the context of the completion.
-///
-/// # Arguments
-/// * `sym` - The symbol on which we are requesting visibility.
-/// * `context` - The current completion context.
-///
-/// # Return
-/// `true` if the symbol should be visible in the completion.
+/// Determines if a symbol should be visible in the given completion context.
 fn is_visible(sym: &Symbol, context: &CompletionContext) -> bool {
     match context {
         CompletionContext::Architecture => matches!(
@@ -928,50 +1071,34 @@ fn is_visible(sym: &Symbol, context: &CompletionContext) -> bool {
 }
 
 /// Checks if a position is contained within a range.
-///
-/// # Arguments
-/// * `range` - The range the position needs to be checked against.
-/// * `position` - The position we want to check.
-///
-/// # Return
-/// `true` if the position is within the range (inclusive of start, exclusive of end character).
 fn range_contains(range: Range, position: Position) -> bool {
     if position.line < range.start.line || position.line > range.end.line {
         return false;
     }
-
-    // edge case on start line
     if position.line == range.start.line && position.character < range.start.character {
         return false;
     }
-
-    // edge case on end line (excluding the last character column itself for multi-line)
     if position.line == range.end.line && position.character > range.end.character {
         return false;
     }
     true
 }
 
-/// Converts an internal `Symbol` struct into an LSP `CompletionItem`.
-///
-/// # Arguments
-/// * `symbol` - The symbol to convert.
-///
-/// # Return
-/// `Some(CompletionItem)` if the symbol type is appropriate for completion, otherwise `None`.
+/// Converts a Symbol to a CompletionItem.
 fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {
     let kind = match symbol.kind {
         OxideSymbolKind::Entity => CompletionItemKind::INTERFACE,
-        OxideSymbolKind::Architecture => return None, // Don't suggest Arch names in code
+        OxideSymbolKind::Architecture => return None,
         OxideSymbolKind::Port => CompletionItemKind::FIELD,
         OxideSymbolKind::Signal => CompletionItemKind::VARIABLE,
         OxideSymbolKind::Constant => CompletionItemKind::CONSTANT,
         OxideSymbolKind::Struct => CompletionItemKind::STRUCT,
         OxideSymbolKind::Function => CompletionItemKind::FUNCTION,
-        OxideSymbolKind::Process => return None, // Don't suggest Process labels
+        OxideSymbolKind::Process => return None,
         OxideSymbolKind::Component => CompletionItemKind::CLASS,
         _ => CompletionItemKind::TEXT,
     };
+
     Some(CompletionItem {
         label: symbol.name.clone(),
         kind: Some(kind),
@@ -984,15 +1111,19 @@ fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {
     })
 }
 
+// =============================================================================
+// Tests
+// =============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::test_utils::SHARED_PARSER_LOCK;
     use tree_sitter::Parser;
 
-    // --- HELPER FUNCTIONS ---
+    // --- Test Helpers ---
 
-    /// Parses the code, extracts the cursor, and checks the completion context against an expected value.
+    /// Parses code with cursor marker and checks completion context.
     fn check_context(code_with_cursor: &str, expected: CompletionContext) {
         let _guard = SHARED_PARSER_LOCK.lock().unwrap();
 
@@ -1002,18 +1133,13 @@ mod tests {
         let lang = unsafe { crate::tree_sitter_vhdl() };
         parser.set_language(&lang).unwrap();
         let tree = parser.parse(&code, None).unwrap();
-        drop(_guard); // Release lock early
-
-        eprintln!("\n--- Running Context Check ---");
-        eprintln!("Code:\n{}", code);
-        eprintln!("Cursor: Line {}, Col {}", pos.line, pos.character);
+        drop(_guard);
 
         let ctx = get_completion_context(&code, tree.root_node(), pos);
         assert_eq!(ctx, expected, "\nCode:\n{}\nContext mismatch!", code);
-        eprintln!("--- Context Check Passed ---");
     }
 
-    /// Extracts the cursor position '|' and returns the clean code and the LSP Position.
+    /// Extracts cursor position '|' and returns clean code and Position.
     fn extract_cursor(text: &str) -> (String, Position) {
         let cursor_offset = text
             .find('|')
@@ -1036,7 +1162,60 @@ mod tests {
         (clean_text, Position { line, character })
     }
 
-    // --- NEW UNIT TESTS FOR HELPER FUNCTIONS ---
+    // --- Unit Tests for Helper Functions ---
+
+    #[test]
+    fn test_is_rhs_of_association() {
+        // After arrow
+        assert!(is_rhs_of_association("port map (clk => ", 17));
+        assert!(is_rhs_of_association("(a => b, c => ", 14));
+
+        // Before arrow
+        assert!(!is_rhs_of_association("port map (clk ", 14));
+        assert!(!is_rhs_of_association("(a => b, c ", 11));
+
+        // After comma resets
+        assert!(!is_rhs_of_association("(a => b, c", 10));
+
+        // Multiple associations
+        assert!(is_rhs_of_association("(a => 1, b => 2, c => ", 22));
+        assert!(!is_rhs_of_association("(a => 1, b => 2, c ", 19));
+    }
+
+    #[test]
+    fn test_build_map_context() {
+        assert_eq!(
+            build_map_context("comp".to_string(), DetectedMapKind::Port, false),
+            CompletionContext::PortMapLhs("comp".to_string())
+        );
+        assert_eq!(
+            build_map_context("comp".to_string(), DetectedMapKind::Port, true),
+            CompletionContext::PortMapRhs
+        );
+        assert_eq!(
+            build_map_context("comp".to_string(), DetectedMapKind::Generic, false),
+            CompletionContext::GenericMapLhs("comp".to_string())
+        );
+        assert_eq!(
+            build_map_context("comp".to_string(), DetectedMapKind::Generic, true),
+            CompletionContext::GenericMapRhs
+        );
+    }
+
+    #[test]
+    fn test_extract_component_name_from_text() {
+        assert_eq!(
+            extract_component_name_from_text("entity work.my_comp(rtl)"),
+            "my_comp"
+        );
+        assert_eq!(extract_component_name_from_text("work.my_comp"), "my_comp");
+        assert_eq!(extract_component_name_from_text("my_comp(rtl)"), "my_comp");
+        assert_eq!(extract_component_name_from_text("my_comp"), "my_comp");
+        assert_eq!(
+            extract_component_name_from_text("  entity  lib.pkg.comp  "),
+            "comp"
+        );
+    }
 
     #[test]
     fn test_get_tree_node() {
@@ -1049,61 +1228,30 @@ mod tests {
         let root = binding.root_node();
         drop(_guard);
 
-        // 1. Position at start of file - should get some node
+        // Should find nodes at various positions
         let pos1 = Position {
             line: 0,
             character: 0,
         };
-        let node1 = get_tree_node(root, pos1);
-        assert!(node1.is_some(), "Should find a node at position 0");
+        assert!(get_tree_node(root, pos1).is_some());
 
-        // 2. Position after end of content - fallback should still work
         let pos2 = Position {
+            line: 0,
+            character: 7,
+        };
+        assert!(get_tree_node(root, pos2).is_some());
+
+        let pos3 = Position {
             line: 0,
             character: 18,
         };
-        let _node2 = get_tree_node(root, pos2);
-        // May or may not find a node at exact end, but shouldn't panic
-
-        // 3. Position in whitespace between tokens
-        let pos3 = Position {
-            line: 0,
-            character: 9,
-        }; // between "is" and "end"
-        let node3 = get_tree_node(root, pos3);
-        assert!(node3.is_some(), "Should find a node via fallback");
-    }
-
-    #[test]
-    fn test_find_component_declaration_tree() {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        // Use code that tree-sitter can reasonably parse (even if as ERROR)
-        let code = r#"
-u0: entity work.my_comp(rtl)
-    port map (clk => clk);
-"#;
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        let tree = parser.parse(code, None).unwrap();
-        drop(_guard);
-
-        // The cursor position after "clk =>"
-        let cursor_offset = code.find("clk => clk").unwrap() + 7;
-
-        // Start from root - the text fallback should find it
-        let result = find_component_declaration(tree.root_node(), code, cursor_offset);
-
-        assert!(result.is_some(), "Should find component declaration");
-        let (name, kind) = result.unwrap();
-        assert_eq!(name, "my_comp", "Should extract component name");
-        assert_eq!(kind, DetectedMapKind::Port, "Should identify as port map");
+        // At end of file, may or may not find node, but shouldn't panic
+        let _ = get_tree_node(root, pos3);
     }
 
     #[test]
     fn test_find_component_declaration_text_fallback() {
         let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        // Intentionally broken VHDL to test text fallback
         let code = r#"
 u1: entity work.my_broken_comp
     port map (
@@ -1115,19 +1263,16 @@ u1: entity work.my_broken_comp
         let tree = parser.parse(code, None).unwrap();
         drop(_guard);
 
-        // Position just after 'sig'
         let cursor_offset = code.find("sig").unwrap() + 3;
-
-        // The text fallback in find_component_declaration should work
         let result = find_component_declaration(tree.root_node(), code, cursor_offset);
 
         assert!(result.is_some(), "Should find component via text fallback");
         let (name, kind) = result.unwrap();
-        assert_eq!(name, "my_broken_comp", "Should extract component name");
-        assert_eq!(kind, DetectedMapKind::Port, "Should identify as port map");
+        assert_eq!(name, "my_broken_comp");
+        assert_eq!(kind, DetectedMapKind::Port);
     }
 
-    // --- BASIC CONTEXT TESTS (RETAINED) ---
+    // --- Basic Context Tests ---
 
     #[test]
     fn test_context_architecture_body() {
@@ -1169,7 +1314,7 @@ u1: entity work.my_broken_comp
         );
     }
 
-    // --- PORT MAP TESTS (CRITICAL FIXES) ---
+    // --- Port Map Tests ---
 
     #[test]
     fn test_port_map_lhs_simple() {
@@ -1199,8 +1344,6 @@ u1: entity work.my_broken_comp
 
     #[test]
     fn test_port_map_incomplete_cursor_inside() {
-        // This is the tricky case where the parser starts at 'design_file'
-        // and the component statement is broken.
         check_context(
             r#"
             u1 : entity work.my_comp 
@@ -1211,7 +1354,7 @@ u1: entity work.my_broken_comp
         );
     }
 
-    // --- GENERIC MAP TESTS ---
+    // --- Generic Map Tests ---
 
     #[test]
     fn test_generic_map_lhs() {
@@ -1243,7 +1386,6 @@ u1: entity work.my_broken_comp
 
     #[test]
     fn test_misparsed_signal_assignment_enter_key() {
-        // This confirms the text fallback logic works for misparsed signal assignment
         check_context(
             r#"
             architecture A of B is
@@ -1260,7 +1402,6 @@ u1: entity work.my_broken_comp
 
     #[test]
     fn test_nested_complex_instantiation() {
-        // Complex instantiation name handling
         check_context(
             r#"
             u_complex: entity work.mylib.my_cpu(rtl)
