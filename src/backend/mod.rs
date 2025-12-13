@@ -188,7 +188,19 @@ impl LanguageServer for Backend {
                 // Hover
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 // Completion
-                completion_provider: Some(CompletionOptions::default()),
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        ">".to_string(),
+                        "(".to_string(),
+                        ",".to_string(),
+                        ":".to_string(),
+                    ]),
+                    work_done_progress_options: Default::default(),
+                    all_commit_characters: None,
+                    ..Default::default()
+                }),
                 // Document symbol
                 document_symbol_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
@@ -456,13 +468,39 @@ impl LanguageServer for Backend {
             .log_message(MessageType::INFO, format!("Context: {:?}", context))
             .await;
 
-        let map = self.analysis_map.read().await;
-        if let Some(analysis) = map.get(&uri) {
-            let items = features::completion::complete_local_scope(analysis, &context, position);
-            return Ok(Some(CompletionResponse::Array(items)));
-        }
+        if let features::completion::CompletionContext::PortMapLhs(ref comp_name)
+        | features::completion::CompletionContext::GenericMapLhs(ref comp_name) = context
+        {
+            let def_uri = {
+                let map = self.analysis_map.read().await;
+                let mut target_uri = None;
 
-        return Ok(None);
+                for (u, analysis) in map.iter() {
+                    if analysis
+                        .symbols
+                        .values()
+                        .any(|s| s.name == *comp_name && s.kind == OxideSymbolKind::Entity)
+                    {
+                        target_uri = Some(u.clone());
+                        break;
+                    }
+                }
+                target_uri
+            };
+
+            if let Some(def_uri) = def_uri {
+                workspace::ensure_fully_parsed(
+                    &self.client,
+                    &self.analysis_map,
+                    &self.parser,
+                    &def_uri,
+                )
+                .await;
+            }
+        }
+        let map = self.analysis_map.read().await;
+        let items = features::completion::complete_scope(&map, &uri, &context, position);
+        return Ok(Some(CompletionResponse::Array(items)));
     }
 
     async fn shutdown(&self) -> Result<()> {

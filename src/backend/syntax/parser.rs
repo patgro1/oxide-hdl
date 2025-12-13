@@ -135,7 +135,7 @@ fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
                 "type_declaration" => (Some(OxideSymbolKind::Struct), false),
                 "subtype_declaration" => (Some(OxideSymbolKind::Struct), false),
                 "signal_declaration" => (Some(OxideSymbolKind::Signal), false),
-                "variable_declaration" => (Some(OxideSymbolKind::Signal), false),
+                "variable_declaration" => (Some(OxideSymbolKind::Variable), false),
                 "constant_declaration" => (Some(OxideSymbolKind::Constant), false),
                 "interface_declaration" => {
                     let kind = determine_interface_kind(node);
@@ -453,7 +453,7 @@ end MyEnt;
         // Check variable inside process
         assert_eq!(proc.children.len(), 1);
         assert_eq!(proc.children[0].name, "counter");
-        assert_eq!(proc.children[0].kind, OxideSymbolKind::Signal); // or Variable if you distinguish
+        assert_eq!(proc.children[0].kind, OxideSymbolKind::Variable); // or Variable if you distinguish
     }
     #[test]
     fn test_04_generics_and_ports() {
@@ -619,7 +619,7 @@ end Complex;
         // 6. Variable inside Process (The deepest level)
         let deep_var = &proc.children[0];
         assert_eq!(deep_var.name, "deep_var");
-        assert_eq!(deep_var.kind, OxideSymbolKind::Signal); // Or Variable if mapped
+        assert_eq!(deep_var.kind, OxideSymbolKind::Variable); // Or Variable if mapped
     }
     #[test]
     fn test_10_subprogram_declarations() {
@@ -922,5 +922,56 @@ end MyMath;
         // If this asserts 0, we found the bug.
         assert!(pkg.children.len() > 0, "Package children were dropped!");
         assert_eq!(pkg.children.len(), 2);
+    }
+    #[test]
+    fn test_17_variable_extraction() {
+        let src = r#"
+architecture Behavior of Chip is
+    signal s_data : std_logic;
+begin
+    process(clk)
+        variable v_count : integer;
+    begin
+        v_count := v_count + 1;
+    end process;
+end Behavior;
+"#;
+        let (tree, _) = parse_text(src);
+        let analysis = extract_document_symbols(src, tree.root_node());
+
+        let arch = analysis
+            .symbols
+            .get("behavior")
+            .expect("Architecture not found");
+
+        // 1. Check Signal in Architecture
+        let signal = arch
+            .children
+            .iter()
+            .find(|s| s.name == "s_data")
+            .expect("Signal s_data not found");
+        assert_eq!(
+            signal.kind,
+            OxideSymbolKind::Signal,
+            "Signals should be parsed as Signal"
+        );
+
+        // 2. Check Variable in Process
+        let process = arch
+            .children
+            .iter()
+            .find(|s| s.kind == OxideSymbolKind::Process)
+            .expect("Process not found");
+        let variable = process
+            .children
+            .iter()
+            .find(|s| s.name == "v_count")
+            .expect("Variable v_count not found");
+
+        assert_eq!(
+            variable.kind,
+            OxideSymbolKind::Variable,
+            "Variables should be parsed as Variable"
+        );
     }
 }
