@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tower_lsp::Client;
+use tower_lsp::lsp_types::Diagnostic;
 use tower_lsp::lsp_types::{MessageType, Url};
 use walkdir::WalkDir;
 
@@ -152,9 +153,9 @@ pub async fn parse_and_update_document(
     parser: Arc<Mutex<crate::backend::Parser>>,
     uri: &Url,
     text: String,
-) {
+) -> Vec<Diagnostic> {
     let uri = uri.clone();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
         let thread_result = builder
             .spawn(move || {
@@ -167,10 +168,13 @@ pub async fn parse_and_update_document(
                     };
                     match tree {
                         Some(t) => {
-                            let analysis = parser::extract_document_symbols(&text, t.root_node());
+                            let root = t.root_node();
+                            let analysis = parser::extract_document_symbols(&text, root);
 
-                            // TODO: Add diagnostics
-                            let diagnostics: Vec<u8> = vec![];
+                            let diagnostics =
+                                crate::backend::features::diagnostics::collect_all_diagnostics(
+                                    root, &text,
+                                );
 
                             Some(Box::new((analysis, diagnostics)))
                         }
@@ -181,15 +185,20 @@ pub async fn parse_and_update_document(
             .unwrap()
             .join();
         if let Ok(Ok(Some(boxed_result))) = thread_result {
-            let (analysis, _) = *boxed_result;
-            tokio::spawn(async move {
-                let mut map = analysis_map.write().await;
-                map.insert(uri.clone(), analysis);
-            });
+            let (analysis, diagnostics) = *boxed_result;
+            (Some(analysis), diagnostics)
+        } else {
+            (None, Vec::new())
         }
     })
     .await
     .unwrap();
+    let (analysis_opt, diagnostics) = result;
+    if let Some(analysis) = analysis_opt {
+        let mut map = analysis_map.write().await;
+        map.insert(uri.clone(), analysis);
+    }
+    diagnostics
 }
 
 /// Checks if a file has only been Shallow-Indexed and performs a JIT upgrade if needed.

@@ -2,7 +2,7 @@
 
 **A blazingly fast, crash-proof VHDL Language Server Protocol (LSP) implementation written in Rust.**
 
-> **Status:** v0.2 (Alpha)
+> **Status:** v0.4 (Alpha)
 > **Focus:** Large Monorepos, Instant Startup, Stability.
 
 Oxide HDL is designed for hardware engineers working with massive VHDL codebases (3,000+ files) who are tired of waiting minutes for their editor to index. It prioritizes **Navigation Speed** and **Editor Responsiveness** over strict compiler-level validation.
