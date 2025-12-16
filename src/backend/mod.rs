@@ -3,6 +3,7 @@
 //! * [`workspace`]: Function related to the workspace
 pub mod features;
 pub mod syntax;
+pub mod utils;
 pub mod workspace;
 
 use crate::config::OxideConfig;
@@ -95,13 +96,16 @@ impl Backend {
     /// * `uri` - The URI of the document being updated.
     /// * `text` - The full text content of the document.
     async fn on_change(&self, uri: Url, text: String) {
-        workspace::parse_and_update_document(
+        let diagnostics = workspace::parse_and_update_document(
             self.analysis_map.clone(),
             self.parser.clone(),
             &uri,
             text,
         )
         .await;
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
     }
 
     /// Helper to construct a consistent `Hover` response object.
