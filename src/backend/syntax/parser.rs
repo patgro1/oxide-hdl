@@ -1,32 +1,8 @@
 // src/backend/syntax/parser.rs
 
 use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel, Symbol};
-use tower_lsp::lsp_types::{Position, Range};
+use crate::backend::utils::node_to_range;
 use tree_sitter::{Node, TreeCursor};
-
-/// Converts a Tree-sitter `Node` into a standard LSP `Range`.
-///
-/// Tree-sitter uses row/column (0-indexed), which matches the LSP protocol.
-///
-/// # Arguments
-/// * `node` - The Tree-sitter node to convert.
-///
-/// # Returns
-/// An LSP `Range` struct covering the start and end positions of the node.
-pub fn node_to_range(node: Node) -> Range {
-    let start = node.start_position();
-    let end = node.end_position();
-    Range {
-        start: Position {
-            line: start.row as u32,
-            character: start.column as u32,
-        },
-        end: Position {
-            line: end.row as u32,
-            character: end.column as u32,
-        },
-    }
-}
 
 /// Recursively extracts all VHDL symbols from a parsed syntax tree.
 ///
@@ -113,6 +89,10 @@ fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
     if cursor.goto_first_child() {
         loop {
             let node = cursor.node();
+            if node.is_error() || node.has_error() {
+                eprintln!("ERROR NODE: {:?} at {:?}", node, node.range());
+                eprintln!("Text: {:?}", &text[node.byte_range()]);
+            }
             let kind = node.kind();
             let (symbol_kind, is_container) = match kind {
                 // Scope
