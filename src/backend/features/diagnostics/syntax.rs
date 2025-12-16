@@ -122,13 +122,43 @@ pub fn check_signal_declaration(node: Node, collectors: &mut DiagnosticCollector
 /// ```
 pub fn check_port_declaration(node: Node, collectors: &mut DiagnosticCollectors) {
     // Try to find the simple_mode_indication that should have the direction (mode)
-    let has_direction = has_descendant_of_kind(node, "mode");
-    if !has_direction {
-        collectors.syntax.push(create_diagnostic(
-            node,
-            DiagnosticMessage::PortMissingDirection,
-        ));
+    // We need to figure out if we are in a port clause
+
+    if is_in_port_clause(node) {
+        let has_direction = has_descendant_of_kind(node, "mode");
+        if !has_direction {
+            collectors.syntax.push(create_diagnostic(
+                node,
+                DiagnosticMessage::PortMissingDirection,
+            ));
+        }
     }
+}
+
+/// Check if the current node is in a port_clause or generic_clause
+///
+/// # Arguments
+///
+/// * `node` - The node to validate
+///
+/// # Return
+/// true if in a port clause, false otherwise
+fn is_in_port_clause(node: Node) -> bool {
+    let mut current = node.parent();
+
+    while let Some(parent) = current {
+        match parent.kind() {
+            "port_clause" => return true,
+            "generic_clause" => return false,
+            "interface_list" => {
+                current = parent.parent();
+            }
+            _ => {
+                current = parent.parent();
+            }
+        }
+    }
+    false
 }
 
 /// Validates that a label is attached to a valid construct.
