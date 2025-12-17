@@ -291,6 +291,10 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                         DeclType::Constant,
                     ));
                     collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                } else if decl_child.kind() == "type_declaration"
+                    || decl_child.kind() == "subtype_declaration"
+                {
+                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -1367,5 +1371,48 @@ end architecture;
             })
             .collect();
         assert_eq!(unused_names.len(), 2);
+    }
+    #[test]
+    fn test_constant_used_in_type_definition() {
+        let code = r#"
+architecture rtl of test is
+    constant WIDTH : integer := 8;
+    constant MAX_VAL : integer := 100;
+    
+    type array_type is array(0 to WIDTH-1) of std_logic;
+    subtype range_type is integer range 0 to MAX_VAL;
+    
+    signal my_array : array_type;
+    signal my_val : range_type;
+begin
+    my_array(0) <= '1';
+    my_val <= 50;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constants used in type definitions should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_constant_used_in_subtype_range() {
+        let code = r#"
+architecture rtl of test is
+    constant MIN : integer := 0;
+    constant MAX : integer := 255;
+    signal value : integer range MIN to MAX;
+begin
+    value <= 100;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constants used in signal subtype ranges should not be flagged"
+        );
     }
 }
