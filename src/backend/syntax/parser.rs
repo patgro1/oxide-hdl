@@ -1,6 +1,6 @@
 // src/backend/syntax/parser.rs
 
-use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel, Symbol};
+use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel, Symbol, build_arch_scope_tree};
 use crate::backend::utils::node_to_range;
 use tree_sitter::{Node, TreeCursor};
 
@@ -29,6 +29,18 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
 
     for sym in symbols {
         analysis.symbols.insert(sym.name.to_lowercase(), sym);
+    }
+
+    let mut cursor = root_node.walk();
+    for node in root_node.children(&mut cursor) {
+        if node.kind() == "design_unit" {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "architecture_definition" {
+                    let scope_tree = build_arch_scope_tree(child, text);
+                    analysis.scope_trees.push(scope_tree);
+                }
+            }
+        }
     }
 
     analysis
@@ -901,7 +913,7 @@ end MyMath;
         }
 
         // If this asserts 0, we found the bug.
-        assert!(pkg.children.len() > 0, "Package children were dropped!");
+        assert!(!pkg.children.is_empty(), "Package children were dropped!");
         assert_eq!(pkg.children.len(), 2);
     }
     #[test]

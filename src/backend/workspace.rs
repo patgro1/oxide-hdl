@@ -173,7 +173,7 @@ pub async fn parse_and_update_document(
 
                             let diagnostics =
                                 crate::backend::features::diagnostics::collect_all_diagnostics(
-                                    root, &text,
+                                    root, &analysis, &text,
                                 );
 
                             Some(Box::new((analysis, diagnostics)))

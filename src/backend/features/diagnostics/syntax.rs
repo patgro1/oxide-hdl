@@ -381,6 +381,7 @@ mod tests {
     /// Recursively prints the AST structure for debugging.
     ///
     /// Useful for understanding how Tree-sitter parses broken VHDL syntax.
+    #[allow(dead_code)]
     fn print_ast(node: Node, text: &str, indent: usize) {
         let indent_str = "  ".repeat(indent);
         let node_text = &text[node.byte_range()];
@@ -407,35 +408,22 @@ mod tests {
         }
     }
 
-    /// Checks code for syntax errors and returns diagnostics.
     fn check_syntax_errors(code: &str) -> Vec<Diagnostic> {
         let tree = parse_text(code);
         let root = tree.root_node();
-        let mut collectors = super::super::DiagnosticCollectors::new();
-        super::super::walk_node(root, code, &mut collectors);
-        collectors.syntax
+        let analysis = crate::backend::syntax::parser::extract_document_symbols(code, root);
+
+        let all_diags = super::super::collect_all_diagnostics(root, &analysis, code);
+
+        // DEBUG: Print what we got
+        eprintln!("\n=== Diagnostics returned: {} ===", all_diags.len());
+        for (i, d) in all_diags.iter().enumerate() {
+            eprintln!("  [{}] {} at line {}", i, d.message, d.range.start.line);
+        }
+        eprintln!("=== End Diagnostics ===\n");
+
+        all_diags
     }
-
-    /// Debug version that prints the AST before checking.
-    ///
-    /// Useful for debugging test failures - shows how Tree-sitter
-    /// parsed the broken code.
-    #[allow(dead_code)]
-    fn check_syntax_errors_debug(code: &str) -> Vec<Diagnostic> {
-        let tree = parse_text(code);
-        let root = tree.root_node();
-
-        eprintln!("\n=== AST for test ===");
-        print_ast(root, code, 0);
-        eprintln!("=== End AST ===\n");
-
-        let mut collectors = super::super::DiagnosticCollectors::new();
-        super::super::walk_node(root, code, &mut collectors);
-        collectors.syntax
-    }
-
-    // Tests continue below with existing implementations...
-    // (keeping all the test functions as they are)
 
     #[test]
     fn test_triple_colon_detected() {
@@ -451,6 +439,8 @@ end entity;
         assert!(!diags.is_empty(), "Should detect triple colon syntax error");
         assert_eq!(diags[0].message, DiagnosticMessage::SyntaxError.to_string());
     }
+
+    // ... rest of tests unchanged ...
 
     #[test]
     fn test_missing_semicolon_after_port() {
@@ -887,7 +877,7 @@ begin
         ;  -- Missing opening paren
 end architecture;
 "#;
-        let diags = check_syntax_errors_debug(code);
+        let diags = check_syntax_errors(code);
 
         eprintln!("\nDiagnostics found:");
         for (i, d) in diags.iter().enumerate() {
@@ -920,7 +910,7 @@ begin
 
 end architecture;
 "#;
-        let diags = check_syntax_errors_debug(code);
+        let diags = check_syntax_errors(code);
 
         eprintln!("\nDiagnostics found:");
         for (i, d) in diags.iter().enumerate() {

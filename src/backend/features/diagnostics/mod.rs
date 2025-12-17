@@ -4,9 +4,11 @@
 //! of errors in VHDL code, including syntax errors, missing semicolons, unmatched
 //! parentheses, and semantic issues like missing types or port directions.
 
+pub mod sensitivity;
 pub mod syntax;
 pub mod unused;
 
+use crate::analysis::{Analysis, ScopeTree};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use tree_sitter::Node;
 
@@ -125,7 +127,8 @@ impl DiagnosticCollectors {
 ///
 /// # Arguments
 ///
-/// * `root` - The root node of the Tree-sitter parse tree
+/// * `root` - The root node the collect diagnostic on
+/// * `analysis` - The analysis of the current document
 /// * `text` - The full source text of the file
 ///
 /// # Returns
@@ -136,12 +139,34 @@ impl DiagnosticCollectors {
 ///
 /// ```ignore
 /// let tree = parser.parse(source_code, None)?;
-/// let diagnostics = collect_all_diagnostics(tree.root_node(), source_code);
+/// let diagnostics = collect_all_diagnostics(tree.root_node(), analysis, source_code);
 /// client.publish_diagnostics(uri, diagnostics, None).await;
 /// ```
-pub fn collect_all_diagnostics(root: Node, text: &str) -> Vec<Diagnostic> {
+pub fn collect_all_diagnostics(root: Node, analysis: &Analysis, text: &str) -> Vec<Diagnostic> {
     let mut collectors = DiagnosticCollectors::new();
-    walk_node(root, text, &mut collectors);
+
+    if root.kind() == ERROR_NODE_KIND {
+        syntax::check_syntax_error(root, &mut collectors);
+    }
+    let mut cursor = root.walk();
+    let mut arch_index = 0;
+
+    for node in root.children(&mut cursor) {
+        if node.kind() == "design_unit" {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "architecture_definition" {
+                    let scope_tree = analysis.scope_trees.get(arch_index);
+                    walk_node(child, text, scope_tree, &mut collectors);
+                    arch_index += 1;
+                } else {
+                    walk_node(child, text, None, &mut collectors);
+                }
+            }
+        } else {
+            walk_node(node, text, None, &mut collectors);
+        }
+    }
+
     collectors.into_diagnostics()
 }
 
@@ -153,14 +178,20 @@ pub fn collect_all_diagnostics(root: Node, text: &str) -> Vec<Diagnostic> {
 /// # Arguments
 ///
 /// * `node` - The current Tree-sitter node to check
+/// * `scope_trees` - Vector containing all the scope trees of the document
 /// * `text` - The full source text of the file
 /// * `collectors` - Mutable reference to diagnostic collectors
-fn walk_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
-    check_node(node, text, collectors);
+fn walk_node(
+    node: Node,
+    text: &str,
+    scope_tree: Option<&ScopeTree>,
+    collectors: &mut DiagnosticCollectors,
+) {
+    check_node(node, text, scope_tree, collectors);
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_node(child, text, collectors);
+        walk_node(child, text, scope_tree, collectors);
     }
 }
 
@@ -173,6 +204,7 @@ fn walk_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
 /// # Arguments
 ///
 /// * `node` - The Tree-sitter node to check
+/// * `scope_trees` - Vector containing all the scope trees of the document
 /// * `text` - The full source text of the file
 /// * `collectors` - Mutable reference to diagnostic collectors
 ///
@@ -186,7 +218,12 @@ fn walk_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
 /// - `label_declaration` - Valid label target
 /// - `sensitivity_specification` - Matching parentheses
 /// - `association_list` - Matching parentheses in port maps
-fn check_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
+fn check_node(
+    node: Node,
+    text: &str,
+    scope_tree: Option<&ScopeTree>,
+    collectors: &mut DiagnosticCollectors,
+) {
     if node.kind() == ERROR_NODE_KIND {
         syntax::check_syntax_error(node, collectors);
     }
@@ -196,7 +233,9 @@ fn check_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
 
     match node.kind() {
         "architecture_definition" => {
-            unused::check_unused_signals(node, text, collectors);
+            if let Some(scope_tree) = scope_tree {
+                unused::check_unused_signals(scope_tree, collectors);
+            }
         }
         "signal_declaration" => {
             syntax::check_signal_declaration(node, collectors);
@@ -206,6 +245,9 @@ fn check_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
                 collectors,
                 DiagnosticMessage::MissingSemicolon,
             )
+        }
+        "process_statement" => {
+            sensitivity::check_process_sensitivity(node, text, collectors);
         }
         "interface_declaration" => {
             syntax::check_port_declaration(node, collectors);
