@@ -5,6 +5,7 @@
 //! parentheses, and semantic issues like missing types or port directions.
 
 pub mod syntax;
+pub mod unused;
 
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use tree_sitter::Node;
@@ -194,6 +195,9 @@ fn check_node(node: Node, text: &str, collectors: &mut DiagnosticCollectors) {
     }
 
     match node.kind() {
+        "architecture_definition" => {
+            unused::check_unused_signals(node, text, collectors);
+        }
         "signal_declaration" => {
             syntax::check_signal_declaration(node, collectors);
             syntax::check_end_with_semicolon(
