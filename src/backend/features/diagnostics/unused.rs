@@ -60,6 +60,27 @@ pub enum ScopeKind {
     Block,
 }
 
+/// Define where the usage is done...
+/// A usage inside a decl is not necessary a valid usage depending on
+/// what is used so we keep track of where it is used
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UsageContext {
+    /// Used in specification (i.e. signal type, constant expression)
+    TypeSpec,
+
+    /// Used in behavioral code (assignment, expressions)
+    Behavioral,
+}
+
+/// Data structure to keep track of the identifier usage
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct Usage {
+    // Name of the signal, variable, constant
+    name: String,
+    // Context in which it was used
+    context: UsageContext,
+}
+
 /// A declaration of a signal, variable, or constant.
 ///
 /// Contains all information needed to create a diagnostic if the
@@ -141,7 +162,7 @@ pub struct ScopeTree {
     declarations: Vec<Declaration>,
 
     /// Identifiers referenced directly in this scope (not including children)
-    local_usage: HashSet<String>,
+    local_usage: HashSet<Usage>,
 
     /// Child scopes nested within this scope
     children: Vec<ScopeTree>,
@@ -187,7 +208,7 @@ impl ScopeTree {
 
         // Check local declarations for usage
         for decl in &self.declarations {
-            if !self.is_used_anywhere(&decl.name.to_lowercase()) {
+            if !self.is_used_anywhere(decl) {
                 unused.push(decl.clone());
             }
         }
@@ -207,18 +228,25 @@ impl ScopeTree {
     ///
     /// # Arguments
     ///
-    /// * `name` - Identifier name to search for (case-insensitive)
+    /// * `decl` - Declaration to search for (case-insensitive)
     ///
     /// # Returns
     ///
     /// `true` if the identifier is referenced anywhere in this scope tree
-    pub fn is_used_anywhere(&self, name: &str) -> bool {
-        if self.local_usage.contains(name) {
+    pub fn is_used_anywhere(&self, decl: &Declaration) -> bool {
+        let decl_name_lower = decl.name.to_lowercase();
+        let used_locally = match decl.decl_type {
+            DeclType::Constant => self.local_usage.iter().any(|u| u.name == decl_name_lower),
+            DeclType::Signal | DeclType::Variable => self
+                .local_usage
+                .iter()
+                .any(|u| u.name == decl_name_lower && u.context == UsageContext::Behavioral),
+        };
+        if used_locally {
             return true;
         }
-
         for child in &self.children {
-            if child.is_used_anywhere(name) {
+            if child.is_used_anywhere(decl) {
                 return true;
             }
         }
@@ -255,12 +283,14 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                         text,
                         DeclType::Signal,
                     ));
+                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                 } else if decl_child.kind() == "constant_declaration" {
                     tree.declarations.extend(extract_signal_names(
                         decl_child,
                         text,
                         DeclType::Constant,
                     ));
+                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -286,7 +316,12 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                     "block_statement" => tree
                         .children
                         .push(build_block_scope_tree(inner_child, text)),
-                    _ => collect_identifiers_recursive(inner_child, text, &mut tree.local_usage),
+                    _ => collect_identifiers_recursive(
+                        inner_child,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut tree.local_usage,
+                    ),
                 }
             }
             break;
@@ -323,6 +358,7 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
                         text,
                         DeclType::Variable,
                     ));
+                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -334,9 +370,19 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     for child in process_node.children(&mut cursor) {
         if child.kind() == "sensitivity_specification" {
             // Signals in sensitivity list are considered used
-            collect_identifiers_recursive(child, text, &mut tree.local_usage);
+            collect_identifiers_recursive(
+                child,
+                text,
+                UsageContext::Behavioral,
+                &mut tree.local_usage,
+            );
         } else if child.kind() == "sequential_block" {
-            collect_identifiers_recursive(child, text, &mut tree.local_usage);
+            collect_identifiers_recursive(
+                child,
+                text,
+                UsageContext::Behavioral,
+                &mut tree.local_usage,
+            );
             break;
         }
     }
@@ -382,12 +428,14 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                             text,
                             DeclType::Signal,
                         ));
+                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                     } else if decl_child.kind() == "constant_declaration" {
                         tree.declarations.extend(extract_signal_names(
                             decl_child,
                             text,
                             DeclType::Constant,
                         ));
+                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                     }
                 }
             } else if child.kind() == "generate_block" {
@@ -407,9 +455,12 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                         "block_statement" => tree
                             .children
                             .push(build_block_scope_tree(inner_child, text)),
-                        _ => {
-                            collect_identifiers_recursive(inner_child, text, &mut tree.local_usage)
-                        }
+                        _ => collect_identifiers_recursive(
+                            inner_child,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        ),
                     }
                 }
             }
@@ -451,12 +502,14 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                             text,
                             DeclType::Signal,
                         ));
+                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                     } else if decl_child.kind() == "constant_declaration" {
                         tree.declarations.extend(extract_signal_names(
                             decl_child,
                             text,
                             DeclType::Constant,
                         ));
+                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                     }
                 }
             } else if child.kind() == "generate_block" {
@@ -475,9 +528,12 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                         "block_statement" => tree
                             .children
                             .push(build_block_scope_tree(inner_child, text)),
-                        _ => {
-                            collect_identifiers_recursive(inner_child, text, &mut tree.local_usage)
-                        }
+                        _ => collect_identifiers_recursive(
+                            inner_child,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        ),
                     }
                 }
             }
@@ -514,12 +570,14 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                         text,
                         DeclType::Signal,
                     ));
+                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                 } else if decl_child.kind() == "constant_declaration" {
                     tree.declarations.extend(extract_signal_names(
                         decl_child,
                         text,
                         DeclType::Constant,
                     ));
+                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -545,7 +603,12 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                     "block_statement" => tree
                         .children
                         .push(build_block_scope_tree(inner_child, text)),
-                    _ => collect_identifiers_recursive(inner_child, text, &mut tree.local_usage),
+                    _ => collect_identifiers_recursive(
+                        inner_child,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut tree.local_usage,
+                    ),
                 }
             }
             break;
@@ -618,7 +681,7 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
             if child.kind() == "identifier" {
                 let signal_name = &text[child.byte_range()];
                 signals.push(Declaration {
-                    name: signal_name.to_string().to_lowercase(),
+                    name: signal_name.to_string(),
                     decl_type: decl_type.clone(),
                     node_info: NodeInfo::from_node(child),
                 });
@@ -626,6 +689,25 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
         }
     }
     signals
+}
+
+/// Extract identifiers from declartion
+///
+/// Will extract every identifier on the right side of a declaration
+///
+/// # Arguments
+///
+/// `node` - Root node to search from
+/// `text` - Full source text
+/// `references` - Mutable set to collect identifer names into
+fn collect_identifier_from_decl(node: Node, text: &str, references: &mut HashSet<Usage>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier_list" => {}
+            _ => collect_identifiers_recursive(child, text, UsageContext::TypeSpec, references),
+        }
+    }
 }
 
 /// Recursively collects all identifier references in a subtree.
@@ -638,13 +720,21 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
 /// * `node` - Root node to search from
 /// * `text` - Full source text
 /// * `references` - Mutable set to collect identifier names into
-fn collect_identifiers_recursive(node: Node, text: &str, references: &mut HashSet<String>) {
+fn collect_identifiers_recursive(
+    node: Node,
+    text: &str,
+    context: UsageContext,
+    references: &mut HashSet<Usage>,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "identifier" {
-            references.insert(text[child.byte_range()].to_string().to_lowercase());
+            references.insert(Usage {
+                name: text[child.byte_range()].to_string().to_lowercase(),
+                context: context.clone(),
+            });
         } else {
-            collect_identifiers_recursive(child, text, references);
+            collect_identifiers_recursive(child, text, context.clone(), references);
         }
     }
 }
@@ -1148,5 +1238,134 @@ end architecture;
             1,
             "Should detect unused signal in empty generate"
         );
+    } // Add to tests module in unused.rs
+
+    #[test]
+    fn test_constant_used_in_signal_type() {
+        let code = r#"
+architecture rtl of test is
+    constant WIDTH : integer := 8;
+    signal data : std_logic_vector(WIDTH-1 downto 0);
+begin
+    data <= (others => '0');
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constant used in signal type should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_constant_used_in_variable_type() {
+        let code = r#"
+architecture rtl of test is
+    constant SIZE : integer := 16;
+begin
+    p_my_proc: process is
+        variable my_var: std_logic_vector(SIZE-1 downto 0);
+    begin
+        my_var:=0;
+    end process;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constant used in variable type should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_constant_used_in_constant_expression() {
+        let code = r#"
+architecture rtl of test is
+    constant BASE : integer := 100;
+    constant DERIVED : integer := BASE * 2;
+    signal result : integer;
+begin
+    result <= DERIVED;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constant used in another constant's expression should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_signal_used_only_in_type_still_unused() {
+        let code = r#"
+architecture rtl of test is
+    signal template : std_logic_vector(7 downto 0);
+    signal copy : std_logic_vector(template'range);
+begin
+    copy <= (others => '0');
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "Signal used only in type declaration should be flagged"
+        );
+        assert!(diags[0].message.contains("template"));
+    }
+
+    #[test]
+    fn test_signal_in_subtype_attribute_still_unused() {
+        let code = r#"
+architecture rtl of test is
+    signal src : std_logic_vector(15 downto 0);
+    signal dst : std_logic_vector(src'length-1 downto 0);
+begin
+    dst <= (others => '1');
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "Signal used only in attribute should be flagged"
+        );
+        assert!(diags[0].message.contains("src"));
+    }
+
+    #[test]
+    fn test_mixed_constant_and_signal_in_types() {
+        let code = r#"
+architecture rtl of test is
+    constant WIDTH : integer := 8;
+    signal template : std_logic_vector(WIDTH-1 downto 0);
+    signal copy : std_logic_vector(template'range);
+    signal used : std_logic_vector(WIDTH-1 downto 0);
+begin
+    used <= (others => '0');
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        // WIDTH is used (in types), template is unused (only in types), copy is unused
+        assert_eq!(diags.len(), 2, "Should flag template and copy");
+        let unused_names: Vec<&str> = diags
+            .iter()
+            .filter_map(|d| {
+                if d.message.contains("template") {
+                    Some("template")
+                } else if d.message.contains("copy") {
+                    Some("copy")
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(unused_names.len(), 2);
     }
 }
