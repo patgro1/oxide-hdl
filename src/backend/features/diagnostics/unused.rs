@@ -727,4 +727,41 @@ end architecture;
             "Constants used in signal subtype ranges should not be flagged"
         );
     }
+
+    #[test]
+    fn test_constant_used_in_if_generate_clause() {
+        let code = r#"
+architecture rtl of test is
+    constant MIN : integer := 0;
+begin
+    value <= 100;
+    g_toto: if MIN > 0 generate
+    end generate;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constants used in signal subtype ranges should not be flagged"
+        );
+    }
+    #[test]
+    fn test_constant_used_in_for_generate_clause() {
+        let code = r#"
+architecture rtl of test is
+    constant MIN : integer := 0;
+begin
+    value <= 100;
+    g_toto: for idx in MIN to 100  generate
+    end generate;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        assert!(
+            diags.is_empty(),
+            "Constants used in signal subtype ranges should not be flagged"
+        );
+    }
 }

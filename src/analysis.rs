@@ -612,14 +612,25 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
     let mut tree = ScopeTree::new(ScopeKind::Generate);
 
     // Find the generate_body nested inside if_generate
-    let body_node = generate_node
+    let mut body_node: Option<Node> = None;
+    let if_generate_node = generate_node
         .children(&mut generate_node.walk())
-        .find(|c| c.kind() == "if_generate")
-        .and_then(|if_gen| {
-            if_gen
-                .children(&mut if_gen.walk())
-                .find(|c| c.kind() == "generate_body")
-        });
+        .find(|c| c.kind() == "if_generate");
+    if let Some(if_generate_node) = if_generate_node {
+        // Find everything that was used in the if statement
+        for inner in if_generate_node.children(&mut if_generate_node.walk()) {
+            if inner.kind() == "generate_body" {
+                body_node = Some(inner);
+            } else {
+                collect_identifiers_recursive(
+                    inner,
+                    text,
+                    UsageContext::Behavioral,
+                    &mut tree.local_usage,
+                );
+            }
+        }
+    }
 
     if let Some(body_node) = body_node {
         let mut cursor = body_node.walk();
@@ -692,9 +703,19 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
     let mut tree = ScopeTree::new(ScopeKind::Generate);
 
     // Find generate_body directly (no if_generate wrapper)
-    let body_node = generate_node
-        .children(&mut generate_node.walk())
-        .find(|c| c.kind() == "generate_body");
+    let mut body_node: Option<Node> = None;
+    for child in generate_node.children(&mut generate_node.walk()) {
+        if child.kind() == "generate_body" {
+            body_node = Some(child);
+        } else if child.kind() == "for_loop" {
+            collect_identifiers_recursive(
+                child,
+                text,
+                UsageContext::Behavioral,
+                &mut tree.local_usage,
+            );
+        }
+    }
 
     if let Some(body_node) = body_node {
         let mut cursor = body_node.walk();
