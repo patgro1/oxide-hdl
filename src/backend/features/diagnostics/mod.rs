@@ -4,7 +4,7 @@
 //! of errors in VHDL code, including syntax errors, missing semicolons, unmatched
 //! parentheses, and semantic issues like missing types or port directions.
 
-pub mod sensitivity;
+// pub mod sensitivity;
 pub mod syntax;
 pub mod unused;
 
@@ -247,7 +247,7 @@ fn check_node(
             )
         }
         "process_statement" => {
-            sensitivity::check_process_sensitivity(node, text, collectors);
+            // sensitivity::check_process_sensitivity(node, text, collectors);
         }
         "interface_declaration" => {
             syntax::check_port_declaration(node, collectors);
