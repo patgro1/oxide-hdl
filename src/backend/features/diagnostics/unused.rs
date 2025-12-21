@@ -28,7 +28,7 @@
 use crate::analysis::{DeclType, ScopeTree};
 use crate::backend::features::diagnostics::DiagnosticCollectors;
 use std::collections::HashSet;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag};
 
 /// Main entry point for unused signal/variable/constant detection.
 ///
@@ -45,9 +45,12 @@ pub fn check_unused_signals(scope_tree: &ScopeTree, collectors: &mut DiagnosticC
     for decl in unused {
         collectors.unused.push(Diagnostic {
             range: decl.node_info.to_range(&decl.name),
-            severity: Some(DiagnosticSeverity::WARNING),
+            severity: Some(DiagnosticSeverity::HINT),
             source: Some("oxide-hdl".to_string()),
+            tags: vec![DiagnosticTag::UNNECESSARY].into(),
             message: match decl.decl_type {
+                DeclType::Generic => format!("Unused generic '{}'", decl.name),
+                DeclType::Port(_) => format!("Unused port '{}'", decl.name),
                 DeclType::Variable => format!("Unused variable '{}'", decl.name),
                 DeclType::Constant => format!("Unused constant '{}'", decl.name),
                 DeclType::Signal => format!("Unused signal '{}'", decl.name),
