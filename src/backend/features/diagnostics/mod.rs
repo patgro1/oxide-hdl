@@ -156,14 +156,14 @@ pub fn collect_all_diagnostics(root: Node, analysis: &Analysis, text: &str) -> V
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "architecture_definition" {
                     let scope_tree = analysis.scope_trees.get(arch_index);
-                    walk_node(child, text, scope_tree, &mut collectors);
+                    walk_node(child, text, scope_tree, analysis, &mut collectors);
                     arch_index += 1;
                 } else {
-                    walk_node(child, text, None, &mut collectors);
+                    walk_node(child, text, None, analysis, &mut collectors);
                 }
             }
         } else {
-            walk_node(node, text, None, &mut collectors);
+            walk_node(node, text, None, analysis, &mut collectors);
         }
     }
 
@@ -185,13 +185,14 @@ fn walk_node(
     node: Node,
     text: &str,
     scope_tree: Option<&ScopeTree>,
+    analysis: &Analysis,
     collectors: &mut DiagnosticCollectors,
 ) {
-    check_node(node, text, scope_tree, collectors);
+    check_node(node, text, scope_tree, analysis, collectors);
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_node(child, text, scope_tree, collectors);
+        walk_node(child, text, scope_tree, analysis, collectors);
     }
 }
 
@@ -222,6 +223,7 @@ fn check_node(
     node: Node,
     text: &str,
     scope_tree: Option<&ScopeTree>,
+    analysis: &Analysis,
     collectors: &mut DiagnosticCollectors,
 ) {
     if node.kind() == ERROR_NODE_KIND {

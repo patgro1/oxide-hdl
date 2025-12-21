@@ -7,6 +7,7 @@
 //! The hierarchical structure of VHDL (Entities containing Ports, Architectures containing Signals)
 //! is represented by the recursive [`Symbol`] struct.
 //!
+use crate::backend::utils::node_to_range;
 use core::fmt;
 use std::collections::{HashMap, HashSet};
 use tower_lsp::lsp_types::{Position, Range, SymbolKind};
@@ -148,6 +149,9 @@ pub struct Analysis {
     /// How the file was parsed
     pub parse_level: ParseLevel,
 
+    /// Scope tree with entity declaration
+    pub entity_scope_trees: HashMap<String, ScopeTree>,
+
     /// Scope tree with signals, constants, types declaration and usage
     pub scope_trees: Vec<ScopeTree>,
 }
@@ -200,6 +204,7 @@ impl Analysis {
         Self {
             symbols: HashMap::new(),
             parse_level: ParseLevel::Shallow,
+            entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
         }
     }
@@ -230,6 +235,27 @@ impl Analysis {
         }
         None
     }
+
+    /// Gives the list of visible declaration from a node.
+    ///
+    /// # Arguments
+    ///
+    /// * `arch_scope` - ScopeTree of the architecture containing the target
+    /// * `target` - Range of the targeted node we inquiriy visible declaration on
+    ///
+    /// # Returns
+    /// A vector of Declaration containing all seen declaration if any, None otherwise
+    pub fn collect_visible_declarations(
+        &self,
+        arch_scope: &ScopeTree,
+        target: Range,
+    ) -> Option<Vec<Declaration>> {
+        let entity_scope = arch_scope
+            .entity
+            .as_ref()
+            .and_then(|name| self.entity_scope_trees.get(name));
+        arch_scope.collect_visible_declarations(&target, entity_scope)
+    }
 }
 
 /// Hierarchical scope tree representing VHDL code structure.
@@ -250,6 +276,15 @@ pub struct ScopeTree {
     #[allow(dead_code)]
     pub kind: ScopeKind,
 
+    /// Range where the Scope is
+    pub range: Range,
+
+    // Name of the current scope (label, entity name, arch name)
+    pub name: Option<String>,
+
+    // Entity attached to the current scope tree
+    pub entity: Option<String>,
+
     /// Declarations made in this scope
     pub declarations: Vec<Declaration>,
 
@@ -266,6 +301,11 @@ pub struct ScopeTree {
 /// more specific diagnostic messages.
 #[derive(Debug, Clone)]
 pub enum DeclType {
+    /// Entity Generic
+    Generic,
+    /// Entity port with direction
+    #[allow(dead_code)]
+    Port(PortDirection),
     /// Constant declaration (value cannot change)
     Constant,
     /// Signal declaration (architecture/generate/block level)
@@ -274,12 +314,31 @@ pub enum DeclType {
     Variable,
 }
 
+/// Port Direction
+///
+/// Distinguishes between mode indications
+#[derive(Debug, Clone, Copy)]
+pub enum PortDirection {
+    /// Input Port
+    In,
+    /// Output Port
+    Out,
+    /// Bidir port
+    InOut,
+    /// Buffer port (Out that can be read)
+    Buffer,
+    /// Linkage (connection with mixed language or mixed-signals)
+    Linkage,
+}
+
 /// Kind of scope in the VHDL hierarchy.
 ///
 /// Each scope level has different rules about what can be declared
 /// and how visibility works.
 #[derive(Debug, Clone)]
 pub enum ScopeKind {
+    /// Entity scope - can declare ports and generics
+    Entity,
     /// Architecture scope - can declare signals and constants
     Architecture,
     /// Process scope - can declare variables and constants
@@ -303,12 +362,29 @@ pub enum UsageContext {
 }
 
 /// Data structure to keep track of the identifier usage
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq)]
 pub struct Usage {
     // Name of the signal, variable, constant
     pub name: String,
     // Context in which it was used
     pub context: UsageContext,
+    // Location of this particular usage in the file
+    pub range: Range,
+}
+
+impl std::hash::Hash for Usage {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Only hash name and context, not range
+        self.name.hash(state);
+        self.context.hash(state);
+    }
+}
+
+impl PartialEq for Usage {
+    fn eq(&self, other: &Self) -> bool {
+        // Only compare name and context
+        self.name == other.name && self.context == other.context
+    }
 }
 
 /// A declaration of a signal, variable, or constant.
@@ -376,9 +452,12 @@ impl ScopeTree {
     /// # Arguments
     ///
     /// * `kind` - The type of scope this node represents
-    pub fn new(kind: ScopeKind) -> Self {
+    pub fn new(kind: ScopeKind, node: &Node) -> Self {
         Self {
             kind,
+            name: None,
+            entity: None,
+            range: node_to_range(*node),
             declarations: Vec::new(),
             local_usage: HashSet::new(),
             children: Vec::new(),
@@ -438,8 +517,10 @@ impl ScopeTree {
     pub fn is_used_anywhere(&self, decl: &Declaration) -> bool {
         let decl_name_lower = decl.name.to_lowercase();
         let used_locally = match decl.decl_type {
-            DeclType::Constant => self.local_usage.iter().any(|u| u.name == decl_name_lower),
-            DeclType::Signal | DeclType::Variable => self
+            DeclType::Constant | DeclType::Generic => {
+                self.local_usage.iter().any(|u| u.name == decl_name_lower)
+            }
+            DeclType::Port(_) | DeclType::Signal | DeclType::Variable => self
                 .local_usage
                 .iter()
                 .any(|u| u.name == decl_name_lower && u.context == UsageContext::Behavioral),
@@ -454,6 +535,161 @@ impl ScopeTree {
         }
         false
     }
+
+    pub fn collect_visible_declarations(
+        &self,
+        target: &Range,
+        entity: Option<&ScopeTree>,
+    ) -> Option<Vec<Declaration>> {
+        // Breaking recursion if we are the target
+        if self.range == *target {
+            return Some(self.declarations.clone());
+        }
+        for child in &self.children {
+            if let Some(mut child_decl) = child.collect_visible_declarations(target, None) {
+                child_decl.extend(self.declarations.clone());
+                if let Some(entity) = entity {
+                    child_decl.extend(entity.declarations.clone());
+                }
+                return Some(child_decl);
+            }
+        }
+        None
+    }
+}
+
+/// Builds a complete scope tree for an entity.
+///
+///
+/// # Arguments
+///
+/// * `ent_node` - Tree-sitter node of type `entity_declaration`
+/// * `text` - Full source text of the file
+///
+/// # Returns
+///
+/// Root node of the scope tree representing the entire entity declaration
+pub fn build_entity_scope_tree(ent_node: Node, text: &str) -> ScopeTree {
+    let mut tree = ScopeTree::new(ScopeKind::Entity, &ent_node);
+    if let Some(name_node) = ent_node.child_by_field_name("entity") {
+        tree.name = Some(text[name_node.byte_range()].to_string());
+        for child in ent_node.children(&mut ent_node.walk()) {
+            if child.kind() == "entity_head" {
+                for inner in child.children(&mut child.walk()) {
+                    match inner.kind() {
+                        "generic_clause" => {
+                            tree.declarations
+                                .extend(extract_decl_from_generic_clause(inner, text));
+                        }
+                        "port_clause" => {
+                            tree.declarations
+                                .extend(extract_decl_from_port_clause(inner, text));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    tree
+}
+
+/// Extract generics from the generic clause
+///
+///
+/// # Arguments
+///
+/// * `generic_clause` - The generic clause node
+/// * `text` - Full source text of the file
+///
+/// # Returns
+///
+/// Vector of Declaration of all the generics
+fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Declaration> {
+    let mut declarations = Vec::new();
+    if let Some(interface_list) = generic_clause
+        .children(&mut generic_clause.walk())
+        .find(|c| c.kind() == "interface_list")
+    {
+        // Clear and debuggable
+        for interface_decl in interface_list.children(&mut interface_list.walk()) {
+            if interface_decl.kind() != "interface_declaration" {
+                continue;
+            }
+            declarations.extend(extract_signal_names(
+                interface_decl,
+                text,
+                DeclType::Generic,
+            ));
+        }
+    }
+    declarations
+}
+
+/// Extract ports from the port clause
+///
+///
+/// # Arguments
+///
+/// * `port_clause` - The port clause node
+/// * `text` - Full source text of the file
+///
+/// # Returns
+///
+/// Vector of Declaration of all the ports
+fn extract_decl_from_port_clause(port_clause: Node, text: &str) -> Vec<Declaration> {
+    let mut declarations = Vec::new();
+    if let Some(interface_list) = port_clause
+        .children(&mut port_clause.walk())
+        .find(|c| c.kind() == "interface_list")
+    {
+        for interface_decl in interface_list.children(&mut interface_list.walk()) {
+            if interface_decl.kind() != "interface_declaration" {
+                continue;
+            }
+            let direction = extract_direction_from_interface(interface_decl, text);
+            declarations.extend(extract_signal_names(
+                interface_decl,
+                text,
+                DeclType::Port(direction),
+            ));
+        }
+    }
+
+    declarations
+}
+
+/// Extract the direction from the port declaration
+///
+///
+/// # Arguments
+///
+/// * `interface_clause` - The interface clause node
+/// * `text` - Full source text of the file
+///
+/// # Returns
+///
+/// PortDirection (defaults to IN)
+fn extract_direction_from_interface(interface_clause: Node, text: &str) -> PortDirection {
+    for child in interface_clause.children(&mut interface_clause.walk()) {
+        if child.kind() == "simple_mode_indication" {
+            for inner in child.children(&mut child.walk()) {
+                if inner.kind() == "mode" {
+                    let mode_text = text[inner.byte_range()].to_lowercase();
+                    return match mode_text.as_str() {
+                        "in" => PortDirection::In,
+                        "out" => PortDirection::Out,
+                        "inout" => PortDirection::InOut,
+                        "buffer" => PortDirection::Buffer,
+                        "linkage" => PortDirection::Linkage,
+                        _ => PortDirection::In,
+                    };
+                }
+            }
+        }
+    }
+    PortDirection::In
 }
 
 /// Builds a complete scope tree for an architecture.
@@ -471,7 +707,13 @@ impl ScopeTree {
 ///
 /// Root node of the scope tree representing the entire architecture
 pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
-    let mut tree = ScopeTree::new(ScopeKind::Architecture);
+    let mut tree = ScopeTree::new(ScopeKind::Architecture, &arch_node);
+
+    // TODO: extract that entity name associated with the architecuture
+    if let Some(entity_name_node) = arch_node.child_by_field_name("entity") {
+        let entity_name = text[entity_name_node.byte_range()].to_lowercase();
+        tree.entity = Some(entity_name);
+    }
 
     // Collect architecture-level declarations from architecture_head
     let mut cursor = arch_node.walk();
@@ -550,7 +792,7 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
 ///
 /// Scope tree node representing the process
 pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
-    let mut tree = ScopeTree::new(ScopeKind::Process);
+    let mut tree = ScopeTree::new(ScopeKind::Process, &process_node);
 
     // Collect variable declarations from process_head
     let mut cursor = process_node.walk();
@@ -609,7 +851,7 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
 ///
 /// Scope tree node representing the generate block
 pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTree {
-    let mut tree = ScopeTree::new(ScopeKind::Generate);
+    let mut tree = ScopeTree::new(ScopeKind::Generate, &generate_node);
 
     // Find the generate_body nested inside if_generate
     let mut body_node: Option<Node> = None;
@@ -700,7 +942,7 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
 ///
 /// Scope tree node representing the generate block
 pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTree {
-    let mut tree = ScopeTree::new(ScopeKind::Generate);
+    let mut tree = ScopeTree::new(ScopeKind::Generate, &generate_node);
 
     // Find generate_body directly (no if_generate wrapper)
     let mut body_node: Option<Node> = None;
@@ -783,7 +1025,7 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
 ///
 /// Scope tree node representing the block
 pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
-    let mut tree = ScopeTree::new(ScopeKind::Block);
+    let mut tree = ScopeTree::new(ScopeKind::Block, &block_node);
 
     // Collect declarations from block_head
     let mut cursor = block_node.walk();
@@ -933,6 +1175,7 @@ pub fn collect_identifiers_recursive(
             references.insert(Usage {
                 name: text[child.byte_range()].to_string().to_lowercase(),
                 context,
+                range: node_to_range(child),
             });
         } else {
             collect_identifiers_recursive(child, text, context, references);
@@ -943,7 +1186,9 @@ pub fn collect_identifiers_recursive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_utils::SHARED_PARSER_LOCK;
     use tower_lsp::lsp_types::{Position, Range}; // Used only for Symbol struct creation
+    use tree_sitter::Parser;
 
     // --- SETUP HELPERS ---
 
@@ -968,6 +1213,13 @@ mod tests {
             detail: None,
             children,
         }
+    }
+    fn parse_text(code: &str) -> tree_sitter::Tree {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        parser.parse(code, None).unwrap()
     }
 
     /// Creates a structure like:
@@ -1065,5 +1317,457 @@ mod tests {
         let sym = analysis.find_symbol("missing_signal");
 
         assert!(sym.is_none());
+    }
+
+    mod collect_visible_tests {
+        use super::*;
+        use tower_lsp::lsp_types::{Position, Range};
+
+        fn make_range(start_line: u32, end_line: u32) -> Range {
+            Range {
+                start: Position {
+                    line: start_line,
+                    character: 0,
+                },
+                end: Position {
+                    line: end_line,
+                    character: 0,
+                },
+            }
+        }
+
+        fn make_node_info(line: u32) -> NodeInfo {
+            NodeInfo { line, column: 0 }
+        }
+
+        fn make_decl(name: &str, decl_type: DeclType) -> Declaration {
+            Declaration {
+                name: name.to_string(),
+                decl_type,
+                node_info: make_node_info(0),
+            }
+        }
+
+        #[test]
+        fn test_target_in_root_scope() {
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 10),
+                name: None,
+                entity: None,
+                declarations: vec![
+                    make_decl("arch_sig", DeclType::Signal),
+                    make_decl("arch_const", DeclType::Constant),
+                ],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let target = make_range(0, 10);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 2);
+            assert!(decls.iter().any(|d| d.name == "arch_sig"));
+            assert!(decls.iter().any(|d| d.name == "arch_const"));
+        }
+
+        #[test]
+        fn test_target_in_nested_scope() {
+            let process = ScopeTree {
+                kind: ScopeKind::Process,
+                range: make_range(5, 15),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("proc_var", DeclType::Variable)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 20),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("arch_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![process],
+            };
+
+            let target = make_range(5, 15);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 2);
+            // Process var should be first (innermost), arch sig second
+            assert_eq!(decls[0].name, "proc_var");
+            assert_eq!(decls[1].name, "arch_sig");
+        }
+
+        #[test]
+        fn test_deeply_nested_three_levels() {
+            let process = ScopeTree {
+                kind: ScopeKind::Process,
+                range: make_range(10, 20),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("level2", DeclType::Variable)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let generate = ScopeTree {
+                kind: ScopeKind::Generate,
+                range: make_range(5, 25),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("level1", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![process],
+            };
+
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 30),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("level0", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![generate],
+            };
+
+            let target = make_range(10, 20);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 3);
+            assert_eq!(decls[0].name, "level2"); // Innermost
+            assert_eq!(decls[1].name, "level1"); // Middle
+            assert_eq!(decls[2].name, "level0"); // Outermost
+        }
+
+        #[test]
+        fn test_target_not_in_scope() {
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 10),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let target = make_range(50, 60);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_sibling_scopes_not_visible() {
+            let process = ScopeTree {
+                kind: ScopeKind::Process,
+                range: make_range(8, 12),
+                name: None,
+                entity: None,
+                declarations: vec![],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let gen1 = ScopeTree {
+                kind: ScopeKind::Generate,
+                range: make_range(5, 15),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("gen1_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![process],
+            };
+
+            let gen2 = ScopeTree {
+                kind: ScopeKind::Generate,
+                range: make_range(16, 25),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("gen2_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 30),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("arch_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![gen1, gen2],
+            };
+
+            let target = make_range(8, 12);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 2);
+            assert!(decls.iter().any(|d| d.name == "arch_sig"));
+            assert!(decls.iter().any(|d| d.name == "gen1_sig"));
+            assert!(!decls.iter().any(|d| d.name == "gen2_sig"));
+        }
+
+        #[test]
+        fn test_empty_scope_tree() {
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 10),
+                name: None,
+                entity: None,
+                declarations: vec![],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let target = make_range(0, 10);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 0);
+        }
+
+        #[test]
+        fn test_multiple_children_only_one_contains_target() {
+            let process = ScopeTree {
+                kind: ScopeKind::Process,
+                range: make_range(18, 22),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("proc_var", DeclType::Variable)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let gen1 = ScopeTree {
+                kind: ScopeKind::Generate,
+                range: make_range(5, 15),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("gen1_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let gen2 = ScopeTree {
+                kind: ScopeKind::Generate,
+                range: make_range(16, 25),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("gen2_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![process],
+            };
+
+            let gen3 = ScopeTree {
+                kind: ScopeKind::Generate,
+                range: make_range(26, 35),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("gen3_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 40),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("arch_sig", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![gen1, gen2, gen3],
+            };
+
+            let target = make_range(18, 22);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 3);
+            assert_eq!(decls[0].name, "proc_var");
+            assert_eq!(decls[1].name, "gen2_sig");
+            assert_eq!(decls[2].name, "arch_sig");
+            assert!(!decls.iter().any(|d| d.name == "gen1_sig"));
+            assert!(!decls.iter().any(|d| d.name == "gen3_sig"));
+        }
+        #[test]
+        fn test_duplicate_names_both_returned() {
+            // Shadowing: process variable "data" shadows arch signal "data"
+            // Both should be in the list (caller handles shadowing)
+
+            let process = ScopeTree {
+                kind: ScopeKind::Process,
+                range: make_range(5, 15),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("data", DeclType::Variable)],
+                local_usage: HashSet::new(),
+                children: vec![],
+            };
+
+            let arch = ScopeTree {
+                kind: ScopeKind::Architecture,
+                range: make_range(0, 20),
+                name: None,
+                entity: None,
+                declarations: vec![make_decl("data", DeclType::Signal)],
+                local_usage: HashSet::new(),
+                children: vec![process],
+            };
+
+            let target = make_range(5, 15);
+            let result = arch.collect_visible_declarations(&target, None);
+
+            assert!(result.is_some());
+            let decls = result.unwrap();
+            assert_eq!(decls.len(), 2);
+            assert_eq!(decls[0].name, "data");
+            assert!(matches!(decls[0].decl_type, DeclType::Variable));
+            assert_eq!(decls[1].name, "data");
+            assert!(matches!(decls[1].decl_type, DeclType::Signal));
+        }
+        #[test]
+        fn test_collect_visible_from_process_includes_entity() {
+            let code = r#"
+entity uart_tx is
+    generic (
+                BAUD_RATE : integer := 9600;
+                DATA_BITS : integer := 8
+            );
+    port (
+             clk : in std_logic;
+             rst : in std_logic;
+             tx_data : in std_logic_vector(7 downto 0);
+             tx_valid : in std_logic;
+             tx_out : out std_logic;
+             tx_ready : out std_logic
+         );
+end entity;
+architecture rtl of uart_tx is
+    constant CONST_A: integer := 0;
+    constant CONST_V: integer := 0;
+    constant CONST_Z: integer := 0;
+    signal toto: std_logic;
+begin
+    p_proc: process() is
+        variable xyz: std_logic_vector(31 downto 0);
+    begin
+    end process;
+end architecture;
+"#;
+
+            let tree = parse_text(code);
+            let root = tree.root_node();
+
+            // Find entity and architecture nodes
+            let mut entity_node = None;
+            let mut arch_node = None;
+
+            for node in root.children(&mut root.walk()) {
+                if node.kind() == "design_unit" {
+                    for child in node.children(&mut node.walk()) {
+                        match child.kind() {
+                            "entity_declaration" => entity_node = Some(child),
+                            "architecture_definition" => arch_node = Some(child),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            assert!(entity_node.is_some());
+            assert!(arch_node.is_some());
+
+            // Build scopes
+            let entity_scope = build_entity_scope_tree(entity_node.unwrap(), code);
+            let arch_scope = build_arch_scope_tree(arch_node.unwrap(), code);
+
+            // Find process range
+            let process_range = arch_scope
+                .children
+                .iter()
+                .find(|c| matches!(c.kind, ScopeKind::Process))
+                .map(|c| c.range)
+                .expect("Should find process");
+
+            // Collect visible declarations from architecture
+            let all_visible = arch_scope
+                .collect_visible_declarations(&process_range, Some(&entity_scope))
+                .expect("Should find process in arch scope");
+
+            // Should have: 1 var + 4 arch decls + 2 generics + 6 ports = 13 total
+            assert_eq!(all_visible.len(), 13);
+
+            // Check process variable
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "xyz" && matches!(d.decl_type, DeclType::Variable))
+            );
+
+            // Check architecture declarations
+            assert!(all_visible.iter().any(|d| d.name == "CONST_A"));
+            assert!(all_visible.iter().any(|d| d.name == "CONST_V"));
+            assert!(all_visible.iter().any(|d| d.name == "CONST_Z"));
+            assert!(all_visible.iter().any(|d| d.name == "toto"));
+
+            // Check entity generics
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "BAUD_RATE" && matches!(d.decl_type, DeclType::Generic))
+            );
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "DATA_BITS" && matches!(d.decl_type, DeclType::Generic))
+            );
+
+            // Check entity ports
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "clk" && matches!(d.decl_type, DeclType::Port(_)))
+            );
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "rst" && matches!(d.decl_type, DeclType::Port(_)))
+            );
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "tx_data" && matches!(d.decl_type, DeclType::Port(_)))
+            );
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "tx_valid" && matches!(d.decl_type, DeclType::Port(_)))
+            );
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "tx_out" && matches!(d.decl_type, DeclType::Port(_)))
+            );
+            assert!(
+                all_visible
+                    .iter()
+                    .any(|d| d.name == "tx_ready" && matches!(d.decl_type, DeclType::Port(_)))
+            );
+        }
     }
 }

@@ -1,6 +1,8 @@
 // src/backend/syntax/parser.rs
 
-use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel, Symbol, build_arch_scope_tree};
+use crate::analysis::{
+    Analysis, OxideSymbolKind, ParseLevel, Symbol, build_arch_scope_tree, build_entity_scope_tree,
+};
 use crate::backend::utils::node_to_range;
 use tree_sitter::{Node, TreeCursor};
 
@@ -35,6 +37,12 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     for node in root_node.children(&mut cursor) {
         if node.kind() == "design_unit" {
             for child in node.children(&mut node.walk()) {
+                if child.kind() == "entity_declaration" {
+                    let scope_tree = build_entity_scope_tree(child, text);
+                    if let Some(ref name) = scope_tree.name {
+                        analysis.entity_scope_trees.insert(name.clone(), scope_tree);
+                    }
+                }
                 if child.kind() == "architecture_definition" {
                     let scope_tree = build_arch_scope_tree(child, text);
                     analysis.scope_trees.push(scope_tree);
