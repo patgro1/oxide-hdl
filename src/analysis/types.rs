@@ -267,4 +267,7 @@ pub struct Declaration {
     pub decl_type: DeclType,
     /// Source location information
     pub range: Range,
+    /// Range of the name itself for jumps
+    #[allow(dead_code)]
+    pub selection_range: Range,
 }

@@ -577,7 +577,8 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
                 signals.push(Declaration {
                     name: signal_name.to_string(),
                     decl_type: decl_type.clone(),
-                    range: node_to_range(child),
+                    range: node_to_range(signal_node),
+                    selection_range: node_to_range(child),
                 });
             }
         }

@@ -22,6 +22,7 @@ mod collect_visible_tests {
             name: name.to_string(),
             decl_type,
             range,
+            selection_range: Range::default(),
         }
     }
 
