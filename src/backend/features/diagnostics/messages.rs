@@ -23,7 +23,7 @@ use tree_sitter::Node;
 /// Diagnostic pointing to the declaration with an appropriate message based on its type
 pub fn unused_identifier(decl: Declaration) -> Diagnostic {
     Diagnostic {
-        range: decl.node_info.to_range(&decl.name),
+        range: decl.range,
         severity: Some(DiagnosticSeverity::HINT),
         source: Some("oxide-hdl".to_string()),
         tags: vec![DiagnosticTag::UNNECESSARY].into(),

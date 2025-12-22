@@ -17,15 +17,11 @@ mod collect_visible_tests {
         }
     }
 
-    fn make_node_info(line: u32) -> NodeInfo {
-        NodeInfo { line, column: 0 }
-    }
-
-    fn make_decl(name: &str, decl_type: DeclType) -> Declaration {
+    fn make_decl(name: &str, decl_type: DeclType, range: Range) -> Declaration {
         Declaration {
             name: name.to_string(),
             decl_type,
-            node_info: make_node_info(0),
+            range,
         }
     }
 
@@ -45,8 +41,8 @@ mod collect_visible_tests {
             name: None,
             entity: None,
             declarations: vec![
-                make_decl("arch_sig", DeclType::Signal),
-                make_decl("arch_const", DeclType::Constant),
+                make_decl("arch_sig", DeclType::Signal, Range::default()),
+                make_decl("arch_const", DeclType::Constant, Range::default()),
             ],
             local_usage: HashSet::new(),
             children: vec![],
@@ -69,7 +65,7 @@ mod collect_visible_tests {
             range: make_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("proc_var", DeclType::Variable)],
+            declarations: vec![make_decl("proc_var", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -79,7 +75,7 @@ mod collect_visible_tests {
             range: make_range(0, 20),
             name: None,
             entity: None,
-            declarations: vec![make_decl("arch_sig", DeclType::Signal)],
+            declarations: vec![make_decl("arch_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
         };
@@ -102,7 +98,7 @@ mod collect_visible_tests {
             range: make_range(10, 20),
             name: None,
             entity: None,
-            declarations: vec![make_decl("level2", DeclType::Variable)],
+            declarations: vec![make_decl("level2", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -112,7 +108,7 @@ mod collect_visible_tests {
             range: make_range(5, 25),
             name: None,
             entity: None,
-            declarations: vec![make_decl("level1", DeclType::Signal)],
+            declarations: vec![make_decl("level1", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
         };
@@ -122,7 +118,7 @@ mod collect_visible_tests {
             range: make_range(0, 30),
             name: None,
             entity: None,
-            declarations: vec![make_decl("level0", DeclType::Signal)],
+            declarations: vec![make_decl("level0", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![generate],
         };
@@ -145,7 +141,7 @@ mod collect_visible_tests {
             range: make_range(0, 10),
             name: None,
             entity: None,
-            declarations: vec![make_decl("sig", DeclType::Signal)],
+            declarations: vec![make_decl("sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -173,7 +169,7 @@ mod collect_visible_tests {
             range: make_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen1_sig", DeclType::Signal)],
+            declarations: vec![make_decl("gen1_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
         };
@@ -183,7 +179,7 @@ mod collect_visible_tests {
             range: make_range(16, 25),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen2_sig", DeclType::Signal)],
+            declarations: vec![make_decl("gen2_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -193,7 +189,7 @@ mod collect_visible_tests {
             range: make_range(0, 30),
             name: None,
             entity: None,
-            declarations: vec![make_decl("arch_sig", DeclType::Signal)],
+            declarations: vec![make_decl("arch_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![gen1, gen2],
         };
@@ -236,7 +232,7 @@ mod collect_visible_tests {
             range: make_range(18, 22),
             name: None,
             entity: None,
-            declarations: vec![make_decl("proc_var", DeclType::Variable)],
+            declarations: vec![make_decl("proc_var", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -246,7 +242,7 @@ mod collect_visible_tests {
             range: make_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen1_sig", DeclType::Signal)],
+            declarations: vec![make_decl("gen1_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -256,7 +252,7 @@ mod collect_visible_tests {
             range: make_range(16, 25),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen2_sig", DeclType::Signal)],
+            declarations: vec![make_decl("gen2_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
         };
@@ -266,7 +262,7 @@ mod collect_visible_tests {
             range: make_range(26, 35),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen3_sig", DeclType::Signal)],
+            declarations: vec![make_decl("gen3_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -276,7 +272,7 @@ mod collect_visible_tests {
             range: make_range(0, 40),
             name: None,
             entity: None,
-            declarations: vec![make_decl("arch_sig", DeclType::Signal)],
+            declarations: vec![make_decl("arch_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![gen1, gen2, gen3],
         };
@@ -303,7 +299,7 @@ mod collect_visible_tests {
             range: make_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("data", DeclType::Variable)],
+            declarations: vec![make_decl("data", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
         };
@@ -313,7 +309,7 @@ mod collect_visible_tests {
             range: make_range(0, 20),
             name: None,
             entity: None,
-            declarations: vec![make_decl("data", DeclType::Signal)],
+            declarations: vec![make_decl("data", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
         };

@@ -4,8 +4,7 @@
 //! the analysis pipeline, including declarations, scope trees, and usage tracking.use std::fmt;
 
 use std::fmt;
-use tower_lsp::lsp_types::{Position, Range, SymbolKind};
-use tree_sitter::Node;
+use tower_lsp::lsp_types::{Range, SymbolKind};
 
 /// Represents the semantic kind of a VHDL symbol.
 ///
@@ -267,50 +266,5 @@ pub struct Declaration {
     /// Type of declaration
     pub decl_type: DeclType,
     /// Source location information
-    pub node_info: NodeInfo,
-}
-
-/// Source location information for a declaration.
-///
-/// Used to create properly positioned diagnostics.
-#[derive(Debug, Clone)]
-pub struct NodeInfo {
-    /// Line number (0-indexed)
-    pub line: u32,
-    /// Column number (0-indexed)
-    pub column: u32,
-}
-
-impl NodeInfo {
-    /// Creates NodeInfo from a Tree-sitter node.
-    ///
-    /// # Arguments
-    ///
-    /// * `node` - Tree-sitter node containing position information
-    pub fn from_node(node: Node) -> Self {
-        Self {
-            line: node.start_position().row as u32,
-            column: node.start_position().column as u32,
-        }
-    }
-
-    /// Converts NodeInfo to an LSP Range.
-    ///
-    /// Creates a range spanning the length of the identifier name.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - Name of the identifier (used to calculate end position)
-    pub fn to_range(&self, name: &str) -> Range {
-        Range {
-            start: Position {
-                line: self.line,
-                character: self.column,
-            },
-            end: Position {
-                line: self.line,
-                character: self.column + (name.len() as u32),
-            },
-        }
-    }
+    pub range: Range,
 }

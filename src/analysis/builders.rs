@@ -3,9 +3,12 @@
 //! Contains functions to build scope trees for entities, architectures,
 //! processes, and other VHDL constructs from parsed syntax trees.
 
-use crate::analysis::{
-    DeclType, Declaration, NodeInfo, PortDirection, ScopeKind, ScopeTree, Usage, UsageContext,
-    collect_identifiers_recursive,
+use crate::{
+    analysis::{
+        DeclType, Declaration, PortDirection, ScopeKind, ScopeTree, Usage, UsageContext,
+        collect_identifiers_recursive,
+    },
+    backend::utils::node_to_range,
 };
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -574,7 +577,7 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
                 signals.push(Declaration {
                     name: signal_name.to_string(),
                     decl_type: decl_type.clone(),
-                    node_info: NodeInfo::from_node(child),
+                    range: node_to_range(child),
                 });
             }
         }
