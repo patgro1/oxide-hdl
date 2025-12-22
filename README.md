@@ -1,122 +1,117 @@
 # Oxide HDL
 
-**A blazingly fast, crash-proof VHDL Language Server Protocol (LSP) implementation written in Rust.**
+A VHDL Language Server Protocol (LSP) implementation written in Rust, focused on large codebases and real-world usability.
 
-> **Status:** v0.4 (Alpha)
-> **Focus:** Large Monorepos, Instant Startup, Stability.
+## Status: v0.4 (Alpha)
 
-Oxide HDL is designed for hardware engineers working with massive VHDL codebases (3,000+ files) who are tired of waiting minutes for their editor to index. It prioritizes **Navigation Speed** and **Editor Responsiveness** over strict compiler-level validation.
+Oxide HDL is functional but actively evolving. Basic LSP features work well, diagnostics are solid, but type system and package support are still in development.
 
-## 🚀 Why Oxide HDL?
+## Why Oxide HDL?
 
-Existing VHDL tools often try to compile the entire world on startup, leading to massive RAM usage and long delays. Oxide HDL takes a **Hybrid Approach**:
+Most VHDL tools try to be full compilers, which means slow startup and heavy memory usage on large projects. Oxide HDL takes a different approach:
 
-1.  **Instant Startup (~100ms):** Uses a multi-threaded **Regex Scanner** to map the global namespace (Entities, Packages) without parsing syntax.
-2.  **Deep Parsing on Demand:** Uses **Tree-sitter** only when you open a file to provide rich syntax highlighting, structure, and local navigation.
-3.  **Just-In-Time (JIT) Resolution:** When you hover over a dependency (e.g., `u_inst : entity work.uart`), Oxide HDL parses the target file in the background (ms latency) to show you ports and generics instantly.
+- **Fast indexing** using Tree-sitter instead of a full compiler frontend
+- **Incremental parsing** - only analyze files you're actively editing
+- **Practical diagnostics** - catches real bugs without requiring perfect compile-ability
+- **Built for monorepos** - designed to handle thousands of VHDL files without grinding to a halt
 
-## ✨ Features
+If you're working on a large FPGA project and your current tools take minutes to index or constantly crash, Oxide HDL might help.
 
-* **⚡ Blazing Fast Indexing:** Indexes thousands of files in sub-seconds.
-* **🔍 Go to Definition:**
-    * Jump to Signals/Variables (Local scope).
-    * Jump to Entities/Components (Global scope).
-    * Jump to Functions/Procedures (even inside Packages).
-* **📦 Rich Hover:**
-    * Hovering an **Instantiation** shows the target Entity's **Ports and Generics**.
-    * Hovering a **Function** shows the full **Signature** (Arguments & Return type).
-* **📑 Document Symbols:** Full support for "Outline View" and "Breadcrumbs" with correct nesting (Architecture -> Process -> Variable).
-* **🛡️ Crash Proof:** Built with robust mutex protection to handle the non-thread-safe nature of VHDL C-grammars safely.
+## Installation
 
-## ⚙️ Configuration (`oxide.toml`)
+### From Source
+```bash
+git clone https://github.com/patgro1/oxide-hdl.git
+cd oxide-hdl
+cargo build --release
+```
 
-Oxide HDL looks for an `oxide.toml` file in the root of your workspace. You can use this to filter out build artifacts and simulation logs.
+The binary will be at `./target/release/oxide-hdl`.
 
-**Example `oxide.toml`:**
+### Editor Setup
 
+**Neovim** (with native LSP):
+```lua
+vim.lsp.start_client({
+  name = "oxide_hdl",
+  cmd = { "/path/to/oxide-hdl" },
+  root_dir = vim.fs.dirname(
+    vim.fs.find({'oxide.toml', '.git'}, { upward = true })[1]
+  ),
+})
+```
+
+**VS Code**: Use a generic LSP extension and point it to the oxide-hdl binary.
+
+Other editors should work with standard LSP client configurations.
+
+## Features
+
+### Working Well
+- **Go to definition** for signals, variables, entities, components
+- **Hover** for type information and documentation
+- **Document symbols** (outline view with proper nesting)
+- **Diagnostics**:
+  - Syntax errors from Tree-sitter
+  - Unused signals, variables, constants (HINT severity)
+  - Incomplete sensitivity lists (WARNING for missing, HINT for unnecessary)
+  - Edge detection (rising_edge, falling_edge, clk'event)
+
+### In Development (v0.5)
+- Package support (use clauses, IEEE libraries)
+- Undeclared identifier detection
+- Duplicate declaration detection
+- Better cross-file entity resolution
+
+### Planned (v0.6+)
+- Full type system with validation
+- Type mismatches in assignments
+- Port map type checking
+- Background indexing and disk cache
+
+## Known Limitations
+
+**No package resolution yet.** Constants and types from `ieee.std_logic_1164` and friends won't be recognized. This means:
+- False positives for "undeclared" on standard types
+- Incomplete sensitivity list validation for package constants
+
+**Per-file analysis only.** Entities and architectures in separate files won't be fully linked. Most features work, but cross-file validation is limited.
+
+**Conservative error handling.** When in doubt, Oxide HDL stays quiet rather than spamming false positives. This means some real issues might be missed.
+
+**Tree-sitter grammar limitations.** VHDL is complex, and the grammar occasionally produces ERROR nodes for valid code. We're working with upstream to fix these.
+
+## Configuration
+
+Create `oxide.toml` in your project root:
 ```toml
-# List of file extensions to index
+# File extensions to index
 extensions = ["vhd", "vhdl"]
 
-# Glob patterns to ignore (gitignore style)
-# Critical for performance in large repos with generated IP or sim logs
+# Paths to ignore (speeds up indexing)
 ignore = [
     "**/build/**",
     "**/simulation/**",
     "**/work/**",
-    "**/incremental_db/**",
     "**/.git/**",
-    "**/*.bak"
 ]
 ```
 
-### 4. Installation & Build
+## Contributing
 
-## 📦 Installation
+Bug reports and PRs welcome. The codebase is being actively refactored (v0.5 development), so check existing issues before starting major work.
 
-*(Instructions for building from source)*
+Main development happens in feature branches, merged incrementally to keep main stable.
 
-```bash
-git clone [https://github.com/yourname/oxide-hdl.git](https://github.com/yourname/oxide-hdl.git)
-cd oxide-hdl
-cargo build --release
-The binary will be located at ./target/release/oxide-hdl.
-```
+## Architecture
 
+- **Tree-sitter** for parsing (fast, incremental, error-tolerant)
+- **Scope trees** for tracking declarations and visibility
+- **tower-lsp** for LSP protocol handling
+- **Modular diagnostics** - each lint is independent
 
-### 5. Editor Setup (Neovim)
+See `/src/analysis` for the core semantic analysis code.
 
-## EDITOR Setup
-
-### Neovim (Native LSP)
-
-Add this to your `init.lua` or LSP configuration:
-
-```lua
-local client = vim.lsp.start_client({
-  name = "oxide_hdl",
-  cmd = { "/path/to/oxide-hdl/target/release/oxide-hdl" },
-  root_dir = vim.fs.dirname(vim.fs.find({'oxide.toml', '.git'}, { upward = true })[1]),
-  on_attach = function(client, bufnr)
-    -- Enable completion, hover, definition, etc.
-    vim.api.nvim_buf_set_option(bufnr, 'omnifunc', 'v:lua.vim.lsp.omnifunc')
-  end,
-})
-
-if not client then
-  vim.notify("Failed to start Oxide HDL")
-else
-  vim.api.nvim_create_autocmd("FileType", {
-    pattern = "vhdl",
-    callback = function()
-      vim.lsp.buf_attach_client(0, client)
-    end,
-  })
-end
-```
-VS Code
-
-Currently requires a generic LSP extension (like "Glspc") configured to point to the oxide-hdl binary.
-
-
-### 6. Architecture, Roadmap, License
-
-## 🏗️ Architecture
-
-Oxide HDL uses a **Controller-Service** architecture to manage concurrency:
-
-* **`backend/mod.rs` (Controller):** Handles JSON-RPC communication and manages the Global Mutex for the parser.
-* **`backend/workspace.rs` (Indexer):** Manages the file system, JIT parsing, and the Regex engine.
-* **`backend/syntax/parser.rs` (Visitor):** A recursive AST walker that converts Tree-sitter nodes into a hierarchical symbol tree.
-* **`backend/features/`:** Contains pure logic for Hover formatting, Fuzzy Lookup, and Completion.
-
-## 📝 Roadmap
-
-* [x] **v0.1:** Hybrid Indexing, Go-to-Def, Rich Hover, Outline.
-* [x] **v0.2:** Basic Auto-Completion (Local signals and context detection in entities).
-* [ ] **v0.3:** Diagnostics (Linter for undefined signals).
-* [ ] **v0.4:** Smart Auto-Import (Add `use` clauses automatically).
-
-## 📜 License
+## License
 
 MIT
