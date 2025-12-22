@@ -22,10 +22,10 @@
 use crate::analysis::{
     Analysis, DeclType, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
 };
-use crate::backend::features::diagnostics::DiagnosticCollectors;
+use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
 use crate::backend::utils::node_to_range;
 use std::collections::HashSet;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag};
+use tower_lsp::lsp_types::Diagnostic;
 use tree_sitter::Node;
 
 /// Classification of a VHDL process based on its structure.
@@ -156,18 +156,10 @@ pub fn check_process_sensitivity(
                     .iter()
                     .any(|v| v.name.to_lowercase() == lower_name)
                 {
-                    let diagnostic = Diagnostic {
-                        range: node_to_range(process_node),
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        message: format!(
-                            "Signal '{}' is read but not in sensitivity list",
-                            read_signal.name
-                        ),
-                        source: Some("oxide-hdl-sensitivity".to_string()),
-                        ..Default::default()
-                    };
-
-                    collectors.sensitivity.push(diagnostic);
+                    collectors.sensitivity.push(messages::missing_sensitivity(
+                        &read_signal.name,
+                        &process_node,
+                    ));
                 }
             }
 
@@ -185,18 +177,12 @@ pub fn check_process_sensitivity(
                     .iter()
                     .any(|s| s.name.to_lowercase() == sensitive.name.to_lowercase())
                 {
-                    let diagnostic = Diagnostic {
-                        range: sensitive.range,
-                        severity: Some(DiagnosticSeverity::HINT),
-                        message: format!(
-                            "Signal '{}' is not needed in sensitivity list",
-                            sensitive.name
-                        ),
-                        source: Some("oxide-hdl-sensitivity".to_string()),
-                        tags: vec![DiagnosticTag::UNNECESSARY].into(),
-                        ..Default::default()
-                    };
-                    collectors.sensitivity.push(diagnostic);
+                    collectors
+                        .sensitivity
+                        .push(messages::unnecessary_sensitivity(
+                            &sensitive.name,
+                            &sensitive.range,
+                        ));
                 }
             }
         }

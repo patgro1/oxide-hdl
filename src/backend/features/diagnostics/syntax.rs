@@ -4,9 +4,7 @@
 //! including signal declarations, port declarations, label validation, semicolon
 //! placement, and parenthesis matching.
 
-use crate::backend::features::diagnostics::{
-    DiagnosticCollectors, DiagnosticMessage, create_diagnostic, create_diagnostic_at_end,
-};
+use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticMessage, messages};
 use tree_sitter::Node;
 
 /// Recursively searches for a descendant node of a specific kind.
@@ -54,9 +52,12 @@ pub fn has_descendant_of_kind(node: Node, kind: &str) -> bool {
 /// * `node` - The ERROR node from the Tree-sitter AST
 /// * `collectors` - Mutable reference to diagnostic collectors
 pub fn check_syntax_error(node: Node, collectors: &mut DiagnosticCollectors) {
-    collectors
-        .syntax
-        .push(create_diagnostic(node, DiagnosticMessage::SyntaxError));
+    collectors.syntax.push(messages::syntax_error(
+        node,
+        DiagnosticMessage::SyntaxError,
+        false,
+        "",
+    ));
 }
 
 /// Validates that a signal declaration has a type specification.
@@ -88,9 +89,11 @@ pub fn check_signal_declaration(node: Node, collectors: &mut DiagnosticCollector
         .unwrap_or(false);
 
     if !has_valid_type {
-        collectors.syntax.push(create_diagnostic(
+        collectors.syntax.push(messages::syntax_error(
             node,
             DiagnosticMessage::SignalMissingType,
+            false,
+            "",
         ));
     }
 }
@@ -127,9 +130,11 @@ pub fn check_port_declaration(node: Node, collectors: &mut DiagnosticCollectors)
     if is_in_port_clause(node) {
         let has_direction = has_descendant_of_kind(node, "mode");
         if !has_direction {
-            collectors.syntax.push(create_diagnostic(
+            collectors.syntax.push(messages::syntax_error(
                 node,
                 DiagnosticMessage::PortMissingDirection,
+                false,
+                "",
             ));
         }
     }
@@ -208,15 +213,19 @@ pub fn check_label_has_valid_parent(node: Node, collectors: &mut DiagnosticColle
             | "loop_statement"
             | "component_instantiation_statement"
             | "for_generate_statement" => {}
-            _ => collectors.syntax.push(create_diagnostic(
+            _ => collectors.syntax.push(messages::syntax_error(
                 node,
                 DiagnosticMessage::InvalidLabelStatement,
+                false,
+                "",
             )),
         }
     } else {
-        collectors.syntax.push(create_diagnostic(
+        collectors.syntax.push(messages::syntax_error(
             node,
             DiagnosticMessage::InvalidLabelStatement,
+            false,
+            "",
         ));
     }
 }
@@ -256,7 +265,7 @@ pub fn check_end_with_semicolon(
     if !node_text.trim_end().ends_with(';') {
         collectors
             .syntax
-            .push(create_diagnostic_at_end(node, text, message));
+            .push(messages::syntax_error(node, message, true, text));
     }
 }
 
@@ -293,10 +302,11 @@ pub fn check_sensitivity_parens(node: Node, text: &str, collectors: &mut Diagnos
     // Should start with '(' and end with ')'
     let trimmed = node_text.trim();
     if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
-        collectors.syntax.push(create_diagnostic_at_end(
+        collectors.syntax.push(messages::syntax_error(
             node,
-            text,
             DiagnosticMessage::UnmatchedParentheses,
+            true,
+            text,
         ));
     }
 }
@@ -339,10 +349,11 @@ pub fn check_association_list_parens(
     // Should start with '(' and end with ')'
     let trimmed = node_text.trim();
     if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
-        collectors.syntax.push(create_diagnostic_at_end(
+        collectors.syntax.push(messages::syntax_error(
             node,
-            text,
             DiagnosticMessage::UnmatchedParentheses,
+            true,
+            text,
         ));
     }
 }

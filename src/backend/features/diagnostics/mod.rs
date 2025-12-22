@@ -4,12 +4,13 @@
 //! of errors in VHDL code, including syntax errors, missing semicolons, unmatched
 //! parentheses, and semantic issues like missing types or port directions.
 
+pub mod messages;
 pub mod sensitivity;
 pub mod syntax;
 pub mod unused;
 
 use crate::analysis::{Analysis, ScopeTree};
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+use tower_lsp::lsp_types::Diagnostic;
 use tree_sitter::Node;
 
 /// The kind identifier for ERROR nodes in the Tree-sitter AST.
@@ -280,98 +281,5 @@ fn check_node(
             syntax::check_association_list_parens(node, text, collectors);
         }
         _ => {}
-    }
-}
-
-/// Creates a diagnostic at the node's location.
-///
-/// Generates an LSP diagnostic with the error positioned at the start of
-/// the provided node. Used for errors where the entire node is problematic.
-///
-/// # Arguments
-///
-/// * `node` - The Tree-sitter node where the error occurred
-/// * `message` - The type of diagnostic message to generate
-///
-/// # Returns
-///
-/// An LSP `Diagnostic` object with ERROR severity.
-fn create_diagnostic(node: Node, message: DiagnosticMessage) -> Diagnostic {
-    Diagnostic {
-        range: crate::backend::utils::node_to_range(node),
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some("oxide-hdl".to_string()),
-        message: message.to_string(),
-        ..Default::default()
-    }
-}
-
-/// Creates a diagnostic at the end of a node's actual content.
-///
-/// Useful for "missing semicolon" or similar errors where the diagnostic
-/// should appear at the location where something is missing, not at the
-/// start of the construct. Accounts for trailing whitespace by finding
-/// the last non-whitespace character.
-///
-/// # Arguments
-///
-/// * `node` - The Tree-sitter node to analyze
-/// * `text` - The full source text (needed to trim whitespace)
-/// * `message` - The type of diagnostic message to generate
-///
-/// # Returns
-///
-/// An LSP `Diagnostic` positioned at the end of the node's content.
-///
-/// # Examples
-///
-/// ```vhdl
-/// // For missing semicolon after port clause:
-/// // port (
-/// //     clk : in std_logic
-/// // )           ← diagnostic appears here
-/// ```
-fn create_diagnostic_at_end(node: Node, text: &str, message: DiagnosticMessage) -> Diagnostic {
-    let node_text = &text[node.byte_range()];
-    let trimmed = node_text.trim_end();
-
-    // If node_text has trailing whitespace, the end_position might be past the actual content
-    let lines: Vec<&str> = trimmed.lines().collect();
-
-    let (line, col) = if let Some(last_line) = lines.last() {
-        // Calculate which line the last content is on
-        let num_lines = lines.len();
-        let line = node.start_position().row + num_lines - 1;
-
-        // Column is at the end of the last line
-        let col = if num_lines == 1 {
-            // Single line: add to start column
-            node.start_position().column + last_line.len()
-        } else {
-            // Multi-line: column is just the last line length
-            last_line.len()
-        };
-
-        (line, col)
-    } else {
-        // Empty node, use start position
-        (node.start_position().row, node.start_position().column)
-    };
-
-    Diagnostic {
-        range: Range {
-            start: Position {
-                line: line as u32,
-                character: col as u32,
-            },
-            end: Position {
-                line: line as u32,
-                character: (col + 1) as u32,
-            },
-        },
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some("oxide-hdl".to_string()),
-        message: message.to_string(),
-        ..Default::default()
     }
 }

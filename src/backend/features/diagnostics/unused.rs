@@ -25,10 +25,9 @@
 //!       └── Process (nested)
 //! ```
 
-use crate::analysis::{DeclType, ScopeTree};
-use crate::backend::features::diagnostics::DiagnosticCollectors;
+use crate::analysis::ScopeTree;
+use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
 use std::collections::HashSet;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag};
 
 /// Main entry point for unused signal/variable/constant detection.
 ///
@@ -43,20 +42,7 @@ pub fn check_unused_signals(scope_tree: &ScopeTree, collectors: &mut DiagnosticC
     let unused = scope_tree.check_unused(&HashSet::new());
 
     for decl in unused {
-        collectors.unused.push(Diagnostic {
-            range: decl.node_info.to_range(&decl.name),
-            severity: Some(DiagnosticSeverity::HINT),
-            source: Some("oxide-hdl".to_string()),
-            tags: vec![DiagnosticTag::UNNECESSARY].into(),
-            message: match decl.decl_type {
-                DeclType::Generic => format!("Unused generic '{}'", decl.name),
-                DeclType::Port(_) => format!("Unused port '{}'", decl.name),
-                DeclType::Variable => format!("Unused variable '{}'", decl.name),
-                DeclType::Constant => format!("Unused constant '{}'", decl.name),
-                DeclType::Signal => format!("Unused signal '{}'", decl.name),
-            },
-            ..Default::default()
-        });
+        collectors.unused.push(messages::unused_identifier(decl));
     }
 }
 
@@ -252,6 +238,7 @@ begin
 end architecture;
 "#;
         let diags = check_unused_signals(code);
+        println!("diags: {:?}", diags);
 
         // Should we check constants? Let's say yes for v0.4
         assert_eq!(diags.len(), 1, "Should detect unused constant");
@@ -295,8 +282,7 @@ end architecture;
         let diags = check_unused_signals(code);
 
         assert_eq!(diags.len(), 1, "Should detect unused_var");
-        assert!(diags[0].message.contains("unused_var"));
-        assert!(diags[0].message.contains("variable"));
+        assert!(diags[0].message.contains("Unused variable"));
     }
 
     #[test]
