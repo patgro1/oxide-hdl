@@ -1,0 +1,2 @@
+# More aggressive recursive match for the headers directory
+headers/** linguist-vendored=true
