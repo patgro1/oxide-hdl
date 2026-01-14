@@ -23,6 +23,7 @@ mod collect_visible_tests {
             decl_type,
             range,
             selection_range: Range::default(),
+            type_info: TypeInfo::new(),
         }
     }
 

@@ -23,7 +23,7 @@ use crate::analysis::{
     Analysis, DeclType, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
 };
 use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
-use crate::backend::utils::node_to_range;
+use crate::utils::node_to_range;
 use std::collections::HashSet;
 use tower_lsp::lsp_types::Diagnostic;
 use tree_sitter::Node;

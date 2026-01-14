@@ -22,6 +22,7 @@ mod analysis;
 mod backend;
 mod config;
 mod logging;
+mod utils;
 use tree_sitter::{Language, Parser};
 
 use tower_lsp::{LspService, Server};

@@ -3,7 +3,7 @@
 use crate::analysis::{
     Analysis, OxideSymbolKind, ParseLevel, Symbol, build_arch_scope_tree, build_entity_scope_tree,
 };
-use crate::backend::utils::node_to_range;
+use crate::utils::node_to_range;
 use tree_sitter::{Node, TreeCursor};
 
 /// Recursively extracts all VHDL symbols from a parsed syntax tree.

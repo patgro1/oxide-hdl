@@ -12,7 +12,7 @@ pub use builders::*;
 pub use scope_tree::*;
 pub use types::*;
 
-use crate::backend::utils::node_to_range;
+use crate::utils::node_to_range;
 use std::collections::{HashMap, HashSet};
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Language, Node};

@@ -3,7 +3,6 @@
 //! * [`workspace`]: Function related to the workspace
 pub mod features;
 pub mod syntax;
-pub mod utils;
 pub mod workspace;
 
 use crate::config::OxideConfig;

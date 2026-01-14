@@ -1,3 +1,4 @@
+pub mod ast;
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::Node;
 /// Converts a Tree-sitter `Node` into a standard LSP `Range`.

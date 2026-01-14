@@ -270,4 +270,27 @@ pub struct Declaration {
     /// Range of the name itself for jumps
     #[allow(dead_code)]
     pub selection_range: Range,
+    /// TypeInfo for this declaration
+    pub type_info: TypeInfo,
+}
+
+/// Type information for the VHDL declaration
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeInfo {
+    /// name of the type (std_logic vector, integer, etc)
+    pub base_type: String,
+    /// Constaints of the type if any (8 downto 0), range 0 to 100
+    pub constraints: Option<String>,
+    /// Is it a scalar or an array
+    pub is_array: bool,
+}
+
+impl TypeInfo {
+    pub fn new() -> Self {
+        TypeInfo {
+            base_type: String::new(),
+            constraints: None,
+            is_array: false,
+        }
+    }
 }

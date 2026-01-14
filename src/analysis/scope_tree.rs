@@ -4,7 +4,7 @@
 //! signals, variables, ports, and other VHDL identifiers.
 
 use crate::analysis::types::{DeclType, Declaration, ScopeKind, Usage, UsageContext};
-use crate::backend::utils::node_to_range;
+use crate::utils::node_to_range;
 use std::collections::HashSet;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;

@@ -5,12 +5,13 @@
 
 use crate::{
     analysis::{
-        DeclType, Declaration, PortDirection, ScopeKind, ScopeTree, Usage, UsageContext,
+        DeclType, Declaration, PortDirection, ScopeKind, ScopeTree, TypeInfo, Usage, UsageContext,
         collect_identifiers_recursive,
     },
-    backend::utils::node_to_range,
+    utils::node_to_range,
 };
 use std::collections::HashSet;
+use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;
 
 /// Builds a complete scope tree for an entity.
@@ -72,11 +73,16 @@ fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Dec
             if interface_decl.kind() != "interface_declaration" {
                 continue;
             }
-            declarations.extend(extract_signal_names(
-                interface_decl,
-                text,
-                DeclType::Generic,
-            ));
+            let names = extract_signal_names(interface_decl, text);
+            for (name, range) in names {
+                declarations.push(Declaration {
+                    name,
+                    decl_type: DeclType::Generic,
+                    range: node_to_range(interface_decl),
+                    selection_range: range,
+                    type_info: extract_type_info_from_generic_and_port(&interface_decl, text),
+                });
+            }
         }
     }
     declarations
@@ -104,11 +110,17 @@ fn extract_decl_from_port_clause(port_clause: Node, text: &str) -> Vec<Declarati
                 continue;
             }
             let direction = extract_direction_from_interface(interface_decl, text);
-            declarations.extend(extract_signal_names(
-                interface_decl,
-                text,
-                DeclType::Port(direction),
-            ));
+            // TODO: Be careful because of here the type might be behing a simple_mode_indication
+            let names = extract_signal_names(interface_decl, text);
+            for (name, range) in names {
+                declarations.push(Declaration {
+                    name,
+                    decl_type: DeclType::Port(direction),
+                    range: node_to_range(interface_decl),
+                    selection_range: range,
+                    type_info: extract_type_info_from_generic_and_port(&interface_decl, text),
+                });
+            }
         }
     }
 
@@ -177,23 +189,33 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
             let mut head_cursor = child.walk();
             for decl_child in child.children(&mut head_cursor) {
                 if decl_child.kind() == "signal_declaration" {
-                    tree.declarations.extend(extract_signal_names(
-                        decl_child,
-                        text,
-                        DeclType::Signal,
-                    ));
-                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                    tree.declarations
+                        .extend(extract_signal_names(decl_child, text).iter().map(
+                            |(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Signal,
+                                range: node_to_range(decl_child),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            },
+                        ));
+                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                 } else if decl_child.kind() == "constant_declaration" {
-                    tree.declarations.extend(extract_signal_names(
-                        decl_child,
-                        text,
-                        DeclType::Constant,
-                    ));
-                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                    tree.declarations
+                        .extend(extract_signal_names(decl_child, text).iter().map(
+                            |(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Constant,
+                                range: node_to_range(decl_child),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            },
+                        ));
+                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                 } else if decl_child.kind() == "type_declaration"
                     || decl_child.kind() == "subtype_declaration"
                 {
-                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -256,12 +278,17 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
             let mut head_cursor = child.walk();
             for decl_child in child.children(&mut head_cursor) {
                 if decl_child.kind() == "variable_declaration" {
-                    tree.declarations.extend(extract_signal_names(
-                        decl_child,
-                        text,
-                        DeclType::Variable,
-                    ));
-                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                    tree.declarations
+                        .extend(extract_signal_names(decl_child, text).iter().map(
+                            |(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Variable,
+                                range: node_to_range(decl_child),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            },
+                        ));
+                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -337,19 +364,31 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                 let mut decl_cursor = child.walk();
                 for decl_child in child.children(&mut decl_cursor) {
                     if decl_child.kind() == "signal_declaration" {
-                        tree.declarations.extend(extract_signal_names(
-                            decl_child,
-                            text,
-                            DeclType::Signal,
-                        ));
-                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                        tree.declarations.extend(
+                            extract_signal_names(decl_child, text)
+                                .iter()
+                                .map(|(name, range)| Declaration {
+                                    name: name.to_string(),
+                                    decl_type: DeclType::Signal,
+                                    range: node_to_range(decl_child),
+                                    selection_range: *range,
+                                    type_info: TypeInfo::new(),
+                                }),
+                        );
+                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                     } else if decl_child.kind() == "constant_declaration" {
-                        tree.declarations.extend(extract_signal_names(
-                            decl_child,
-                            text,
-                            DeclType::Constant,
-                        ));
-                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                        tree.declarations.extend(
+                            extract_signal_names(decl_child, text)
+                                .iter()
+                                .map(|(name, range)| Declaration {
+                                    name: name.to_string(),
+                                    decl_type: DeclType::Constant,
+                                    range: node_to_range(decl_child),
+                                    selection_range: *range,
+                                    type_info: TypeInfo::new(),
+                                }),
+                        );
+                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                     }
                 }
             } else if child.kind() == "generate_block" {
@@ -421,19 +460,31 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                 let mut decl_cursor = child.walk();
                 for decl_child in child.children(&mut decl_cursor) {
                     if decl_child.kind() == "signal_declaration" {
-                        tree.declarations.extend(extract_signal_names(
-                            decl_child,
-                            text,
-                            DeclType::Signal,
-                        ));
-                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                        tree.declarations.extend(
+                            extract_signal_names(decl_child, text)
+                                .iter()
+                                .map(|(name, range)| Declaration {
+                                    name: name.to_string(),
+                                    decl_type: DeclType::Signal,
+                                    range: node_to_range(decl_child),
+                                    selection_range: *range,
+                                    type_info: TypeInfo::new(),
+                                }),
+                        );
+                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                     } else if decl_child.kind() == "constant_declaration" {
-                        tree.declarations.extend(extract_signal_names(
-                            decl_child,
-                            text,
-                            DeclType::Constant,
-                        ));
-                        collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                        tree.declarations.extend(
+                            extract_signal_names(decl_child, text)
+                                .iter()
+                                .map(|(name, range)| Declaration {
+                                    name: name.to_string(),
+                                    decl_type: DeclType::Constant,
+                                    range: node_to_range(decl_child),
+                                    selection_range: *range,
+                                    type_info: TypeInfo::new(),
+                                }),
+                        );
+                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                     }
                 }
             } else if child.kind() == "generate_block" {
@@ -489,19 +540,29 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
             let mut head_cursor = child.walk();
             for decl_child in child.children(&mut head_cursor) {
                 if decl_child.kind() == "signal_declaration" {
-                    tree.declarations.extend(extract_signal_names(
-                        decl_child,
-                        text,
-                        DeclType::Signal,
-                    ));
-                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                    tree.declarations
+                        .extend(extract_signal_names(decl_child, text).iter().map(
+                            |(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Signal,
+                                range: node_to_range(decl_child),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            },
+                        ));
+                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                 } else if decl_child.kind() == "constant_declaration" {
-                    tree.declarations.extend(extract_signal_names(
-                        decl_child,
-                        text,
-                        DeclType::Constant,
-                    ));
-                    collect_identifier_from_decl(decl_child, text, &mut tree.local_usage);
+                    tree.declarations
+                        .extend(extract_signal_names(decl_child, text).iter().map(
+                            |(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Constant,
+                                range: node_to_range(decl_child),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            },
+                        ));
+                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
                 }
             }
             break;
@@ -550,13 +611,12 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
 ///
 /// * `signal_node` - Declaration node (signal_declaration, variable_declaration, etc.)
 /// * `text` - Full source text
-/// * `decl_type` - Type of declaration being processed
 ///
 /// # Returns
 ///
 /// Vector of Declaration objects, one for each identifier in the declaration
-fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> Vec<Declaration> {
-    let mut signals: Vec<Declaration> = Vec::new();
+fn extract_signal_names(signal_node: Node, text: &str) -> Vec<(String, Range)> {
+    let mut signals: Vec<(String, Range)> = Vec::new();
 
     // Find identifier_list child
     let mut cursor = signal_node.walk();
@@ -574,12 +634,7 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
         for child in identifier_list.children(&mut cursor) {
             if child.kind() == "identifier" {
                 let signal_name = &text[child.byte_range()];
-                signals.push(Declaration {
-                    name: signal_name.to_string(),
-                    decl_type: decl_type.clone(),
-                    range: node_to_range(signal_node),
-                    selection_range: node_to_range(child),
-                });
+                signals.push((signal_name.to_string(), node_to_range(child)));
             }
         }
     }
@@ -594,8 +649,10 @@ fn extract_signal_names(signal_node: Node, text: &str, decl_type: DeclType) -> V
 ///
 /// `node` - Root node to search from
 /// `text` - Full source text
-/// `references` - Mutable set to collect identifer names into
-fn collect_identifier_from_decl(node: Node, text: &str, references: &mut HashSet<Usage>) {
+///
+/// # Returns
+/// A vector of tuple of all identifiers with their corresponding range
+fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSet<Usage>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -603,4 +660,54 @@ fn collect_identifier_from_decl(node: Node, text: &str, references: &mut HashSet
             _ => collect_identifiers_recursive(child, text, UsageContext::TypeSpec, references),
         }
     }
+}
+
+/// Extract the type information from a generic or a port clause
+///
+/// Will extract every availble information on the signa/constant/port/generic type
+///
+/// # Arguments
+/// `node` - The declaration node
+/// `text` - Full source text
+///
+/// # Returns
+/// A structure TypeInfo with as much information as what was extracted
+fn extract_type_info_from_generic_and_port(node: &Node, text: &str) -> TypeInfo {
+    let mut type_info = TypeInfo::new();
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == "simple_mode_indication" {
+            for inner in child.children(&mut child.walk()) {
+                match inner.kind() {
+                    "subtype_indication" => {
+                        for n in inner.children(&mut inner.walk()) {
+                            match n.kind() {
+                                "name" => {
+                                    type_info.base_type = text[n.byte_range()].to_string();
+                                    for name_child in n.children(&mut n.walk()) {
+                                        if name_child.kind() == "parenthesis_group" {
+                                            type_info.constraints =
+                                                Some(text[name_child.byte_range()].to_string())
+                                        }
+                                    }
+                                }
+                                "range_constraints" => {
+                                    type_info.constraints = Some(text[n.byte_range()].to_string())
+                                }
+                                _ => {}
+                            }
+                        }
+                    } // "initialiser" => {
+                    //     for init_node in inner.children(&mut inner.walk()) {
+                    //         if init_node.kind() == "conditional_expression" {
+                    //             let initial_value = &text[init_node.byte_range()];
+                    //             type_info.default_value = intial_valud.to_string();
+                    //         }
+                    //     }
+                    // }
+                    _ => {}
+                }
+            }
+        }
+    }
+    type_info
 }

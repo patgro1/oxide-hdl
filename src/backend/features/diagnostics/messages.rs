@@ -5,7 +5,7 @@
 
 use crate::analysis::{DeclType, Declaration};
 use crate::backend::features::diagnostics::DiagnosticMessage;
-use crate::backend::utils::node_to_range;
+use crate::utils::node_to_range;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, Position, Range};
 use tree_sitter::Node;
 
