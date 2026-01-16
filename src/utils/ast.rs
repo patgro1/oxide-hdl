@@ -4,6 +4,21 @@
 
 use tree_sitter::Node;
 
+/// Find the first direct child of specific kind
+///
+/// # Arguments
+///
+/// * `node` - Parent Node
+/// * `kind` - Kind of the node we are looking for
+///
+/// # Returns
+/// Some(node) if we found a direct child of specific kind
+/// None otherwise
+pub fn find_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    node.children(&mut node.walk())
+        .find(|&child| child.kind() == kind)
+}
+
 /// Navigate an ast from node to node using the array of string to find the next kind to go through
 ///
 ///
@@ -32,7 +47,7 @@ pub fn navigate_path<'a>(node: Node<'a>, path: &[&str]) -> Option<Node<'a>> {
 /// * `node` - Starting node
 /// * `kind` - Kind of node we want to find
 ///
-/// Returns
+/// # Returns
 /// Some(node) if we find a descendant of the specific kind
 /// None otherwise
 pub fn find_descendant<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
@@ -55,7 +70,7 @@ pub fn find_descendant<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
 /// * `node` - Starting node
 /// * `kind` - Kind of the node we are looking for
 ///
-/// Returns
+/// # Returns
 /// Vector with all the nodes
 pub fn collect_descendants<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
     let mut results = Vec::new();
@@ -64,6 +79,26 @@ pub fn collect_descendants<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
     }
     for child in node.children(&mut node.walk()) {
         results.extend(collect_descendants(child, kind));
+    }
+
+    results
+}
+
+/// Collect all direct descendants of a specific kind
+///
+/// # Arguments
+///
+/// * `node` - Parent node
+/// * `kind` - Kind of the node we are looking for
+///
+/// # Returns
+/// Vector containing all the nodes
+pub fn collect_children<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
+    let mut results = Vec::new();
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == kind {
+            results.push(child);
+        }
     }
 
     results
@@ -154,7 +189,15 @@ end entity;
         let root = tree.root_node();
 
         // Try to navigate to non-existent port clause
-        let result = navigate_path(root, &["design_unit", "entity_declaration", "port_clause"]);
+        let result = navigate_path(
+            root,
+            &[
+                "design_unit",
+                "entity_declaration",
+                "entity_head",
+                "port_clause",
+            ],
+        );
         assert!(result.is_none());
     }
 
@@ -411,5 +454,193 @@ end entity;
 
         // First from collect should match find_descendant
         assert_eq!(first.unwrap(), all[0]);
+    }
+    #[test]
+    fn test_collect_children_multiple() {
+        let code = r#"
+entity test is
+    port (
+        clk : in std_logic;
+        rst : in std_logic;
+        data : in std_logic
+    );
+end entity;
+"#;
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        // Navigate to interface_list
+        let interface_list = navigate_path(
+            root,
+            &[
+                "design_unit",
+                "entity_declaration",
+                "entity_head",
+                "port_clause",
+                "interface_list",
+            ],
+        )
+        .expect("Should find interface_list");
+
+        // Collect all interface_declaration children
+        let declarations = collect_children(interface_list, "interface_declaration");
+        assert_eq!(
+            declarations.len(),
+            3,
+            "Should find 3 interface declarations"
+        );
+    }
+
+    #[test]
+    fn test_collect_children_none() {
+        let code = "entity test is end entity;";
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        // Try to collect non-existent children
+        let results = collect_children(root, "port_clause");
+        assert!(
+            results.is_empty(),
+            "Should find no port clauses at root level"
+        );
+    }
+
+    #[test]
+    fn test_collect_children_single() {
+        let code = r#"
+entity test is
+    port (
+        clk : in std_logic
+    );
+end entity;
+"#;
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        // Collect design_unit (should be exactly one immediate child)
+        let design_units = collect_children(root, "design_unit");
+        assert_eq!(design_units.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_children_not_recursive() {
+        let code = r#"
+architecture rtl of test is
+begin
+    gen1: if true generate
+    begin
+        process
+        begin
+            wait;
+        end process;
+    end generate;
+    
+    gen2: if true generate
+    begin
+        process
+        begin
+            wait;
+        end process;
+    end generate;
+end architecture;
+"#;
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        // Navigate to concurrent_block
+        let concurrent_block =
+            find_descendant(root, "concurrent_block").expect("Should find concurrent_block");
+
+        // collect_children should only find immediate if_generate_statements (2)
+        let immediate_generates = collect_children(concurrent_block, "if_generate_statement");
+
+        // collect_descendants would find nested ones too (but there aren't any in this case)
+        let all_generates = collect_descendants(concurrent_block, "if_generate_statement");
+
+        assert_eq!(
+            immediate_generates.len(),
+            2,
+            "Should find 2 immediate generates"
+        );
+        assert_eq!(all_generates.len(), 2, "Should find 2 total generates");
+    }
+
+    #[test]
+    fn test_collect_children_vs_descendants_nested() {
+        let code = r#"
+architecture rtl of test is
+begin
+    outer_block: block
+    begin
+        inner_block: block
+        begin
+        end block;
+    end block;
+end architecture;
+"#;
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        let concurrent_block =
+            find_descendant(root, "concurrent_block").expect("Should find concurrent_block");
+
+        // collect_children finds only immediate block_statement (outer)
+        let immediate_blocks = collect_children(concurrent_block, "block_statement");
+
+        // collect_descendants finds all nested blocks (outer + inner)
+        let all_blocks = collect_descendants(concurrent_block, "block_statement");
+
+        assert_eq!(immediate_blocks.len(), 1, "Should find only outer block");
+        assert_eq!(
+            all_blocks.len(),
+            2,
+            "Should find both outer and inner blocks"
+        );
+    }
+
+    #[test]
+    fn test_collect_children_with_mixed_kinds() {
+        let code = r#"
+architecture rtl of test is
+    signal a : std_logic;
+    constant b : integer := 5;
+    signal c : std_logic;
+begin
+end architecture;
+"#;
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        let arch_head =
+            find_descendant(root, "architecture_head").expect("Should find architecture_head");
+
+        // Collect only signals (not constants)
+        let signals = collect_children(arch_head, "signal_declaration");
+        assert_eq!(signals.len(), 2, "Should find 2 signal declarations");
+
+        // Collect only constants
+        let constants = collect_children(arch_head, "constant_declaration");
+        assert_eq!(constants.len(), 1, "Should find 1 constant declaration");
+    }
+
+    #[test]
+    fn test_collect_children_empty_parent() {
+        let code = r#"
+entity test is
+    port ( );
+end entity;
+"#;
+        let tree = parse_vhdl(code);
+        let root = tree.root_node();
+
+        // Find the empty port_clause
+        let port_clause = find_descendant(root, "port_clause").expect("Should find port_clause");
+
+        // Should find no interface_declarations
+        let declarations = collect_children(port_clause, "interface_declaration");
+        assert!(
+            declarations.is_empty(),
+            "Empty port clause should have no declarations"
+        );
     }
 }
