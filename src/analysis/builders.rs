@@ -8,7 +8,10 @@ use crate::{
         DeclType, Declaration, PortDirection, ScopeKind, ScopeTree, TypeInfo, Usage, UsageContext,
         collect_identifiers_recursive,
     },
-    utils::node_to_range,
+    utils::{
+        ast::{collect_descendants, find_child, find_descendant, navigate_path},
+        node_to_range,
+    },
 };
 use std::collections::HashSet;
 use tower_lsp::lsp_types::Range;
@@ -29,25 +32,15 @@ pub fn build_entity_scope_tree(ent_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Entity, &ent_node);
     if let Some(name_node) = ent_node.child_by_field_name("entity") {
         tree.name = Some(text[name_node.byte_range()].to_string());
-        for child in ent_node.children(&mut ent_node.walk()) {
-            if child.kind() == "entity_head" {
-                for inner in child.children(&mut child.walk()) {
-                    match inner.kind() {
-                        "generic_clause" => {
-                            tree.declarations
-                                .extend(extract_decl_from_generic_clause(inner, text));
-                        }
-                        "port_clause" => {
-                            tree.declarations
-                                .extend(extract_decl_from_port_clause(inner, text));
-                        }
-                        _ => {}
-                    }
-                }
-            }
+        if let Some(generic_clause) = navigate_path(ent_node, &["entity_head", "generic_clause"]) {
+            tree.declarations
+                .extend(extract_decl_from_generic_clause(generic_clause, text));
+        }
+        if let Some(port_clause) = navigate_path(ent_node, &["entity_head", "port_clause"]) {
+            tree.declarations
+                .extend(extract_decl_from_port_clause(port_clause, text));
         }
     }
-
     tree
 }
 
@@ -183,42 +176,42 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
     }
 
     // Collect architecture-level declarations from architecture_head
-    let mut cursor = arch_node.walk();
-    for child in arch_node.children(&mut cursor) {
-        if child.kind() == "architecture_head" {
-            let mut head_cursor = child.walk();
-            for decl_child in child.children(&mut head_cursor) {
-                if decl_child.kind() == "signal_declaration" {
-                    tree.declarations
-                        .extend(extract_signal_names(decl_child, text).iter().map(
-                            |(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Signal,
-                                range: node_to_range(decl_child),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            },
-                        ));
-                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                } else if decl_child.kind() == "constant_declaration" {
-                    tree.declarations
-                        .extend(extract_signal_names(decl_child, text).iter().map(
-                            |(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Constant,
-                                range: node_to_range(decl_child),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            },
-                        ));
-                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                } else if decl_child.kind() == "type_declaration"
-                    || decl_child.kind() == "subtype_declaration"
-                {
-                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                }
-            }
-            break;
+    if let Some(arch_head) = find_child(arch_node, "architecture_head") {
+        for signal_decl in collect_descendants(arch_head, "signal_declaration") {
+            tree.declarations
+                .extend(
+                    extract_signal_names(signal_decl, text)
+                        .iter()
+                        .map(|(name, range)| Declaration {
+                            name: name.to_string(),
+                            decl_type: DeclType::Signal,
+                            range: node_to_range(signal_decl),
+                            selection_range: *range,
+                            type_info: TypeInfo::new(),
+                        }),
+                );
+            collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
+        }
+        for const_decl in collect_descendants(arch_head, "constant_declaration") {
+            tree.declarations
+                .extend(
+                    extract_signal_names(const_decl, text)
+                        .iter()
+                        .map(|(name, range)| Declaration {
+                            name: name.to_string(),
+                            decl_type: DeclType::Constant,
+                            range: node_to_range(const_decl),
+                            selection_range: *range,
+                            type_info: TypeInfo::new(),
+                        }),
+                );
+            collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
+        }
+        for type_decl in collect_descendants(arch_head, "type_declaration") {
+            collect_identifier_from_decl(&type_decl, text, &mut tree.local_usage);
+        }
+        for subtype_decl in collect_descendants(arch_head, "subtype_declaration") {
+            collect_identifier_from_decl(&subtype_decl, text, &mut tree.local_usage);
         }
     }
 
@@ -272,26 +265,21 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Process, &process_node);
 
     // Collect variable declarations from process_head
-    let mut cursor = process_node.walk();
-    for child in process_node.children(&mut cursor) {
-        if child.kind() == "process_head" {
-            let mut head_cursor = child.walk();
-            for decl_child in child.children(&mut head_cursor) {
-                if decl_child.kind() == "variable_declaration" {
-                    tree.declarations
-                        .extend(extract_signal_names(decl_child, text).iter().map(
-                            |(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Variable,
-                                range: node_to_range(decl_child),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            },
-                        ));
-                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                }
-            }
-            break;
+    if let Some(proc_head) = find_child(process_node, "process_head") {
+        for var_decl in collect_descendants(proc_head, "variable_declaration") {
+            tree.declarations
+                .extend(
+                    extract_signal_names(var_decl, text)
+                        .iter()
+                        .map(|(name, range)| Declaration {
+                            name: name.to_string(),
+                            decl_type: DeclType::Variable,
+                            range: node_to_range(var_decl),
+                            selection_range: *range,
+                            type_info: TypeInfo::new(),
+                        }),
+                );
+            collect_identifier_from_decl(&var_decl, text, &mut tree.local_usage);
         }
     }
 
@@ -357,64 +345,57 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
     }
 
     if let Some(body_node) = body_node {
-        let mut cursor = body_node.walk();
-        for child in body_node.children(&mut cursor) {
-            if child.kind() == "generate_head" {
-                // Collect signal/constant declarations
-                let mut decl_cursor = child.walk();
-                for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "signal_declaration" {
-                        tree.declarations.extend(
-                            extract_signal_names(decl_child, text)
-                                .iter()
-                                .map(|(name, range)| Declaration {
-                                    name: name.to_string(),
-                                    decl_type: DeclType::Signal,
-                                    range: node_to_range(decl_child),
-                                    selection_range: *range,
-                                    type_info: TypeInfo::new(),
-                                }),
-                        );
-                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                    } else if decl_child.kind() == "constant_declaration" {
-                        tree.declarations.extend(
-                            extract_signal_names(decl_child, text)
-                                .iter()
-                                .map(|(name, range)| Declaration {
-                                    name: name.to_string(),
-                                    decl_type: DeclType::Constant,
-                                    range: node_to_range(decl_child),
-                                    selection_range: *range,
-                                    type_info: TypeInfo::new(),
-                                }),
-                        );
-                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
+        if let Some(head_node) = find_child(body_node, "generate_head") {
+            for signal_decl in collect_descendants(head_node, "signal_declaration") {
+                tree.declarations
+                    .extend(
+                        extract_signal_names(signal_decl, text)
+                            .iter()
+                            .map(|(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Signal,
+                                range: node_to_range(signal_decl),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            }),
+                    );
+                collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
+            }
+            for const_decl in collect_descendants(head_node, "constant_declaration") {
+                tree.declarations
+                    .extend(
+                        extract_signal_names(const_decl, text)
+                            .iter()
+                            .map(|(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Constant,
+                                range: node_to_range(const_decl),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            }),
+                    );
+                collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
+            }
+        }
+        if let Some(block_node) = find_child(body_node, "generate_block") {
+            for child in block_node.children(&mut block_node.walk()) {
+                match child.kind() {
+                    "process_statement" => {
+                        tree.children.push(build_process_scope_tree(child, text))
                     }
-                }
-            } else if child.kind() == "generate_block" {
-                // Process generate body - may contain nested scopes
-                let mut inner_cursor = child.walk();
-                for inner_child in child.children(&mut inner_cursor) {
-                    match inner_child.kind() {
-                        "process_statement" => tree
-                            .children
-                            .push(build_process_scope_tree(inner_child, text)),
-                        "if_generate_statement" => tree
-                            .children
-                            .push(build_if_generate_scope_tree(inner_child, text)),
-                        "for_generate_statement" => tree
-                            .children
-                            .push(build_for_generate_scope_tree(inner_child, text)),
-                        "block_statement" => tree
-                            .children
-                            .push(build_block_scope_tree(inner_child, text)),
-                        _ => collect_identifiers_recursive(
-                            inner_child,
-                            text,
-                            UsageContext::Behavioral,
-                            &mut tree.local_usage,
-                        ),
-                    }
+                    "if_generate_statement" => tree
+                        .children
+                        .push(build_if_generate_scope_tree(child, text)),
+                    "for_generate_statement" => tree
+                        .children
+                        .push(build_for_generate_scope_tree(child, text)),
+                    "block_statement" => tree.children.push(build_block_scope_tree(child, text)),
+                    _ => collect_identifiers_recursive(
+                        child,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut tree.local_usage,
+                    ),
                 }
             }
         }
@@ -454,62 +435,57 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
     }
 
     if let Some(body_node) = body_node {
-        let mut cursor = body_node.walk();
-        for child in body_node.children(&mut cursor) {
-            if child.kind() == "generate_head" {
-                let mut decl_cursor = child.walk();
-                for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "signal_declaration" {
-                        tree.declarations.extend(
-                            extract_signal_names(decl_child, text)
-                                .iter()
-                                .map(|(name, range)| Declaration {
-                                    name: name.to_string(),
-                                    decl_type: DeclType::Signal,
-                                    range: node_to_range(decl_child),
-                                    selection_range: *range,
-                                    type_info: TypeInfo::new(),
-                                }),
-                        );
-                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                    } else if decl_child.kind() == "constant_declaration" {
-                        tree.declarations.extend(
-                            extract_signal_names(decl_child, text)
-                                .iter()
-                                .map(|(name, range)| Declaration {
-                                    name: name.to_string(),
-                                    decl_type: DeclType::Constant,
-                                    range: node_to_range(decl_child),
-                                    selection_range: *range,
-                                    type_info: TypeInfo::new(),
-                                }),
-                        );
-                        collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
+        if let Some(head_node) = find_child(body_node, "generate_head") {
+            for signal_decl in collect_descendants(head_node, "signal_declaration") {
+                tree.declarations
+                    .extend(
+                        extract_signal_names(signal_decl, text)
+                            .iter()
+                            .map(|(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Signal,
+                                range: node_to_range(signal_decl),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            }),
+                    );
+                collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
+            }
+            for const_decl in collect_descendants(head_node, "constant_declaration") {
+                tree.declarations
+                    .extend(
+                        extract_signal_names(const_decl, text)
+                            .iter()
+                            .map(|(name, range)| Declaration {
+                                name: name.to_string(),
+                                decl_type: DeclType::Constant,
+                                range: node_to_range(const_decl),
+                                selection_range: *range,
+                                type_info: TypeInfo::new(),
+                            }),
+                    );
+                collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
+            }
+        }
+        if let Some(block_node) = find_child(body_node, "generate_block") {
+            for child in block_node.children(&mut block_node.walk()) {
+                match child.kind() {
+                    "process_statement" => {
+                        tree.children.push(build_process_scope_tree(child, text))
                     }
-                }
-            } else if child.kind() == "generate_block" {
-                let mut inner_cursor = child.walk();
-                for inner_child in child.children(&mut inner_cursor) {
-                    match inner_child.kind() {
-                        "process_statement" => tree
-                            .children
-                            .push(build_process_scope_tree(inner_child, text)),
-                        "if_generate_statement" => tree
-                            .children
-                            .push(build_if_generate_scope_tree(inner_child, text)),
-                        "for_generate_statement" => tree
-                            .children
-                            .push(build_for_generate_scope_tree(inner_child, text)),
-                        "block_statement" => tree
-                            .children
-                            .push(build_block_scope_tree(inner_child, text)),
-                        _ => collect_identifiers_recursive(
-                            inner_child,
-                            text,
-                            UsageContext::Behavioral,
-                            &mut tree.local_usage,
-                        ),
-                    }
+                    "if_generate_statement" => tree
+                        .children
+                        .push(build_if_generate_scope_tree(child, text)),
+                    "for_generate_statement" => tree
+                        .children
+                        .push(build_for_generate_scope_tree(child, text)),
+                    "block_statement" => tree.children.push(build_block_scope_tree(child, text)),
+                    _ => collect_identifiers_recursive(
+                        child,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut tree.local_usage,
+                    ),
                 }
             }
         }
@@ -534,69 +510,63 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Block, &block_node);
 
     // Collect declarations from block_head
-    let mut cursor = block_node.walk();
-    for child in block_node.children(&mut cursor) {
-        if child.kind() == "block_head" {
-            let mut head_cursor = child.walk();
-            for decl_child in child.children(&mut head_cursor) {
-                if decl_child.kind() == "signal_declaration" {
-                    tree.declarations
-                        .extend(extract_signal_names(decl_child, text).iter().map(
-                            |(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Signal,
-                                range: node_to_range(decl_child),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            },
-                        ));
-                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                } else if decl_child.kind() == "constant_declaration" {
-                    tree.declarations
-                        .extend(extract_signal_names(decl_child, text).iter().map(
-                            |(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Constant,
-                                range: node_to_range(decl_child),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            },
-                        ));
-                    collect_identifier_from_decl(&decl_child, text, &mut tree.local_usage);
-                }
-            }
-            break;
+    if let Some(head_node) = find_child(block_node, "block_head") {
+        for signal_decl in collect_descendants(head_node, "signal_declaration") {
+            tree.declarations
+                .extend(
+                    extract_signal_names(signal_decl, text)
+                        .iter()
+                        .map(|(name, range)| Declaration {
+                            name: name.to_string(),
+                            decl_type: DeclType::Signal,
+                            range: node_to_range(signal_decl),
+                            selection_range: *range,
+                            type_info: TypeInfo::new(),
+                        }),
+                );
+            collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
+        }
+        for const_decl in collect_descendants(head_node, "constant_declaration") {
+            tree.declarations
+                .extend(
+                    extract_signal_names(const_decl, text)
+                        .iter()
+                        .map(|(name, range)| Declaration {
+                            name: name.to_string(),
+                            decl_type: DeclType::Constant,
+                            range: node_to_range(const_decl),
+                            selection_range: *range,
+                            type_info: TypeInfo::new(),
+                        }),
+                );
+            collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
         }
     }
 
     // Process concurrent_block
-    let mut cursor = block_node.walk();
-    for child in block_node.children(&mut cursor) {
-        if child.kind() == "concurrent_block" {
-            let mut inner_cursor = child.walk();
-            for inner_child in child.children(&mut inner_cursor) {
-                match inner_child.kind() {
-                    "process_statement" => tree
-                        .children
-                        .push(build_process_scope_tree(inner_child, text)),
-                    "if_generate_statement" => tree
-                        .children
-                        .push(build_if_generate_scope_tree(inner_child, text)),
-                    "for_generate_statement" => tree
-                        .children
-                        .push(build_for_generate_scope_tree(inner_child, text)),
-                    "block_statement" => tree
-                        .children
-                        .push(build_block_scope_tree(inner_child, text)),
-                    _ => collect_identifiers_recursive(
-                        inner_child,
-                        text,
-                        UsageContext::Behavioral,
-                        &mut tree.local_usage,
-                    ),
-                }
+    if let Some(concurrent_block) = find_child(block_node, "concurrent_block") {
+        let mut inner_cursor = concurrent_block.walk();
+        for inner_child in concurrent_block.children(&mut inner_cursor) {
+            match inner_child.kind() {
+                "process_statement" => tree
+                    .children
+                    .push(build_process_scope_tree(inner_child, text)),
+                "if_generate_statement" => tree
+                    .children
+                    .push(build_if_generate_scope_tree(inner_child, text)),
+                "for_generate_statement" => tree
+                    .children
+                    .push(build_for_generate_scope_tree(inner_child, text)),
+                "block_statement" => tree
+                    .children
+                    .push(build_block_scope_tree(inner_child, text)),
+                _ => collect_identifiers_recursive(
+                    inner_child,
+                    text,
+                    UsageContext::Behavioral,
+                    &mut tree.local_usage,
+                ),
             }
-            break;
         }
     }
 
@@ -618,24 +588,11 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
 fn extract_signal_names(signal_node: Node, text: &str) -> Vec<(String, Range)> {
     let mut signals: Vec<(String, Range)> = Vec::new();
 
-    // Find identifier_list child
-    let mut cursor = signal_node.walk();
-    let mut identifier_list: Option<Node> = None;
-    for child in signal_node.children(&mut cursor) {
-        if child.kind() == "identifier_list" {
-            identifier_list = Some(child);
-            break;
-        }
-    }
-
     // Extract each identifier
-    if let Some(identifier_list) = identifier_list {
-        let mut cursor = identifier_list.walk();
-        for child in identifier_list.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                let signal_name = &text[child.byte_range()];
-                signals.push((signal_name.to_string(), node_to_range(child)));
-            }
+    if let Some(identifier_list) = find_child(signal_node, "identifier_list") {
+        for identifier in collect_descendants(identifier_list, "identifier") {
+            let signal_name = &text[identifier.byte_range()];
+            signals.push((signal_name.to_string(), node_to_range(identifier)));
         }
     }
     signals
@@ -674,40 +631,28 @@ fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSe
 /// A structure TypeInfo with as much information as what was extracted
 fn extract_type_info_from_generic_and_port(node: &Node, text: &str) -> TypeInfo {
     let mut type_info = TypeInfo::new();
-    for child in node.children(&mut node.walk()) {
-        if child.kind() == "simple_mode_indication" {
-            for inner in child.children(&mut child.walk()) {
-                match inner.kind() {
-                    "subtype_indication" => {
-                        for n in inner.children(&mut inner.walk()) {
-                            match n.kind() {
-                                "name" => {
-                                    type_info.base_type = text[n.byte_range()].to_string();
-                                    for name_child in n.children(&mut n.walk()) {
-                                        if name_child.kind() == "parenthesis_group" {
-                                            type_info.constraints =
-                                                Some(text[name_child.byte_range()].to_string())
-                                        }
-                                    }
-                                }
-                                "range_constraints" => {
-                                    type_info.constraints = Some(text[n.byte_range()].to_string())
-                                }
-                                _ => {}
-                            }
-                        }
-                    } // "initialiser" => {
-                    //     for init_node in inner.children(&mut inner.walk()) {
-                    //         if init_node.kind() == "conditional_expression" {
-                    //             let initial_value = &text[init_node.byte_range()];
-                    //             type_info.default_value = intial_valud.to_string();
-                    //         }
-                    //     }
-                    // }
-                    _ => {}
-                }
+    if let Some(indication_node) =
+        navigate_path(*node, &["simple_mode_indication", "subtype_indication"])
+    {
+        if let Some(name_node) = find_descendant(indication_node, "name") {
+            type_info.base_type = text[name_node.byte_range()].to_string();
+            if let Some(paren_node) = find_descendant(name_node, "parenthesis_group") {
+                type_info.constraints = Some(text[paren_node.byte_range()].to_string())
             }
         }
+        if let Some(range_node) = find_descendant(indication_node, "range_constraints") {
+            type_info.constraints = Some(text[range_node.byte_range()].to_string())
+        }
     }
+    // "initialiser" => {
+    //     for init_node in inner.children(&mut inner.walk()) {
+    //         if init_node.kind() == "conditional_expression" {
+    //             let initial_value = &text[init_node.byte_range()];
+    //             type_info.default_value = intial_valud.to_string();
+    //         }
+    //     }
+    // }
+    //_ => {}
+
     type_info
 }

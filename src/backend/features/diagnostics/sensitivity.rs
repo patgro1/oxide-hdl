@@ -23,6 +23,7 @@ use crate::analysis::{
     Analysis, DeclType, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
 };
 use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
+use crate::utils::ast::{find_child, find_descendant};
 use crate::utils::node_to_range;
 use std::collections::HashSet;
 use tower_lsp::lsp_types::Diagnostic;
@@ -249,18 +250,11 @@ fn classify_process(sequential_block: Node, text: &str) -> ProcessType {
 /// - `clk'event and clk = '1'`
 /// - Async reset pattern: `if rst = '1' then ... elsif rising_edge(clk) then ...`
 fn find_edge_checks(sequential_block: Node, text: &str) -> Vec<Usage> {
-    let mut cursor = sequential_block.walk();
     let mut clocks = vec![];
-
-    for child in sequential_block.children(&mut cursor) {
-        if child.kind() == "if_statement_block" {
-            for inner in child.children(&mut child.walk()) {
-                if inner.kind() == "if_statement" {
-                    clocks.extend(extract_clocks_from_if_statement(inner, text));
-                }
-            }
-            break;
-        }
+    if let Some(if_statement_block) = find_child(sequential_block, "if_statement_block")
+        && let Some(if_statement) = find_child(if_statement_block, "if_statement")
+    {
+        clocks.extend(extract_clocks_from_if_statement(if_statement, text));
     }
     clocks
 }
@@ -506,28 +500,24 @@ fn extract_first_identifier_recurse(node: Node, text: &str) -> Option<String> {
 fn extract_sensitivity_list(process_node: Node, text: &str) -> HashSet<Usage> {
     let mut sensitivity_signals = HashSet::new();
 
-    for child in process_node.children(&mut process_node.walk()) {
-        if child.kind() == "sensitivity_specification" {
-            // Check for VHDL-2008 'all' keyword
-            for inner in child.children(&mut child.walk()) {
-                if inner.kind() == "ALL" {
-                    sensitivity_signals.insert(Usage {
-                        name: "all".to_string(),
-                        context: UsageContext::Behavioral,
-                        range: node_to_range(inner),
-                    });
-                    return sensitivity_signals;
-                }
-            }
-
-            // Collect all identifier nodes
-            collect_identifiers_recursive(
-                child,
-                text,
-                UsageContext::Behavioral,
-                &mut sensitivity_signals,
-            );
+    if let Some(sensitivity_spec) = find_descendant(process_node, "sensitivity_specification") {
+        // Check for VHDL-2008 'all' keyword
+        if let Some(sensitivity_all) = find_child(sensitivity_spec, "ALL") {
+            sensitivity_signals.insert(Usage {
+                name: "all".to_string(),
+                context: UsageContext::Behavioral,
+                range: node_to_range(sensitivity_all),
+            });
+            return sensitivity_signals;
         }
+
+        // Collect all identifier nodes
+        collect_identifiers_recursive(
+            sensitivity_spec,
+            text,
+            UsageContext::Behavioral,
+            &mut sensitivity_signals,
+        );
     }
 
     sensitivity_signals

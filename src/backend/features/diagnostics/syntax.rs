@@ -4,7 +4,10 @@
 //! including signal declarations, port declarations, label validation, semicolon
 //! placement, and parenthesis matching.
 
-use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticMessage, messages};
+use crate::{
+    backend::features::diagnostics::{DiagnosticCollectors, DiagnosticMessage, messages},
+    utils::ast::find_child,
+};
 use tree_sitter::Node;
 
 /// Recursively searches for a descendant node of a specific kind.
@@ -82,9 +85,7 @@ pub fn check_syntax_error(node: Node, collectors: &mut DiagnosticCollectors) {
 /// signal bar : std_logic;     -- OK
 /// ```
 pub fn check_signal_declaration(node: Node, collectors: &mut DiagnosticCollectors) {
-    let has_valid_type = node
-        .children(&mut node.walk())
-        .find(|child| child.kind() == "subtype_indication")
+    let has_valid_type = find_child(node, "subtype_indication")
         .map(|type_node| type_node.end_position() != type_node.start_position())
         .unwrap_or(false);
 
