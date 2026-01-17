@@ -67,6 +67,9 @@ fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Dec
                 continue;
             }
             let names = extract_signal_names(interface_decl, text);
+            println!("names: {:?}", names);
+            let doc_comment = extract_doc_comment(interface_decl, text);
+            let default_value = extract_default_value(interface_decl, text);
             for (name, range) in names {
                 declarations.push(Declaration {
                     name,
@@ -74,8 +77,11 @@ fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Dec
                     range: node_to_range(interface_decl),
                     selection_range: range,
                     type_info: extract_type_info_from_generic_and_port(&interface_decl, text),
+                    default_value: default_value.clone(),
+                    doc_comment: doc_comment.clone(),
                 });
             }
+            println!("Declarations: {:?}", declarations);
         }
     }
     declarations
@@ -103,8 +109,9 @@ fn extract_decl_from_port_clause(port_clause: Node, text: &str) -> Vec<Declarati
                 continue;
             }
             let direction = extract_direction_from_interface(interface_decl, text);
-            // TODO: Be careful because of here the type might be behing a simple_mode_indication
             let names = extract_signal_names(interface_decl, text);
+            let doc_comment = extract_doc_comment(interface_decl, text);
+            let default_value = extract_default_value(interface_decl, text);
             for (name, range) in names {
                 declarations.push(Declaration {
                     name,
@@ -112,6 +119,8 @@ fn extract_decl_from_port_clause(port_clause: Node, text: &str) -> Vec<Declarati
                     range: node_to_range(interface_decl),
                     selection_range: range,
                     type_info: extract_type_info_from_generic_and_port(&interface_decl, text),
+                    default_value: default_value.clone(),
+                    doc_comment: doc_comment.clone(),
                 });
             }
         }
@@ -178,33 +187,19 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
     // Collect architecture-level declarations from architecture_head
     if let Some(arch_head) = find_child(arch_node, "architecture_head") {
         for signal_decl in collect_descendants(arch_head, "signal_declaration") {
-            tree.declarations
-                .extend(
-                    extract_signal_names(signal_decl, text)
-                        .iter()
-                        .map(|(name, range)| Declaration {
-                            name: name.to_string(),
-                            decl_type: DeclType::Signal,
-                            range: node_to_range(signal_decl),
-                            selection_range: *range,
-                            type_info: TypeInfo::new(),
-                        }),
-                );
+            tree.declarations.extend(create_declarations_from_node(
+                signal_decl,
+                text,
+                DeclType::Signal,
+            ));
             collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
         }
         for const_decl in collect_descendants(arch_head, "constant_declaration") {
-            tree.declarations
-                .extend(
-                    extract_signal_names(const_decl, text)
-                        .iter()
-                        .map(|(name, range)| Declaration {
-                            name: name.to_string(),
-                            decl_type: DeclType::Constant,
-                            range: node_to_range(const_decl),
-                            selection_range: *range,
-                            type_info: TypeInfo::new(),
-                        }),
-                );
+            tree.declarations.extend(create_declarations_from_node(
+                const_decl,
+                text,
+                DeclType::Constant,
+            ));
             collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
         }
         for type_decl in collect_descendants(arch_head, "type_declaration") {
@@ -267,18 +262,11 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     // Collect variable declarations from process_head
     if let Some(proc_head) = find_child(process_node, "process_head") {
         for var_decl in collect_descendants(proc_head, "variable_declaration") {
-            tree.declarations
-                .extend(
-                    extract_signal_names(var_decl, text)
-                        .iter()
-                        .map(|(name, range)| Declaration {
-                            name: name.to_string(),
-                            decl_type: DeclType::Variable,
-                            range: node_to_range(var_decl),
-                            selection_range: *range,
-                            type_info: TypeInfo::new(),
-                        }),
-                );
+            tree.declarations.extend(create_declarations_from_node(
+                var_decl,
+                text,
+                DeclType::Variable,
+            ));
             collect_identifier_from_decl(&var_decl, text, &mut tree.local_usage);
         }
     }
@@ -347,33 +335,19 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
     if let Some(body_node) = body_node {
         if let Some(head_node) = find_child(body_node, "generate_head") {
             for signal_decl in collect_descendants(head_node, "signal_declaration") {
-                tree.declarations
-                    .extend(
-                        extract_signal_names(signal_decl, text)
-                            .iter()
-                            .map(|(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Signal,
-                                range: node_to_range(signal_decl),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            }),
-                    );
+                tree.declarations.extend(create_declarations_from_node(
+                    signal_decl,
+                    text,
+                    DeclType::Signal,
+                ));
                 collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
             }
             for const_decl in collect_descendants(head_node, "constant_declaration") {
-                tree.declarations
-                    .extend(
-                        extract_signal_names(const_decl, text)
-                            .iter()
-                            .map(|(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Constant,
-                                range: node_to_range(const_decl),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            }),
-                    );
+                tree.declarations.extend(create_declarations_from_node(
+                    const_decl,
+                    text,
+                    DeclType::Constant,
+                ));
                 collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
             }
         }
@@ -437,33 +411,19 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
     if let Some(body_node) = body_node {
         if let Some(head_node) = find_child(body_node, "generate_head") {
             for signal_decl in collect_descendants(head_node, "signal_declaration") {
-                tree.declarations
-                    .extend(
-                        extract_signal_names(signal_decl, text)
-                            .iter()
-                            .map(|(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Signal,
-                                range: node_to_range(signal_decl),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            }),
-                    );
+                tree.declarations.extend(create_declarations_from_node(
+                    signal_decl,
+                    text,
+                    DeclType::Signal,
+                ));
                 collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
             }
             for const_decl in collect_descendants(head_node, "constant_declaration") {
-                tree.declarations
-                    .extend(
-                        extract_signal_names(const_decl, text)
-                            .iter()
-                            .map(|(name, range)| Declaration {
-                                name: name.to_string(),
-                                decl_type: DeclType::Constant,
-                                range: node_to_range(const_decl),
-                                selection_range: *range,
-                                type_info: TypeInfo::new(),
-                            }),
-                    );
+                tree.declarations.extend(create_declarations_from_node(
+                    const_decl,
+                    text,
+                    DeclType::Constant,
+                ));
                 collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
             }
         }
@@ -512,33 +472,19 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
     // Collect declarations from block_head
     if let Some(head_node) = find_child(block_node, "block_head") {
         for signal_decl in collect_descendants(head_node, "signal_declaration") {
-            tree.declarations
-                .extend(
-                    extract_signal_names(signal_decl, text)
-                        .iter()
-                        .map(|(name, range)| Declaration {
-                            name: name.to_string(),
-                            decl_type: DeclType::Signal,
-                            range: node_to_range(signal_decl),
-                            selection_range: *range,
-                            type_info: TypeInfo::new(),
-                        }),
-                );
+            tree.declarations.extend(create_declarations_from_node(
+                signal_decl,
+                text,
+                DeclType::Signal,
+            ));
             collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
         }
         for const_decl in collect_descendants(head_node, "constant_declaration") {
-            tree.declarations
-                .extend(
-                    extract_signal_names(const_decl, text)
-                        .iter()
-                        .map(|(name, range)| Declaration {
-                            name: name.to_string(),
-                            decl_type: DeclType::Constant,
-                            range: node_to_range(const_decl),
-                            selection_range: *range,
-                            type_info: TypeInfo::new(),
-                        }),
-                );
+            tree.declarations.extend(create_declarations_from_node(
+                const_decl,
+                text,
+                DeclType::Constant,
+            ));
             collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
         }
     }
@@ -655,4 +601,103 @@ fn extract_type_info_from_generic_and_port(node: &Node, text: &str) -> TypeInfo 
     //_ => {}
 
     type_info
+}
+
+/// Extract the default value (or value for a constant) in a declaration
+///
+/// # Arguments
+/// `decl_node`: Declaration node
+/// `text`: Full source text
+///
+/// # Returns
+/// Option containing the default value as a string if any
+fn extract_default_value(decl_node: Node, text: &str) -> Option<String> {
+    if let Some(initialiser) = find_descendant(decl_node, "initialiser") {
+        // NOTE: For some reason, the RHS of the initializer is a conditional expression...
+        // the AST of an initializer looks like this:
+        // (initialiser
+        //   (variable assignment)
+        //   (conditional_expression
+        //     (...))
+        //  So we will get the conditional_expression text as the default value
+        if let Some(default_value_node) = find_descendant(initialiser, "conditional_expression") {
+            let default_value = text[default_value_node.byte_range()].to_string();
+            return Some(default_value);
+        }
+    }
+    None
+}
+
+/// Extract comments before a declaration. Will stop if it finds a non-comment node or an empty
+/// line
+///
+/// # Arguments
+/// `decl_node`: Declaration node
+/// `text`: Full source text
+///
+/// # Returns
+/// An option containing the doc comment if any
+fn extract_doc_comment(decl_node: Node, text: &str) -> Option<String> {
+    let decl_start_line = decl_node.start_position().row;
+    let mut comments = Vec::new();
+    let mut expected_line = decl_start_line - 1;
+
+    if let Some(parent) = decl_node.parent() {
+        let children: Vec<Node> = parent.children(&mut parent.walk()).collect();
+        // Walk backward from the declaration node checking comments and line numbers
+        if let Some(decl_idx) = children.iter().position(|n| *n == decl_node) {
+            for i in (0..decl_idx).rev() {
+                let child = children[i];
+                if child.kind() == "line_comment" {
+                    let comment_line = child.start_position().row;
+                    if comment_line == expected_line {
+                        if let Some(comment_content) = find_child(child, "comment_content") {
+                            let comment_text =
+                                text[comment_content.byte_range()].trim().to_string();
+                            comments.insert(0, comment_text);
+                        }
+                        expected_line = child.start_position().row - 1;
+                    } else {
+                        // Hit an empty line
+                        break;
+                    }
+                } else {
+                    // Hit a non comment
+                    break;
+                }
+            }
+        }
+    }
+
+    if comments.is_empty() {
+        None
+    } else {
+        Some(comments.join("\n"))
+    }
+}
+
+/// Create a declaration from a specific node
+///
+/// # Arguments
+/// `node`: Declaration node
+/// `text`: Fill source text
+/// `decl_type`: Type of the declartation
+///
+/// # Returns
+/// Vector of declaration based on the node
+fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) -> Vec<Declaration> {
+    let doc_comment = extract_doc_comment(node, text);
+    let default_value = extract_default_value(node, text);
+    extract_signal_names(node, text)
+        .into_iter()
+        .map(|(name, range)| Declaration {
+            name,
+            decl_type: decl_type.clone(),
+            range: node_to_range(node),
+            selection_range: range,
+            type_info: TypeInfo::new(),
+            default_value: default_value.clone(),
+            doc_comment: doc_comment.clone(),
+        })
+        .collect()
 }

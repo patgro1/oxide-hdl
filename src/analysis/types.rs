@@ -272,6 +272,10 @@ pub struct Declaration {
     pub selection_range: Range,
     /// TypeInfo for this declaration
     pub type_info: TypeInfo,
+    // Default value if any
+    pub default_value: Option<String>,
+    // Doc string
+    pub doc_comment: Option<String>,
 }
 
 /// Type information for the VHDL declaration

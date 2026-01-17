@@ -1,8 +1,11 @@
+mod builders_tests;
 mod visible_tests;
 
 use super::*;
 use tower_lsp::lsp_types::{Position, Range}; // Used only for Symbol struct creation
 
+use crate::backend::test_utils::SHARED_PARSER_LOCK;
+use tree_sitter::Parser;
 // --- SETUP HELPERS ---
 
 fn dummy_range() -> Range {
@@ -26,6 +29,13 @@ fn make_symbol(name: &str, kind: OxideSymbolKind, children: Vec<Symbol>) -> Symb
         detail: None,
         children,
     }
+}
+pub fn parse_text(code: &str) -> tree_sitter::Tree {
+    let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+    let mut parser = Parser::new();
+    let lang = unsafe { crate::tree_sitter_vhdl() };
+    parser.set_language(&lang).unwrap();
+    parser.parse(code, None).unwrap()
 }
 /// Creates a structure like:
 /// Analysis ->

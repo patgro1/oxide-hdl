@@ -24,6 +24,8 @@ mod collect_visible_tests {
             range,
             selection_range: Range::default(),
             type_info: TypeInfo::new(),
+            default_value: None,
+            doc_comment: None,
         }
     }
 
