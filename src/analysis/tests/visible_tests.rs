@@ -1,58 +1,26 @@
 mod collect_visible_tests {
     use crate::analysis::*;
-    use crate::backend::test_utils::SHARED_PARSER_LOCK;
-    use tower_lsp::lsp_types::{Position, Range};
-    use tree_sitter::Parser;
-
-    fn make_range(start_line: u32, end_line: u32) -> Range {
-        Range {
-            start: Position {
-                line: start_line,
-                character: 0,
-            },
-            end: Position {
-                line: end_line,
-                character: 0,
-            },
-        }
-    }
-
-    fn make_decl(name: &str, decl_type: DeclType, range: Range) -> Declaration {
-        Declaration {
-            name: name.to_string(),
-            decl_type,
-            range,
-            selection_range: Range::default(),
-            type_info: TypeInfo::new(),
-            default_value: None,
-            doc_comment: None,
-        }
-    }
-
-    fn parse_text(code: &str) -> tree_sitter::Tree {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        parser.parse(code, None).unwrap()
-    }
+    use crate::backend::test_utils::{make_decl_with_range, make_line_range, parse_text};
+    use std::collections::HashMap;
+    use tower_lsp::lsp_types::Range;
 
     #[test]
     fn test_target_in_root_scope() {
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 10),
+            range: make_line_range(0, 10),
             name: None,
             entity: None,
             declarations: vec![
-                make_decl("arch_sig", DeclType::Signal, Range::default()),
-                make_decl("arch_const", DeclType::Constant, Range::default()),
+                make_decl_with_range("arch_sig", DeclType::Signal, Range::default()),
+                make_decl_with_range("arch_const", DeclType::Constant, Range::default()),
             ],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(0, 10);
+        let target = make_line_range(0, 10);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());
@@ -66,25 +34,27 @@ mod collect_visible_tests {
     fn test_target_in_nested_scope() {
         let process = ScopeTree {
             kind: ScopeKind::Process,
-            range: make_range(5, 15),
+            range: make_line_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("proc_var", DeclType::Variable, Range::default())],
+            declarations: vec![make_decl_with_range("proc_var", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 20),
+            range: make_line_range(0, 20),
             name: None,
             entity: None,
-            declarations: vec![make_decl("arch_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("arch_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(5, 15);
+        let target = make_line_range(5, 15);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());
@@ -99,35 +69,38 @@ mod collect_visible_tests {
     fn test_deeply_nested_three_levels() {
         let process = ScopeTree {
             kind: ScopeKind::Process,
-            range: make_range(10, 20),
+            range: make_line_range(10, 20),
             name: None,
             entity: None,
-            declarations: vec![make_decl("level2", DeclType::Variable, Range::default())],
+            declarations: vec![make_decl_with_range("level2", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let generate = ScopeTree {
             kind: ScopeKind::Generate,
-            range: make_range(5, 25),
+            range: make_line_range(5, 25),
             name: None,
             entity: None,
-            declarations: vec![make_decl("level1", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("level1", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
+            decl_index: HashMap::new(),
         };
 
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 30),
+            range: make_line_range(0, 30),
             name: None,
             entity: None,
-            declarations: vec![make_decl("level0", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("level0", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![generate],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(10, 20);
+        let target = make_line_range(10, 20);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());
@@ -142,15 +115,16 @@ mod collect_visible_tests {
     fn test_target_not_in_scope() {
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 10),
+            range: make_line_range(0, 10),
             name: None,
             entity: None,
-            declarations: vec![make_decl("sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(50, 60);
+        let target = make_line_range(50, 60);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_none());
@@ -160,45 +134,49 @@ mod collect_visible_tests {
     fn test_sibling_scopes_not_visible() {
         let process = ScopeTree {
             kind: ScopeKind::Process,
-            range: make_range(8, 12),
+            range: make_line_range(8, 12),
             name: None,
             entity: None,
             declarations: vec![],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let gen1 = ScopeTree {
             kind: ScopeKind::Generate,
-            range: make_range(5, 15),
+            range: make_line_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen1_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("gen1_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
+            decl_index: HashMap::new(),
         };
 
         let gen2 = ScopeTree {
             kind: ScopeKind::Generate,
-            range: make_range(16, 25),
+            range: make_line_range(16, 25),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen2_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("gen2_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 30),
+            range: make_line_range(0, 30),
             name: None,
             entity: None,
-            declarations: vec![make_decl("arch_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("arch_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![gen1, gen2],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(8, 12);
+        let target = make_line_range(8, 12);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());
@@ -213,15 +191,16 @@ mod collect_visible_tests {
     fn test_empty_scope_tree() {
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 10),
+            range: make_line_range(0, 10),
             name: None,
             entity: None,
             declarations: vec![],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(0, 10);
+        let target = make_line_range(0, 10);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());
@@ -233,55 +212,60 @@ mod collect_visible_tests {
     fn test_multiple_children_only_one_contains_target() {
         let process = ScopeTree {
             kind: ScopeKind::Process,
-            range: make_range(18, 22),
+            range: make_line_range(18, 22),
             name: None,
             entity: None,
-            declarations: vec![make_decl("proc_var", DeclType::Variable, Range::default())],
+            declarations: vec![make_decl_with_range("proc_var", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let gen1 = ScopeTree {
             kind: ScopeKind::Generate,
-            range: make_range(5, 15),
+            range: make_line_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen1_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("gen1_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let gen2 = ScopeTree {
             kind: ScopeKind::Generate,
-            range: make_range(16, 25),
+            range: make_line_range(16, 25),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen2_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("gen2_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
+            decl_index: HashMap::new(),
         };
 
         let gen3 = ScopeTree {
             kind: ScopeKind::Generate,
-            range: make_range(26, 35),
+            range: make_line_range(26, 35),
             name: None,
             entity: None,
-            declarations: vec![make_decl("gen3_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("gen3_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 40),
+            range: make_line_range(0, 40),
             name: None,
             entity: None,
-            declarations: vec![make_decl("arch_sig", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("arch_sig", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![gen1, gen2, gen3],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(18, 22);
+        let target = make_line_range(18, 22);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());
@@ -300,25 +284,27 @@ mod collect_visible_tests {
 
         let process = ScopeTree {
             kind: ScopeKind::Process,
-            range: make_range(5, 15),
+            range: make_line_range(5, 15),
             name: None,
             entity: None,
-            declarations: vec![make_decl("data", DeclType::Variable, Range::default())],
+            declarations: vec![make_decl_with_range("data", DeclType::Variable, Range::default())],
             local_usage: HashSet::new(),
             children: vec![],
+            decl_index: HashMap::new(),
         };
 
         let arch = ScopeTree {
             kind: ScopeKind::Architecture,
-            range: make_range(0, 20),
+            range: make_line_range(0, 20),
             name: None,
             entity: None,
-            declarations: vec![make_decl("data", DeclType::Signal, Range::default())],
+            declarations: vec![make_decl_with_range("data", DeclType::Signal, Range::default())],
             local_usage: HashSet::new(),
             children: vec![process],
+            decl_index: HashMap::new(),
         };
 
-        let target = make_range(5, 15);
+        let target = make_line_range(5, 15);
         let result = arch.collect_visible_declarations(&target, None);
 
         assert!(result.is_some());

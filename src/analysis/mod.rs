@@ -12,9 +12,9 @@ pub use builders::*;
 pub use scope_tree::*;
 pub use types::*;
 
-use crate::utils::node_to_range;
+use crate::utils::{node_to_range, position_in_range};
 use std::collections::{HashMap, HashSet};
-use tower_lsp::lsp_types::Range;
+use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::{Language, Node};
 
 #[cfg(test)]
@@ -38,6 +38,10 @@ pub struct Analysis {
     /// preserves the original display name.
     pub symbols: HashMap<String, Symbol>,
 
+    /// Using lowercase keys ensures case-insensitive lookup
+    /// Contains the location within the scope trees of all symbols
+    pub symbols_index: HashMap<String, DeclarationRef>,
+
     /// How the file was parsed
     pub parse_level: ParseLevel,
 
@@ -53,6 +57,7 @@ impl Analysis {
     pub fn new() -> Self {
         Self {
             symbols: HashMap::new(),
+            symbols_index: HashMap::new(),
             parse_level: ParseLevel::Shallow,
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
@@ -105,6 +110,54 @@ impl Analysis {
             .as_ref()
             .and_then(|name| self.entity_scope_trees.get(name));
         arch_scope.collect_visible_declarations(&target, entity_scope)
+    }
+
+    /// Find the scope tree for a given position
+    ///
+    /// Looks in the non-entity scope trees first, if we do not find anything move to entities
+    ///
+    /// # Arguments
+    /// `pos` - Position we are trying to get a scope tree from
+    ///
+    /// # Returns
+    /// Scope tree containing the position if any
+    pub fn find_scope_tree_at(&self, pos: &Position) -> Option<&ScopeTree> {
+        self.scope_trees
+            .iter()
+            .find(|scope_tree| position_in_range(*pos, scope_tree.range))
+            .or_else(|| {
+                self.entity_scope_trees
+                    .values()
+                    .find(|scope_tree| position_in_range(*pos, scope_tree.range))
+            })
+    }
+
+    /// Find the declaration of the given name that is visible at the given position
+    ///
+    /// Searches from the innermost scope outward so shadowing is properly taken into account
+    ///
+    /// # Arguments
+    /// `name` - The name we are trying to find the declaration for
+    /// `pos` - The position of the cursor
+    ///
+    /// # Returns
+    /// An option with the declaration for the name is it is found
+    pub fn find_declaration_at(&self, name: &str, pos: &Position) -> Option<&Declaration> {
+        if let Some(scope_tree) = self.find_scope_tree_at(pos) {
+            for inner_scope_tree in scope_tree.collect_scope_chain(pos).iter().rev() {
+                if let Some(decl) = inner_scope_tree.get_declaration(name) {
+                    return Some(decl);
+                }
+            }
+            // At that point, we might need to check in the entity declaration. If the scope_tree links
+            // to one, check if we can find the name in it.
+            if let Some(entity_name) = &scope_tree.entity
+                && let Some(entity_scope_tree) = self.entity_scope_trees.get(entity_name)
+            {
+                return entity_scope_tree.get_declaration(name);
+            }
+        }
+        None
     }
 }
 

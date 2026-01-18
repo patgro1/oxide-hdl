@@ -60,17 +60,8 @@ mod tests {
     //! Each test verifies that the correct number of diagnostics are generated
     //! and that diagnostic messages contain expected content.
 
-    use crate::backend::test_utils::SHARED_PARSER_LOCK;
+    use crate::backend::test_utils::parse_text;
     use tower_lsp::lsp_types::Diagnostic;
-    use tree_sitter::Parser;
-
-    fn parse_text(code: &str) -> tree_sitter::Tree {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        parser.parse(code, None).unwrap()
-    }
 
     fn check_unused_signals(code: &str) -> Vec<Diagnostic> {
         let tree = parse_text(code);
@@ -143,14 +134,17 @@ end architecture;
     }
 
     #[test]
-    fn test_signal_used_in_port_map() {
+    fn test_signals_used_in_port_maps_not_flagged() {
+        // Signals used as both inputs and outputs in port maps should not be flagged
         let code = r#"
 architecture rtl of test is
-    signal internal_clk : std_logic;
+    signal clk_internal : std_logic;
+    signal data_out : std_logic;
 begin
     inst: entity work.sub_module
         port map (
-            clk => internal_clk
+            clk => clk_internal,
+            output => data_out
         );
 end architecture;
 "#;
@@ -158,7 +152,7 @@ end architecture;
 
         assert!(
             diags.is_empty(),
-            "Should not flag signals used in port maps"
+            "Signals used in port maps (input or output) should not be flagged"
         );
     }
 
@@ -486,25 +480,6 @@ end architecture;
     }
 
     #[test]
-    fn test_signal_used_in_port_map_output() {
-        let code = r#"
-architecture rtl of test is
-    signal internal : std_logic;
-begin
-    inst: entity work.sub
-        port map (
-            output => internal
-        );
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-        assert!(
-            diags.is_empty(),
-            "Signal assigned via port map should be used"
-        );
-    }
-
-    #[test]
     fn test_if_generate_with_else() {
         let code = r#"
 architecture rtl of test is
@@ -546,105 +521,60 @@ end architecture;
     } // Add to tests module in unused.rs
 
     #[test]
-    fn test_constant_used_in_signal_type() {
+    fn test_constants_used_in_various_contexts_not_flagged() {
+        // Comprehensive test: constants used in signal types, variable types,
+        // constant expressions, type definitions, subtype ranges, and generate clauses
+        // should NOT be flagged as unused
         let code = r#"
 architecture rtl of test is
+    -- Constants used in various contexts
     constant WIDTH : integer := 8;
+    constant SIZE : integer := 16;
+    constant BASE : integer := 100;
+    constant DERIVED : integer := BASE * 2;
+    constant MAX_VAL : integer := 255;
+    constant GEN_START : integer := 0;
+
+    -- Type definitions using constants
+    type array_type is array(0 to WIDTH-1) of std_logic;
+    subtype range_type is integer range 0 to MAX_VAL;
+
+    -- Signals using constants in types
     signal data : std_logic_vector(WIDTH-1 downto 0);
+    signal my_array : array_type;
+    signal my_val : range_type;
+    signal result : integer;
 begin
     data <= (others => '0');
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
+    my_array(0) <= '1';
+    my_val <= 50;
+    result <= DERIVED;
 
-        assert!(
-            diags.is_empty(),
-            "Constant used in signal type should not be flagged"
-        );
-    }
-
-    #[test]
-    fn test_constant_used_in_variable_type() {
-        let code = r#"
-architecture rtl of test is
-    constant SIZE : integer := 16;
-begin
+    -- Process with variable using constant
     p_my_proc: process is
         variable my_var: std_logic_vector(SIZE-1 downto 0);
     begin
-        my_var:=0;
+        my_var := (others => '0');
     end process;
+
+    -- Generate using constant
+    g_loop: for idx in GEN_START to 3 generate
+    end generate;
 end architecture;
 "#;
         let diags = check_unused_signals(code);
 
         assert!(
             diags.is_empty(),
-            "Constant used in variable type should not be flagged"
+            "Constants used in types, expressions, and generates should not be flagged. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
     #[test]
-    fn test_constant_used_in_constant_expression() {
-        let code = r#"
-architecture rtl of test is
-    constant BASE : integer := 100;
-    constant DERIVED : integer := BASE * 2;
-    signal result : integer;
-begin
-    result <= DERIVED;
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert!(
-            diags.is_empty(),
-            "Constant used in another constant's expression should not be flagged"
-        );
-    }
-
-    #[test]
-    fn test_signal_used_only_in_type_still_unused() {
-        let code = r#"
-architecture rtl of test is
-    signal template : std_logic_vector(7 downto 0);
-    signal copy : std_logic_vector(template'range);
-begin
-    copy <= (others => '0');
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert_eq!(
-            diags.len(),
-            1,
-            "Signal used only in type declaration should be flagged"
-        );
-        assert!(diags[0].message.contains("template"));
-    }
-
-    #[test]
-    fn test_signal_in_subtype_attribute_still_unused() {
-        let code = r#"
-architecture rtl of test is
-    signal src : std_logic_vector(15 downto 0);
-    signal dst : std_logic_vector(src'length-1 downto 0);
-begin
-    dst <= (others => '1');
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert_eq!(
-            diags.len(),
-            1,
-            "Signal used only in attribute should be flagged"
-        );
-        assert!(diags[0].message.contains("src"));
-    }
-
-    #[test]
-    fn test_mixed_constant_and_signal_in_types() {
+    fn test_signals_used_only_in_type_attributes_still_flagged() {
+        // Signals used only in type declarations ('range, 'length) should still be flagged
+        // as unused - unlike constants which ARE valid in type expressions
         let code = r#"
 architecture rtl of test is
     constant WIDTH : integer := 8;
@@ -657,9 +587,10 @@ end architecture;
 "#;
         let diags = check_unused_signals(code);
 
-        // WIDTH is used (in types), template is unused (only in types), copy is unused
-        assert_eq!(diags.len(), 2, "Should flag template and copy");
-        let unused_names: Vec<&str> = diags
+        // WIDTH is used (constants in types = OK), template and copy are unused
+        assert_eq!(diags.len(), 2, "Should flag template and copy, not WIDTH");
+
+        let flagged: Vec<&str> = diags
             .iter()
             .filter_map(|d| {
                 if d.message.contains("template") {
@@ -671,86 +602,7 @@ end architecture;
                 }
             })
             .collect();
-        assert_eq!(unused_names.len(), 2);
-    }
-    #[test]
-    fn test_constant_used_in_type_definition() {
-        let code = r#"
-architecture rtl of test is
-    constant WIDTH : integer := 8;
-    constant MAX_VAL : integer := 100;
-    
-    type array_type is array(0 to WIDTH-1) of std_logic;
-    subtype range_type is integer range 0 to MAX_VAL;
-    
-    signal my_array : array_type;
-    signal my_val : range_type;
-begin
-    my_array(0) <= '1';
-    my_val <= 50;
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert!(
-            diags.is_empty(),
-            "Constants used in type definitions should not be flagged"
-        );
+        assert_eq!(flagged.len(), 2, "Should flag both template and copy");
     }
 
-    #[test]
-    fn test_constant_used_in_subtype_range() {
-        let code = r#"
-architecture rtl of test is
-    constant MIN : integer := 0;
-    constant MAX : integer := 255;
-    signal value : integer range MIN to MAX;
-begin
-    value <= 100;
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert!(
-            diags.is_empty(),
-            "Constants used in signal subtype ranges should not be flagged"
-        );
-    }
-
-    #[test]
-    fn test_constant_used_in_if_generate_clause() {
-        let code = r#"
-architecture rtl of test is
-    constant MIN : integer := 0;
-begin
-    value <= 100;
-    g_toto: if MIN > 0 generate
-    end generate;
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert!(
-            diags.is_empty(),
-            "Constants used in signal subtype ranges should not be flagged"
-        );
-    }
-    #[test]
-    fn test_constant_used_in_for_generate_clause() {
-        let code = r#"
-architecture rtl of test is
-    constant MIN : integer := 0;
-begin
-    value <= 100;
-    g_toto: for idx in MIN to 100  generate
-    end generate;
-end architecture;
-"#;
-        let diags = check_unused_signals(code);
-
-        assert!(
-            diags.is_empty(),
-            "Constants used in signal subtype ranges should not be flagged"
-        );
-    }
 }

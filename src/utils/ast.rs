@@ -107,26 +107,12 @@ pub fn collect_children<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::test_utils::SHARED_PARSER_LOCK;
-    use tree_sitter::Parser;
-
-    fn parse_text(code: &str) -> tree_sitter::Tree {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        parser.parse(code, None).unwrap()
-    }
-
-    /// Helper to parse VHDL and get root node
-    fn parse_vhdl(code: &str) -> tree_sitter::Tree {
-        parse_text(code)
-    }
+    use crate::backend::test_utils::parse_text;
 
     // ==================== navigate_path tests ====================
 
     #[test]
-    fn test_navigate_path_simple() {
+    fn test_navigate_path_simple_and_deep() {
         let code = r#"
 entity test is
     port (
@@ -134,11 +120,11 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
-        // Navigate to port clause
-        let result = navigate_path(
+        // Navigate to port clause (shallow)
+        let port_clause = navigate_path(
             root,
             &[
                 "design_unit",
@@ -147,24 +133,11 @@ end entity;
                 "port_clause",
             ],
         );
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().kind(), "port_clause");
-    }
+        assert!(port_clause.is_some());
+        assert_eq!(port_clause.unwrap().kind(), "port_clause");
 
-    #[test]
-    fn test_navigate_path_deep() {
-        let code = r#"
-entity test is
-    port (
-        clk : in std_logic
-    );
-end entity;
-"#;
-        let tree = parse_vhdl(code);
-        let root = tree.root_node();
-
-        // Navigate deep path
-        let result = navigate_path(
+        // Navigate deeper to interface_declaration
+        let interface = navigate_path(
             root,
             &[
                 "design_unit",
@@ -175,8 +148,8 @@ end entity;
                 "interface_declaration",
             ],
         );
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().kind(), "interface_declaration");
+        assert!(interface.is_some());
+        assert_eq!(interface.unwrap().kind(), "interface_declaration");
     }
 
     #[test]
@@ -185,7 +158,7 @@ end entity;
 entity test is
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Try to navigate to non-existent port clause
@@ -210,7 +183,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Wrong kind in path
@@ -221,7 +194,7 @@ end entity;
     #[test]
     fn test_navigate_path_empty() {
         let code = "entity test is end entity;";
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Empty path should return original node
@@ -233,7 +206,7 @@ end entity;
     // ==================== find_descendant tests ====================
 
     #[test]
-    fn test_find_descendant_immediate_child() {
+    fn test_find_descendant_immediate_and_deep() {
         let code = r#"
 entity test is
     port (
@@ -241,31 +214,18 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Find design_unit (immediate child)
-        let result = find_descendant(root, "design_unit");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().kind(), "design_unit");
-    }
-
-    #[test]
-    fn test_find_descendant_deep() {
-        let code = r#"
-entity test is
-    port (
-        clk : in std_logic
-    );
-end entity;
-"#;
-        let tree = parse_vhdl(code);
-        let root = tree.root_node();
+        let design_unit = find_descendant(root, "design_unit");
+        assert!(design_unit.is_some());
+        assert_eq!(design_unit.unwrap().kind(), "design_unit");
 
         // Find identifier (deep in the tree)
-        let result = find_descendant(root, "identifier");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().kind(), "identifier");
+        let identifier = find_descendant(root, "identifier");
+        assert!(identifier.is_some());
+        assert_eq!(identifier.unwrap().kind(), "identifier");
     }
 
     #[test]
@@ -278,7 +238,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Should find first identifier (clk, not rst)
@@ -290,7 +250,7 @@ end entity;
     #[test]
     fn test_find_descendant_not_found() {
         let code = "entity test is end entity;";
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Try to find non-existent node type
@@ -301,7 +261,7 @@ end entity;
     #[test]
     fn test_find_descendant_finds_self() {
         let code = "entity test is end entity;";
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Should find itself if kind matches
@@ -323,7 +283,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Collect all identifiers
@@ -337,7 +297,7 @@ end entity;
     #[test]
     fn test_collect_descendants_none() {
         let code = "entity test is end entity;";
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Collect non-existent node type
@@ -354,7 +314,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Collect port_clause (should be exactly one)
@@ -381,7 +341,7 @@ begin
     end process;
 end architecture;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Collect all process_statement nodes
@@ -392,7 +352,7 @@ end architecture;
     #[test]
     fn test_collect_descendants_includes_root() {
         let code = "entity test is end entity;";
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // If searching for root's kind, it should include itself
@@ -413,7 +373,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Navigate to port clause, then collect all identifiers
@@ -441,7 +401,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // find_descendant returns first
@@ -466,7 +426,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Navigate to interface_list
@@ -494,7 +454,7 @@ end entity;
     #[test]
     fn test_collect_children_none() {
         let code = "entity test is end entity;";
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Try to collect non-existent children
@@ -514,7 +474,7 @@ entity test is
     );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Collect design_unit (should be exactly one immediate child)
@@ -544,7 +504,7 @@ begin
     end generate;
 end architecture;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Navigate to concurrent_block
@@ -578,7 +538,7 @@ begin
     end block;
 end architecture;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         let concurrent_block =
@@ -608,7 +568,7 @@ architecture rtl of test is
 begin
 end architecture;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         let arch_head =
@@ -630,7 +590,7 @@ entity test is
     port ( );
 end entity;
 "#;
-        let tree = parse_vhdl(code);
+        let tree = parse_text(code);
         let root = tree.root_node();
 
         // Find the empty port_clause

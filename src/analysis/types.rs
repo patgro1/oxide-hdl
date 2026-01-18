@@ -93,6 +93,16 @@ impl From<OxideSymbolKind> for SymbolKind {
     }
 }
 
+/// Declaration Reference
+///
+/// Represent the scope tree resolution of a particular declaration
+#[derive(Debug, Clone)]
+pub struct DeclarationRef {
+    /// Indexed reference of the scope tree of the declaration
+    scope_tree_idx: usize,
+    /// Declaration index within the scope tree
+    declaration_idx: usize,
+}
 // Represents a single symbol in the VHDL source code.
 ///
 /// Symbols are hierarchical. For example, an `Architecture` symbol will contain
