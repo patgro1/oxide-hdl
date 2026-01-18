@@ -41,6 +41,7 @@ pub fn build_entity_scope_tree(ent_node: Node, text: &str) -> ScopeTree {
                 .extend(extract_decl_from_port_clause(port_clause, text));
         }
     }
+    tree.rebuild_index();
     tree
 }
 
@@ -240,6 +241,7 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
             break;
         }
     }
+    tree.rebuild_index();
     tree
 }
 
@@ -292,6 +294,7 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
             break;
         }
     }
+    tree.rebuild_index();
     tree
 }
 
@@ -374,6 +377,7 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
             }
         }
     }
+    tree.rebuild_index();
     tree
 }
 
@@ -450,6 +454,7 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
             }
         }
     }
+    tree.rebuild_index();
     tree
 }
 
@@ -515,7 +520,7 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
             }
         }
     }
-
+    tree.rebuild_index();
     tree
 }
 

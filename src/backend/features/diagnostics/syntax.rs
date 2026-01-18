@@ -375,20 +375,8 @@ mod tests {
 
     use super::*;
     use crate::backend::features::diagnostics::DiagnosticMessage;
-    use crate::backend::test_utils::SHARED_PARSER_LOCK;
+    use crate::backend::test_utils::parse_text;
     use tower_lsp::lsp_types::Diagnostic;
-    use tree_sitter::Parser;
-
-    /// Parses VHDL code using the Tree-sitter parser.
-    ///
-    /// Uses a shared mutex to ensure thread-safe parser access during tests.
-    fn parse_text(code: &str) -> tree_sitter::Tree {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        parser.parse(code, None).unwrap()
-    }
 
     /// Recursively prints the AST structure for debugging.
     ///

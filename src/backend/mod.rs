@@ -499,9 +499,99 @@ impl LanguageServer for Backend {
 #[cfg(test)]
 pub mod test_utils {
     use lazy_static::lazy_static;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
+    use tower_lsp::lsp_types::{Position, Range};
+    use tree_sitter::Parser;
+
+    use crate::analysis::{DeclType, Declaration, ScopeKind, ScopeTree, TypeInfo};
 
     lazy_static! {
         pub static ref SHARED_PARSER_LOCK: Mutex<()> = Mutex::new(());
+    }
+
+    /// Shared VHDL parsing helper for tests.
+    /// Uses the shared parser lock to ensure thread safety.
+    pub fn parse_text(code: &str) -> tree_sitter::Tree {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        parser.parse(code, None).unwrap()
+    }
+
+    /// Create a Range with full position control
+    pub fn make_range(start_line: u32, start_char: u32, end_line: u32, end_char: u32) -> Range {
+        Range {
+            start: Position {
+                line: start_line,
+                character: start_char,
+            },
+            end: Position {
+                line: end_line,
+                character: end_char,
+            },
+        }
+    }
+
+    /// Create a simple Range using only line numbers (character = 0)
+    pub fn make_line_range(start_line: u32, end_line: u32) -> Range {
+        Range {
+            start: Position {
+                line: start_line,
+                character: 0,
+            },
+            end: Position {
+                line: end_line,
+                character: 0,
+            },
+        }
+    }
+
+    /// Create a Position
+    pub fn make_pos(line: u32, character: u32) -> Position {
+        Position { line, character }
+    }
+
+    /// Create a Declaration with minimal fields
+    pub fn make_decl(name: &str, decl_type: DeclType) -> Declaration {
+        Declaration {
+            name: name.to_lowercase(),
+            decl_type,
+            range: Range::default(),
+            selection_range: Range::default(),
+            type_info: TypeInfo::new(),
+            default_value: None,
+            doc_comment: None,
+        }
+    }
+
+    /// Create a Declaration with a specific range
+    pub fn make_decl_with_range(name: &str, decl_type: DeclType, range: Range) -> Declaration {
+        Declaration {
+            name: name.to_string(),
+            decl_type,
+            range,
+            selection_range: Range::default(),
+            type_info: TypeInfo::new(),
+            default_value: None,
+            doc_comment: None,
+        }
+    }
+
+    /// Create a ScopeTree with declarations and auto-built index
+    pub fn make_scope(kind: ScopeKind, range: Range, declarations: Vec<Declaration>) -> ScopeTree {
+        let mut scope = ScopeTree {
+            kind,
+            range,
+            name: None,
+            entity: None,
+            declarations,
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+        };
+        scope.rebuild_index();
+        scope
     }
 }

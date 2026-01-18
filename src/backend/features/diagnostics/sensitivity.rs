@@ -643,16 +643,7 @@ fn check_comb_process(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::test_utils::SHARED_PARSER_LOCK;
-    use tree_sitter::Parser;
-
-    fn parse_text(code: &str) -> tree_sitter::Tree {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        parser.parse(code, None).unwrap()
-    }
+    use crate::backend::test_utils::parse_text;
 
     fn check_sensitivity(code: &str) -> Vec<Diagnostic> {
         let tree = parse_text(code);
@@ -1106,20 +1097,24 @@ end architecture;
     }
 
     #[test]
-    fn test_process_with_all_keyword() {
+    fn test_process_with_all_keyword_skips_validation() {
+        // VHDL-2008 'all' keyword should skip both missing and unnecessary checks
         let code = r#"
 architecture rtl of test is
-    signal a, b, result : std_logic;
+    signal a, b, result, unused : std_logic;
 begin
-    process(all)  -- VHDL-2008 'all' keyword
+    process(all)
     begin
         result <= a and b;
+        -- 'unused' not referenced, but 'all' means no unnecessary warning
     end process;
 end architecture;
 "#;
         let diags = check_sensitivity(code);
-        // Should handle 'all' gracefully (maybe skip validation)
-        assert!(diags.is_empty(), "'all' keyword should be accepted");
+        assert!(
+            diags.is_empty(),
+            "'all' keyword should skip all sensitivity validation"
+        );
     }
 
     #[test]
@@ -1352,22 +1347,4 @@ end architecture;
         assert_eq!(diags.len(), 2, "Should detect both unnecessary items");
     }
 
-    #[test]
-    fn test_all_keyword_no_unnecessary_check() {
-        let code = r#"
-architecture rtl of test is
-    signal a, b : std_logic;
-begin
-    process(all)  -- 'all' keyword - skip unnecessary checks
-    begin
-        a <= '0';  -- 'b' not used, but 'all' is fine
-    end process;
-end architecture;
-"#;
-        let diags = check_sensitivity(code);
-        assert!(
-            diags.is_empty(),
-            "'all' keyword should skip unnecessary checks"
-        );
-    }
 }
