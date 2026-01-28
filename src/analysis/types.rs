@@ -182,7 +182,6 @@ pub enum DeclType {
     /// Entity Generic
     Generic,
     /// Entity port with direction
-    #[allow(dead_code)]
     Port(PortDirection),
     /// Constant declaration (value cannot change)
     Constant,
@@ -207,6 +206,19 @@ pub enum PortDirection {
     Buffer,
     /// Linkage (connection with mixed language or mixed-signals)
     Linkage,
+}
+
+impl fmt::Display for PortDirection {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            PortDirection::In => "in",
+            PortDirection::Out => "out",
+            PortDirection::InOut => "inout",
+            PortDirection::Buffer => "buffer",
+            PortDirection::Linkage => "linkage",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /// Kind of scope in the VHDL hierarchy.
