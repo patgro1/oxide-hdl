@@ -4,8 +4,9 @@ use tower_lsp::lsp_types::{
 };
 use tree_sitter::{Node, Point};
 
-use crate::analysis::{OxideSymbolKind, Symbol};
+use crate::analysis::{DeclType, Declaration, OxideSymbolKind, Symbol};
 use crate::backend::AnalysisMap;
+use crate::backend::features::hover;
 
 // =============================================================================
 // Node Kind Constants
@@ -970,9 +971,24 @@ pub fn complete_scope(
             _ => {}
         }
 
-        // Handle general scope lookups (only searches current file)
-        for sym in current_analysis.symbols.values() {
-            collect_symbols(sym, context, position, &mut items);
+        // // Handle general scope lookups (only searches current file)
+        // for sym in current_analysis.symbols.values() {
+        //     collect_symbols(sym, context, position, &mut items);
+        // }
+        if let Some(scope_tree) = current_analysis.find_scope_tree_at(&position) {
+            let innermost_scope = scope_tree.find_innermost_scope(&position);
+            let declarations = scope_tree.collect_visible_declarations(
+                &innermost_scope.range,
+                scope_tree
+                    .entity
+                    .as_ref()
+                    .and_then(|name| current_analysis.entity_scope_trees.get(name)),
+            );
+            if let Some(declarations) = declarations {
+                for decl in declarations {
+                    items.push(declaration_to_completion(&decl));
+                }
+            }
         }
     }
 
@@ -1109,6 +1125,35 @@ fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {
         })),
         ..CompletionItem::default()
     })
+}
+
+fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
+    let kind = match decl.decl_type {
+        DeclType::Constant => CompletionItemKind::CONSTANT,
+        DeclType::Variable => CompletionItemKind::VARIABLE,
+        DeclType::Signal => CompletionItemKind::VARIABLE,
+        DeclType::Generic => CompletionItemKind::CONSTANT,
+        DeclType::Port(_) => CompletionItemKind::FIELD,
+    };
+
+    let mut details = decl.type_info.base_type.clone();
+    if let Some(constraints) = &decl.type_info.constraints {
+        details.push_str(constraints);
+    }
+
+    CompletionItem {
+        label: decl.name.clone(),
+        kind: Some(kind),
+        label_details: Some(tower_lsp::lsp_types::CompletionItemLabelDetails {
+            detail: None,
+            description: Some(details.to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover::format_declaration_hover(decl),
+        })),
+        ..CompletionItem::default()
+    }
 }
 
 // =============================================================================
