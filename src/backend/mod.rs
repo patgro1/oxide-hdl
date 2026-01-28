@@ -333,6 +333,16 @@ impl LanguageServer for Backend {
         if let Some(word) = get_word_at_pos(&rope, position) {
             let target = word.to_lowercase();
 
+            // Fast track using local scope tree
+            {
+                let map = self.analysis_map.read().await;
+                if let Some(analysis) = map.get(&uri)
+                    && let Some(decl) = analysis.find_declaration_at(&target, &position)
+                {
+                    return Ok(Some(self.markup(hover::format_declaration_hover(decl))));
+                }
+            }
+
             let candidates = {
                 let map = self.analysis_map.read().await;
                 hover::resolve_rich_hover(&target, &uri, &map)
