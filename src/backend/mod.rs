@@ -9,7 +9,7 @@ use crate::config::OxideConfig;
 use features::hover;
 use syntax::utils::get_word_at_pos;
 
-use crate::analysis::{Analysis, OxideSymbolKind, Symbol};
+use crate::analysis::{self, Analysis, OxideSymbolKind, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -291,12 +291,26 @@ impl LanguageServer for Backend {
 
         if let Some(word) = get_word_at_pos(&rope, position) {
             let map = self.analysis_map.read().await;
+
             self.client
                 .log_message(MessageType::INFO, format!("Looking for: '{}'", word))
                 .await;
-            let locations = features::goto::lookup_definition(&word, &uri, &map);
-            if !locations.is_empty() {
-                return Ok(Some(GotoDefinitionResponse::Array(locations)));
+            let target = &word.to_lowercase();
+            if let Some(analysis) = map.get(&uri)
+                && let Some(decl) = analysis.find_declaration_at(target, &position)
+            {
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    [Location {
+                        uri,
+                        range: decl.selection_range,
+                    }]
+                    .to_vec(),
+                )));
+            } else {
+                let locations = features::goto::lookup_definition(target, &uri, &map);
+                if !locations.is_empty() {
+                    return Ok(Some(GotoDefinitionResponse::Array(locations)));
+                }
             }
         }
 
