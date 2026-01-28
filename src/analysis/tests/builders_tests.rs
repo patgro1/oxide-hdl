@@ -361,3 +361,194 @@ end architecture;
         .unwrap();
     assert_eq!(all_zeros.default_value, Some("(others => '0')".to_string()));
 }
+
+// =========================================================================
+// Type info extraction tests
+// =========================================================================
+
+#[test]
+fn test_type_info_signal_simple() {
+    let code = r#"
+architecture rtl of test is
+    signal clk : std_logic;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let clk = analysis.scope_trees[0]
+        .declarations
+        .iter()
+        .find(|d| d.name == "clk")
+        .unwrap();
+    assert_eq!(clk.type_info.base_type, "std_logic");
+    assert_eq!(clk.type_info.constraints, None);
+}
+
+#[test]
+fn test_type_info_signal_constrained() {
+    let code = r#"
+architecture rtl of test is
+    signal data : std_logic_vector(7 downto 0);
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let data = analysis.scope_trees[0]
+        .declarations
+        .iter()
+        .find(|d| d.name == "data")
+        .unwrap();
+    assert_eq!(data.type_info.base_type, "std_logic_vector");
+    assert_eq!(data.type_info.constraints, Some("(7 downto 0)".to_string()));
+}
+
+#[test]
+fn test_type_info_signal_integer() {
+    let code = r#"
+architecture rtl of test is
+    signal counter : integer;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let counter = analysis.scope_trees[0]
+        .declarations
+        .iter()
+        .find(|d| d.name == "counter")
+        .unwrap();
+    assert_eq!(counter.type_info.base_type, "integer");
+    assert_eq!(counter.type_info.constraints, None);
+}
+
+#[test]
+fn test_type_info_constant() {
+    let code = r#"
+architecture rtl of test is
+    constant MAX_COUNT : integer := 100;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let max_count = analysis.scope_trees[0]
+        .declarations
+        .iter()
+        .find(|d| d.name == "MAX_COUNT")
+        .unwrap();
+    assert_eq!(max_count.type_info.base_type, "integer");
+    assert_eq!(max_count.type_info.constraints, None);
+}
+
+#[test]
+fn test_type_info_variable() {
+    let code = r#"
+architecture rtl of test is
+begin
+    process
+        variable temp : std_logic_vector(31 downto 0);
+    begin
+        wait;
+    end process;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let temp = analysis.scope_trees[0].children[0]
+        .declarations
+        .iter()
+        .find(|d| d.name == "temp")
+        .unwrap();
+    assert_eq!(temp.type_info.base_type, "std_logic_vector");
+    assert_eq!(
+        temp.type_info.constraints,
+        Some("(31 downto 0)".to_string())
+    );
+}
+
+#[test]
+fn test_type_info_port() {
+    let code = r#"
+entity test is
+    port (
+        clk : in std_logic;
+        data : in std_logic_vector(7 downto 0);
+        result : out integer
+    );
+end entity;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let entity = analysis.entity_scope_trees.get("test").unwrap();
+
+    let clk = entity
+        .declarations
+        .iter()
+        .find(|d| d.name == "clk")
+        .unwrap();
+    assert_eq!(clk.type_info.base_type, "std_logic");
+    assert_eq!(clk.type_info.constraints, None);
+
+    let data = entity
+        .declarations
+        .iter()
+        .find(|d| d.name == "data")
+        .unwrap();
+    assert_eq!(data.type_info.base_type, "std_logic_vector");
+    assert_eq!(data.type_info.constraints, Some("(7 downto 0)".to_string()));
+
+    let result = entity
+        .declarations
+        .iter()
+        .find(|d| d.name == "result")
+        .unwrap();
+    assert_eq!(result.type_info.base_type, "integer");
+    assert_eq!(result.type_info.constraints, None);
+}
+
+#[test]
+fn test_type_info_generic() {
+    let code = r#"
+entity test is
+    generic (
+        MY_WIDTH : integer := 8;
+        DEPTH : positive := 1024
+    );
+end entity;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let entity = analysis.entity_scope_trees.get("test").unwrap();
+
+    let width = entity
+        .declarations
+        .iter()
+        .find(|d| d.name == "MY_WIDTH")
+        .unwrap();
+    assert_eq!(width.type_info.base_type, "integer");
+    assert_eq!(width.type_info.constraints, None);
+
+    let depth = entity
+        .declarations
+        .iter()
+        .find(|d| d.name == "DEPTH")
+        .unwrap();
+    assert_eq!(depth.type_info.base_type, "positive");
+    assert_eq!(depth.type_info.constraints, None);
+}

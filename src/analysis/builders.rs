@@ -68,7 +68,6 @@ fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Dec
                 continue;
             }
             let names = extract_signal_names(interface_decl, text);
-            println!("names: {:?}", names);
             let doc_comment = extract_doc_comment(interface_decl, text);
             let default_value = extract_default_value(interface_decl, text);
             for (name, range) in names {
@@ -77,12 +76,11 @@ fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Dec
                     decl_type: DeclType::Generic,
                     range: node_to_range(interface_decl),
                     selection_range: range,
-                    type_info: extract_type_info_from_generic_and_port(&interface_decl, text),
+                    type_info: extract_type_info(&interface_decl, text),
                     default_value: default_value.clone(),
                     doc_comment: doc_comment.clone(),
                 });
             }
-            println!("Declarations: {:?}", declarations);
         }
     }
     declarations
@@ -119,7 +117,7 @@ fn extract_decl_from_port_clause(port_clause: Node, text: &str) -> Vec<Declarati
                     decl_type: DeclType::Port(direction),
                     range: node_to_range(interface_decl),
                     selection_range: range,
-                    type_info: extract_type_info_from_generic_and_port(&interface_decl, text),
+                    type_info: extract_type_info(&interface_decl, text),
                     default_value: default_value.clone(),
                     doc_comment: doc_comment.clone(),
                 });
@@ -574,19 +572,29 @@ fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSe
 ///
 /// Will extract every availble information on the signa/constant/port/generic type
 ///
+/// Will start by looking for a simple_mode_indication before the subtype, will fallback
+/// to a subtype directly if we cant find it.
+///
 /// # Arguments
 /// `node` - The declaration node
 /// `text` - Full source text
 ///
 /// # Returns
 /// A structure TypeInfo with as much information as what was extracted
-fn extract_type_info_from_generic_and_port(node: &Node, text: &str) -> TypeInfo {
+fn extract_type_info(node: &Node, text: &str) -> TypeInfo {
     let mut type_info = TypeInfo::new();
     if let Some(indication_node) =
         navigate_path(*node, &["simple_mode_indication", "subtype_indication"])
+            .or_else(|| find_child(*node, "subtype_indication"))
     {
         if let Some(name_node) = find_descendant(indication_node, "name") {
-            type_info.base_type = text[name_node.byte_range()].to_string();
+            if let Some(id) = find_child(name_node, "identifier")
+                .or_else(|| find_child(name_node, "library_type"))
+            {
+                type_info.base_type = text[id.byte_range()].to_string();
+            } else {
+                type_info.base_type = text[name_node.byte_range()].to_string();
+            }
             if let Some(paren_node) = find_descendant(name_node, "parenthesis_group") {
                 type_info.constraints = Some(text[paren_node.byte_range()].to_string())
             }
@@ -700,7 +708,7 @@ fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) ->
             decl_type: decl_type.clone(),
             range: node_to_range(node),
             selection_range: range,
-            type_info: TypeInfo::new(),
+            type_info: extract_type_info(&node, text),
             default_value: default_value.clone(),
             doc_comment: doc_comment.clone(),
         })
