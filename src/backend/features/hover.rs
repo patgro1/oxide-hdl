@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::Url;
 
 use crate::{
-    analysis::{OxideSymbolKind, Symbol},
+    analysis::{DeclType, Declaration, OxideSymbolKind, Symbol},
     backend::AnalysisMap,
 };
 
@@ -102,6 +102,51 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
 
     md.push_str("end entity;\n");
     md.push_str("\n```");
+    md
+}
+
+/// Format a rich hover tooltip for a declaration
+///
+/// # Arguments
+///
+/// * `decl` - The declaration to be formatted
+///
+/// # Returns
+///
+/// A `String` containing the markdown formatted VHDL declaration
+pub fn format_declaration_hover(decl: &Declaration) -> String {
+    let mut md = String::new();
+    if let Some(doc_comment) = &decl.doc_comment {
+        doc_comment.lines().for_each(|line| {
+            md.push_str(&format!("-- {}\n", line));
+        })
+    }
+    md.push_str(&format!("**{}**\n", &decl.name).to_string());
+    match decl.decl_type {
+        DeclType::Port(direction) => {
+            md.push_str(&format!("```vhdl\nport {} : {} ", &decl.name, direction));
+        }
+        DeclType::Generic => {
+            md.push_str(&format!("```vhdl\ngeneric {} : ", &decl.name));
+        }
+        DeclType::Constant => {
+            md.push_str(&format!("```vhdl\nconstant {} : ", &decl.name));
+        }
+        DeclType::Signal => {
+            md.push_str(&format!("```vhdl\nsignal {} : ", &decl.name));
+        }
+        DeclType::Variable => {
+            md.push_str(&format!("```vhdl\nvariable {} : ", &decl.name));
+        }
+    };
+    md.push_str(&decl.type_info.base_type);
+    if let Some(constraint) = &decl.type_info.constraints {
+        md.push_str(constraint);
+    }
+    if let Some(default_val) = &decl.default_value {
+        md.push_str(&format!(" := {}", default_val).to_string());
+    }
+    md.push_str(";\n```");
     md
 }
 
