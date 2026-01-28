@@ -191,6 +191,19 @@ pub enum DeclType {
     Variable,
 }
 
+impl fmt::Display for DeclType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            DeclType::Generic => "generic",
+            DeclType::Port(direction) => &format!("port({})", direction),
+            DeclType::Constant => "constant",
+            DeclType::Signal => "signal",
+            DeclType::Variable => "variable",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// Port Direction
 ///
 /// Distinguishes between mode indications
@@ -290,7 +303,6 @@ pub struct Declaration {
     /// Source location information
     pub range: Range,
     /// Range of the name itself for jumps
-    #[allow(dead_code)]
     pub selection_range: Range,
     /// TypeInfo for this declaration
     pub type_info: TypeInfo,
