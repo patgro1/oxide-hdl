@@ -82,7 +82,6 @@ pub fn collect_document_symbol(analysis: &Analysis) -> Vec<DocumentSymbol> {
         .iter()
         .map(|scope_tree| collect_scope_tree_symbols(scope_tree))
         .collect();
-    eprintln!("DOC_SYM: {:?}", doc_sym);
     doc_sym
 }
 

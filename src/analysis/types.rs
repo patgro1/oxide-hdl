@@ -267,7 +267,7 @@ pub enum ScopeKind {
 impl fmt::Display for ScopeKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match self {
-            ScopeKind::Entity => "enity",
+            ScopeKind::Entity => "entity",
             ScopeKind::Architecture => "architecture",
             ScopeKind::Process => "process",
             ScopeKind::Generate => "generate",

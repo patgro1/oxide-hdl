@@ -109,10 +109,6 @@ fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
     if cursor.goto_first_child() {
         loop {
             let node = cursor.node();
-            if node.is_error() || node.has_error() {
-                eprintln!("ERROR NODE: {:?} at {:?}", node, node.range());
-                eprintln!("Text: {:?}", &text[node.byte_range()]);
-            }
             let kind = node.kind();
             let (symbol_kind, is_container) = match kind {
                 // Scope
