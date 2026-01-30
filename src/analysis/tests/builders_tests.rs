@@ -552,3 +552,132 @@ end entity;
     assert_eq!(depth.type_info.base_type, "positive");
     assert_eq!(depth.type_info.constraints, None);
 }
+
+// =========================================================================
+// Scope name extraction tests
+// =========================================================================
+
+#[test]
+fn test_scope_name_architecture() {
+    let code = r#"
+architecture rtl of my_entity is
+    signal clk : std_logic;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees.len(), 1);
+    assert_eq!(analysis.scope_trees[0].name, Some("rtl".to_string()));
+}
+
+#[test]
+fn test_scope_name_entity() {
+    let code = r#"
+entity my_entity is
+    port (
+        clk : in std_logic
+    );
+end entity;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let entity = analysis.entity_scope_trees.get("my_entity").unwrap();
+    assert_eq!(entity.name, Some("my_entity".to_string()));
+}
+
+#[test]
+fn test_scope_name_labeled_process() {
+    let code = r#"
+architecture rtl of test is
+begin
+    main_proc: process(clk)
+    begin
+        wait;
+    end process;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let process_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(process_scope.name, Some("main_proc".to_string()));
+}
+
+#[test]
+fn test_scope_name_unlabeled_process() {
+    let code = r#"
+architecture rtl of test is
+begin
+    process(clk)
+    begin
+        wait;
+    end process;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let process_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(process_scope.name, None);
+}
+
+#[test]
+fn test_scope_name_labeled_block() {
+    let code = r#"
+architecture rtl of test is
+begin
+    my_block: block
+    begin
+    end block;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let block_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(block_scope.name, Some("my_block".to_string()));
+}
+
+#[test]
+fn test_scope_name_for_generate() {
+    let code = r#"
+architecture rtl of test is
+begin
+    gen_loop: for i in 0 to 7 generate
+    begin
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let generate_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(generate_scope.name, Some("gen_loop".to_string()));
+}
+
+#[test]
+fn test_scope_name_if_generate() {
+    let code = r#"
+architecture rtl of test is
+begin
+    gen_cond: if true generate
+    begin
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let generate_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(generate_scope.name, Some("gen_cond".to_string()));
+}

@@ -177,7 +177,10 @@ fn extract_direction_from_interface(interface_clause: Node, text: &str) -> PortD
 pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Architecture, &arch_node);
 
-    // TODO: extract that entity name associated with the architecuture
+    if let Some(arch_name) = arch_node.child_by_field_name("architecture") {
+        let name = text[arch_name.byte_range()].to_lowercase();
+        tree.name = Some(name);
+    }
     if let Some(entity_name_node) = arch_node.child_by_field_name("entity") {
         let entity_name = text[entity_name_node.byte_range()].to_lowercase();
         tree.entity = Some(entity_name);
@@ -259,6 +262,13 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
 pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Process, &process_node);
 
+    if let Some(label_decl) = find_child(process_node, "label_declaration")
+        && let Some(label) = find_child(label_decl, "label")
+    {
+        let name = text[label.byte_range()].to_lowercase();
+        tree.name = Some(name);
+    }
+
     // Collect variable declarations from process_head
     if let Some(proc_head) = find_child(process_node, "process_head") {
         for var_decl in collect_descendants(proc_head, "variable_declaration") {
@@ -311,6 +321,13 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
 /// Scope tree node representing the generate block
 pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Generate, &generate_node);
+
+    if let Some(label_decl) = find_child(generate_node, "label_declaration")
+        && let Some(label) = find_child(label_decl, "label")
+    {
+        let name = text[label.byte_range()].to_lowercase();
+        tree.name = Some(name);
+    }
 
     // Find the generate_body nested inside if_generate
     let mut body_node: Option<Node> = None;
@@ -395,6 +412,13 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
 pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Generate, &generate_node);
 
+    if let Some(label_decl) = find_child(generate_node, "label_declaration")
+        && let Some(label) = find_child(label_decl, "label")
+    {
+        let name = text[label.byte_range()].to_lowercase();
+        tree.name = Some(name);
+    }
+
     // Find generate_body directly (no if_generate wrapper)
     let mut body_node: Option<Node> = None;
     for child in generate_node.children(&mut generate_node.walk()) {
@@ -472,6 +496,12 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
 pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Block, &block_node);
 
+    if let Some(label_decl) = find_child(block_node, "label_declaration")
+        && let Some(label) = find_child(label_decl, "label")
+    {
+        let name = text[label.byte_range()].to_lowercase();
+        tree.name = Some(name);
+    }
     // Collect declarations from block_head
     if let Some(head_node) = find_child(block_node, "block_head") {
         for signal_decl in collect_descendants(head_node, "signal_declaration") {
