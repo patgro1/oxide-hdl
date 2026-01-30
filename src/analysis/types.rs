@@ -204,6 +204,18 @@ impl fmt::Display for DeclType {
     }
 }
 
+impl From<DeclType> for SymbolKind {
+    fn from(kind: DeclType) -> Self {
+        match kind {
+            DeclType::Generic => SymbolKind::CONSTANT,
+            DeclType::Port(_) => SymbolKind::FIELD,
+            DeclType::Constant => SymbolKind::CONSTANT,
+            DeclType::Variable => SymbolKind::VARIABLE,
+            DeclType::Signal => SymbolKind::VARIABLE,
+        }
+    }
+}
+
 /// Port Direction
 ///
 /// Distinguishes between mode indications
@@ -250,6 +262,31 @@ pub enum ScopeKind {
     Generate,
     /// Block scope - can declare signals and constants
     Block,
+}
+
+impl fmt::Display for ScopeKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            ScopeKind::Entity => "enity",
+            ScopeKind::Architecture => "architecture",
+            ScopeKind::Process => "process",
+            ScopeKind::Generate => "generate",
+            ScopeKind::Block => "block",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl From<ScopeKind> for SymbolKind {
+    fn from(kind: ScopeKind) -> Self {
+        match kind {
+            ScopeKind::Entity => SymbolKind::INTERFACE,
+            ScopeKind::Architecture => SymbolKind::CLASS,
+            ScopeKind::Process => SymbolKind::METHOD,
+            ScopeKind::Generate => SymbolKind::NAMESPACE,
+            ScopeKind::Block => SymbolKind::NAMESPACE,
+        }
+    }
 }
 
 /// Define where the usage is done...
