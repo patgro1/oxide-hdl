@@ -614,6 +614,7 @@ pub mod test_utils {
             local_usage: HashSet::new(),
             children: vec![],
             decl_index: HashMap::new(),
+            instantiations: Vec::new(),
         };
         scope.rebuild_index();
         scope

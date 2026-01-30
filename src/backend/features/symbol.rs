@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::{DocumentSymbol, Location, SymbolInformation, SymbolKind, Url};
 
 use crate::{
-    analysis::{Analysis, Declaration, OxideSymbolKind, ParseLevel, ScopeTree, Symbol},
+    analysis::{Analysis, Declaration, Instance, OxideSymbolKind, ParseLevel, ScopeTree, Symbol},
     backend::AnalysisMap,
 };
 
@@ -32,6 +32,32 @@ pub fn to_document_symbol(declaration: &Declaration) -> DocumentSymbol {
         range: declaration.range,
         selection_range: declaration.selection_range,
         children: None,
+    }
+}
+
+/// Converts an internal [`Instance`] to an LSP [`DocumentSymbol`].
+///
+/// This helper is used by the `document_symbol` handler to generate the data structure
+/// required for the **Outline View** and **Breadcrumbs**.
+///
+/// # Arguments
+///
+/// * `instance` - The internal instance struct produced by the a scope tree
+///
+/// # Returns
+///
+/// A `DocumentSymbol` struct compliant with the Language Server Protocol.
+pub fn instance_to_document_symbol(instance: &Instance) -> DocumentSymbol {
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name: instance.label.clone(),
+        detail: Some(format!("Instance of {}", instance.component)),
+        kind: SymbolKind::from(OxideSymbolKind::ComponentInstantiation),
+        children: None,
+        range: instance.range,
+        selection_range: instance.selection_range,
+        tags: None,
+        deprecated: None,
     }
 }
 
@@ -72,6 +98,12 @@ pub fn collect_scope_tree_symbols(scope_tree: &ScopeTree) -> DocumentSymbol {
 
     children.extend(scope_tree.declarations.iter().map(to_document_symbol));
     children.extend(scope_tree.children.iter().map(collect_scope_tree_symbols));
+    children.extend(
+        scope_tree
+            .instantiations
+            .iter()
+            .map(instance_to_document_symbol),
+    );
     children.sort_by_key(|s| s.range.start);
 
     let opt_children = {

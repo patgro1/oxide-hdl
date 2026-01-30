@@ -5,8 +5,8 @@
 
 use crate::{
     analysis::{
-        DeclType, Declaration, PortDirection, ScopeKind, ScopeTree, TypeInfo, Usage, UsageContext,
-        collect_identifiers_recursive,
+        DeclType, Declaration, Instance, PortDirection, ScopeKind, ScopeTree, TypeInfo, Usage,
+        UsageContext, collect_identifiers_recursive,
     },
     utils::{
         ast::{collect_descendants, find_child, find_descendant, navigate_path},
@@ -231,6 +231,16 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                     "block_statement" => tree
                         .children
                         .push(build_block_scope_tree(inner_child, text)),
+                    "component_instantiation_statement" => {
+                        tree.instantiations
+                            .push(create_instance_from_node(inner_child, text));
+                        collect_identifiers_recursive(
+                            inner_child,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        );
+                    }
                     _ => collect_identifiers_recursive(
                         inner_child,
                         text,
@@ -382,6 +392,16 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                         .children
                         .push(build_for_generate_scope_tree(child, text)),
                     "block_statement" => tree.children.push(build_block_scope_tree(child, text)),
+                    "component_instantiation_statement" => {
+                        tree.instantiations
+                            .push(create_instance_from_node(child, text));
+                        collect_identifiers_recursive(
+                            child,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        );
+                    }
                     _ => collect_identifiers_recursive(
                         child,
                         text,
@@ -466,6 +486,16 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                         .children
                         .push(build_for_generate_scope_tree(child, text)),
                     "block_statement" => tree.children.push(build_block_scope_tree(child, text)),
+                    "component_instantiation_statement" => {
+                        tree.instantiations
+                            .push(create_instance_from_node(child, text));
+                        collect_identifiers_recursive(
+                            child,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        );
+                    }
                     _ => collect_identifiers_recursive(
                         child,
                         text,
@@ -539,6 +569,16 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                 "block_statement" => tree
                     .children
                     .push(build_block_scope_tree(inner_child, text)),
+                "component_instantiation_statement" => {
+                    tree.instantiations
+                        .push(create_instance_from_node(inner_child, text));
+                    collect_identifiers_recursive(
+                        inner_child,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut tree.local_usage,
+                    );
+                }
                 _ => collect_identifiers_recursive(
                     inner_child,
                     text,
@@ -735,7 +775,7 @@ fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) ->
         .into_iter()
         .map(|(name, range)| Declaration {
             name,
-            decl_type: decl_type.clone(),
+            decl_type,
             range: node_to_range(node),
             selection_range: range,
             type_info: extract_type_info(&node, text),
@@ -743,4 +783,45 @@ fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) ->
             doc_comment: doc_comment.clone(),
         })
         .collect()
+}
+
+/// Create an instance struct from the component instantiation node
+///
+/// # Arguments
+/// `node` - Component Instantiation Node
+/// `text` - Fill source text
+///
+/// # Returns
+/// A struct reprensenting the instance
+fn create_instance_from_node(node: Node, text: &str) -> Instance {
+    let mut label = "".to_string();
+    let mut selection_range = node_to_range(node);
+    if let Some(label_decl) = find_child(node, "label_declaration")
+        && let Some(label_node) = find_child(label_decl, "label")
+    {
+        label = text[label_node.byte_range()].to_string();
+        selection_range = node_to_range(label_node);
+    }
+    let instantiated_unit = find_child(node, "instantiated_unit").unwrap_or(node);
+
+    let mut component = "".to_string();
+    if let Some(name) = find_child(instantiated_unit, "name") {
+        // Check for the library.component name
+        if let Some(selection) = find_child(name, "selection") {
+            if let Some(iden) = find_child(selection, "identifier") {
+                component = text[iden.byte_range()].to_string();
+            }
+        }
+        // Check for the normal component name
+        else if let Some(iden) = find_child(name, "identifier") {
+            component = text[iden.byte_range()].to_string()
+        }
+    }
+
+    Instance {
+        label,
+        component,
+        range: node_to_range(node),
+        selection_range,
+    }
 }

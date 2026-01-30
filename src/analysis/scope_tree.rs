@@ -3,6 +3,7 @@
 //! Provides recursive scope resolution and visibility tracking for
 //! signals, variables, ports, and other VHDL identifiers.
 
+use crate::analysis::Instance;
 use crate::analysis::types::{DeclType, Declaration, ScopeKind, Usage, UsageContext};
 use crate::utils::{node_to_range, position_in_range};
 use std::collections::{HashMap, HashSet};
@@ -48,6 +49,9 @@ pub struct ScopeTree {
     /// Flat map of declarations with their index in the declaration vector.
     /// Using lower case because VHDL is case insensitive
     pub decl_index: HashMap<String, usize>,
+
+    /// List of the instantiation in the current scope
+    pub instantiations: Vec<Instance>,
 }
 
 impl ScopeTree {
@@ -66,6 +70,7 @@ impl ScopeTree {
             local_usage: HashSet::new(),
             children: Vec::new(),
             decl_index: HashMap::new(),
+            instantiations: Vec::new(),
         }
     }
 
