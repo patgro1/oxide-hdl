@@ -369,3 +369,18 @@ impl TypeInfo {
         }
     }
 }
+
+/// An instance of an entity.
+///
+/// Contains all the information about instance an instance
+#[derive(Debug, Clone)]
+pub struct Instance {
+    /// Name of the instance
+    pub label: String,
+    /// Design unit being instantiated
+    pub component: String,
+    /// Source location information
+    pub range: Range,
+    /// Range of the label for jumps
+    pub selection_range: Range,
+}

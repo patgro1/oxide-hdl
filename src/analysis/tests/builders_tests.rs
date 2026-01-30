@@ -681,3 +681,168 @@ end architecture;
     let generate_scope = &analysis.scope_trees[0].children[0];
     assert_eq!(generate_scope.name, Some("gen_cond".to_string()));
 }
+
+// =========================================================================
+// Instantiation extraction tests
+// =========================================================================
+
+#[test]
+fn test_instantiation_simple_component() {
+    let code = r#"
+architecture rtl of test is
+begin
+    u_fifo: fifo_comp
+        port map (
+            clk => clk,
+            data => data
+        );
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees[0].instantiations.len(), 1);
+    let inst = &analysis.scope_trees[0].instantiations[0];
+    assert_eq!(inst.label, "u_fifo");
+    assert_eq!(inst.component, "fifo_comp");
+}
+
+#[test]
+fn test_instantiation_entity_work() {
+    let code = r#"
+architecture rtl of test is
+begin
+    u_uart: entity work.uart_rx
+        port map (
+            clk => clk
+        );
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees[0].instantiations.len(), 1);
+    let inst = &analysis.scope_trees[0].instantiations[0];
+    assert_eq!(inst.label, "u_uart");
+    assert_eq!(inst.component, "uart_rx");
+}
+
+#[test]
+fn test_instantiation_entity_with_architecture() {
+    let code = r#"
+architecture rtl of test is
+begin
+    u_cpu: entity work.cpu(behavioral)
+        port map (
+            clk => clk
+        );
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees[0].instantiations.len(), 1);
+    let inst = &analysis.scope_trees[0].instantiations[0];
+    assert_eq!(inst.label, "u_cpu");
+    assert_eq!(inst.component, "cpu");
+}
+
+#[test]
+fn test_instantiation_in_generate() {
+    let code = r#"
+architecture rtl of test is
+begin
+    gen_loop: for i in 0 to 3 generate
+    begin
+        u_cell: cell_comp
+            port map (
+                idx => i
+            );
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let generate_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(generate_scope.instantiations.len(), 1);
+    let inst = &generate_scope.instantiations[0];
+    assert_eq!(inst.label, "u_cell");
+    assert_eq!(inst.component, "cell_comp");
+}
+
+#[test]
+fn test_instantiation_in_block() {
+    let code = r#"
+architecture rtl of test is
+begin
+    my_block: block
+    begin
+        u_reg: reg_comp
+            port map (
+                d => data
+            );
+    end block;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let block_scope = &analysis.scope_trees[0].children[0];
+    assert_eq!(block_scope.instantiations.len(), 1);
+    let inst = &block_scope.instantiations[0];
+    assert_eq!(inst.label, "u_reg");
+    assert_eq!(inst.component, "reg_comp");
+}
+
+#[test]
+fn test_instantiation_multiple() {
+    let code = r#"
+architecture rtl of test is
+begin
+    u_fifo1: fifo_comp port map (clk => clk);
+    u_fifo2: fifo_comp port map (clk => clk);
+    u_uart: uart_comp port map (clk => clk);
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees[0].instantiations.len(), 3);
+
+    let labels: Vec<&str> = analysis.scope_trees[0]
+        .instantiations
+        .iter()
+        .map(|i| i.label.as_str())
+        .collect();
+    assert!(labels.contains(&"u_fifo1"));
+    assert!(labels.contains(&"u_fifo2"));
+    assert!(labels.contains(&"u_uart"));
+}
+
+#[test]
+fn test_instantiation_entity_library_name() {
+    let code = r#"
+architecture rtl of test is
+begin
+    u_mem: entity mylib.memory_controller
+        port map (
+            clk => clk
+        );
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees[0].instantiations.len(), 1);
+    let inst = &analysis.scope_trees[0].instantiations[0];
+    assert_eq!(inst.label, "u_mem");
+    assert_eq!(inst.component, "memory_controller");
+}
