@@ -1,47 +1,37 @@
-use tower_lsp::lsp_types::{DocumentSymbol, Location, SymbolInformation, Url};
+use tower_lsp::lsp_types::{DocumentSymbol, Location, SymbolInformation, SymbolKind, Url};
 
 use crate::{
-    analysis::{Analysis, OxideSymbolKind, ParseLevel, Symbol},
+    analysis::{Analysis, Declaration, OxideSymbolKind, ParseLevel, ScopeTree, Symbol},
     backend::AnalysisMap,
 };
 
-/// Recursively converts an internal [`Symbol`] to an LSP [`DocumentSymbol`].
+/// Converts an internal [`Declaration`] to an LSP [`DocumentSymbol`].
 ///
 /// This helper is used by the `document_symbol` handler to generate the data structure
 /// required for the **Outline View** and **Breadcrumbs**.
 ///
-/// # Behavior
-/// * **Recursion:** It traverses the `children` vector of the symbol and converts them
-///   depth-first.
-/// * **Sorting:** It sorts children by their start position (`range.start`). This ensures
-///   that the Outline View lists items in the order they appear in the file, which is
-///   critical for readability in VHDL (e.g., ports appearing in order).
-///
 /// # Arguments
 ///
-/// * `sym` - The internal symbol struct produced by the parser or scanner.
+/// * `declaration` - The internal declaration struct produced by the a scope tree
 ///
 /// # Returns
 ///
 /// A `DocumentSymbol` struct compliant with the Language Server Protocol.
-pub fn to_document_symbol(sym: &crate::analysis::Symbol) -> DocumentSymbol {
+pub fn to_document_symbol(declaration: &Declaration) -> DocumentSymbol {
+    let mut details = declaration.type_info.base_type.clone();
+    if let Some(constraints) = &declaration.type_info.constraints {
+        details.push_str(constraints);
+    }
     #[allow(deprecated)]
     DocumentSymbol {
-        name: sym.name.clone(),
-        detail: sym.detail.clone(),
-        kind: sym.kind.into(),
+        name: declaration.name.clone(),
+        detail: Some(details.clone()),
+        kind: SymbolKind::from(declaration.decl_type),
         tags: None,
         deprecated: None,
-        range: sym.range,
-        selection_range: sym.range,
-        children: if sym.children.is_empty() {
-            None
-        } else {
-            let mut children_list: Vec<DocumentSymbol> =
-                sym.children.iter().map(to_document_symbol).collect();
-            children_list.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-            Some(children_list)
-        },
+        range: declaration.range,
+        selection_range: declaration.selection_range,
+        children: None,
     }
 }
 
@@ -55,11 +45,56 @@ pub fn to_document_symbol(sym: &crate::analysis::Symbol) -> DocumentSymbol {
 ///
 /// A `DocumentSymbol` struct  array of the symbols contained in the analysis
 pub fn collect_document_symbol(analysis: &Analysis) -> Vec<DocumentSymbol> {
-    let mut symbols = Vec::new();
-    for sym in analysis.symbols.values() {
-        symbols.push(to_document_symbol(sym))
+    // Flatten all the scope trees in a single vector
+    let mut scope_trees: Vec<&ScopeTree> = Vec::new();
+    scope_trees.extend(analysis.scope_trees.iter());
+    scope_trees.extend(analysis.entity_scope_trees.values().collect::<Vec<_>>());
+    // Now we need to sort then by start value to make sure the ordering is respected in the
+    // document
+    scope_trees.sort_by_key(|a| a.range.start);
+    let doc_sym = scope_trees
+        .iter()
+        .map(|scope_tree| collect_scope_tree_symbols(scope_tree))
+        .collect();
+    eprintln!("DOC_SYM: {:?}", doc_sym);
+    doc_sym
+}
+
+/// Recursively build the document symbols for a scope tree
+///
+/// # Arguments
+/// * `scope_tree`: The scope tree to analyze
+///
+/// # Returns:
+/// A `DocumentSymbol` vector compliant with LSP
+pub fn collect_scope_tree_symbols(scope_tree: &ScopeTree) -> DocumentSymbol {
+    let mut children = Vec::new();
+
+    children.extend(scope_tree.declarations.iter().map(to_document_symbol));
+    children.extend(scope_tree.children.iter().map(collect_scope_tree_symbols));
+    children.sort_by_key(|s| s.range.start);
+
+    let opt_children = {
+        if !children.is_empty() {
+            Some(children)
+        } else {
+            None
+        }
+    };
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name: scope_tree.name.clone().unwrap_or(format!(
+            "{} (line {})",
+            scope_tree.kind, scope_tree.range.start.line
+        )),
+        kind: SymbolKind::from(scope_tree.kind),
+        detail: None,
+        deprecated: None,
+        range: scope_tree.range,
+        selection_range: scope_tree.range,
+        tags: None,
+        children: opt_children,
     }
-    symbols
 }
 
 /// Generate list of all symbols in the analysis map

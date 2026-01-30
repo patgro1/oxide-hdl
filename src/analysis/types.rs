@@ -177,7 +177,7 @@ pub enum ParseLevel {
 ///
 /// Distinguishes between different kinds of declarations to provide
 /// more specific diagnostic messages.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum DeclType {
     /// Entity Generic
     Generic,
@@ -250,7 +250,7 @@ impl fmt::Display for PortDirection {
 ///
 /// Each scope level has different rules about what can be declared
 /// and how visibility works.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ScopeKind {
     /// Entity scope - can declare ports and generics
     Entity,
