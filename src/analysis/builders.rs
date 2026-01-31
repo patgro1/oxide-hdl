@@ -5,8 +5,8 @@
 
 use crate::{
     analysis::{
-        DeclType, Declaration, Instance, PortDirection, ScopeKind, ScopeTree, TypeInfo, Usage,
-        UsageContext, collect_identifiers_recursive,
+        DeclType, Declaration, Instance, PortDirection, RegionType, ScopeKind, ScopeTree, TypeInfo,
+        Usage, UsageContext, collect_identifiers_recursive,
     },
     utils::{
         ast::{collect_descendants, find_child, find_descendant, navigate_path},
@@ -178,38 +178,22 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Architecture, &arch_node);
 
     if let Some(arch_name) = arch_node.child_by_field_name("architecture") {
-        let name = text[arch_name.byte_range()].to_lowercase();
+        let name = text[arch_name.byte_range()].to_string();
         tree.name = Some(name);
     }
     if let Some(entity_name_node) = arch_node.child_by_field_name("entity") {
-        let entity_name = text[entity_name_node.byte_range()].to_lowercase();
+        let entity_name = text[entity_name_node.byte_range()].to_string();
         tree.entity = Some(entity_name);
     }
 
     // Collect architecture-level declarations from architecture_head
-    if let Some(arch_head) = find_child(arch_node, "architecture_head") {
-        for signal_decl in collect_descendants(arch_head, "signal_declaration") {
-            tree.declarations.extend(create_declarations_from_node(
-                signal_decl,
-                text,
-                DeclType::Signal,
-            ));
-            collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
-        }
-        for const_decl in collect_descendants(arch_head, "constant_declaration") {
-            tree.declarations.extend(create_declarations_from_node(
-                const_decl,
-                text,
-                DeclType::Constant,
-            ));
-            collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
-        }
-        for type_decl in collect_descendants(arch_head, "type_declaration") {
-            collect_identifier_from_decl(&type_decl, text, &mut tree.local_usage);
-        }
-        for subtype_decl in collect_descendants(arch_head, "subtype_declaration") {
-            collect_identifier_from_decl(&subtype_decl, text, &mut tree.local_usage);
-        }
+    if let Some(architecture_head) = find_child(arch_node, "architecture_head") {
+        tree.declarations = extract_declaration_from_node(
+            architecture_head,
+            text,
+            RegionType::Concurrent,
+            &mut tree.local_usage,
+        );
     }
 
     // Process concurrent_block to find usage and child scopes
@@ -275,20 +259,18 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     if let Some(label_decl) = find_child(process_node, "label_declaration")
         && let Some(label) = find_child(label_decl, "label")
     {
-        let name = text[label.byte_range()].to_lowercase();
+        let name = text[label.byte_range()].to_string();
         tree.name = Some(name);
     }
 
     // Collect variable declarations from process_head
     if let Some(proc_head) = find_child(process_node, "process_head") {
-        for var_decl in collect_descendants(proc_head, "variable_declaration") {
-            tree.declarations.extend(create_declarations_from_node(
-                var_decl,
-                text,
-                DeclType::Variable,
-            ));
-            collect_identifier_from_decl(&var_decl, text, &mut tree.local_usage);
-        }
+        tree.declarations = extract_declaration_from_node(
+            proc_head,
+            text,
+            RegionType::Sequential,
+            &mut tree.local_usage,
+        );
     }
 
     // Collect usage from sensitivity list and sequential block
@@ -335,7 +317,7 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
     if let Some(label_decl) = find_child(generate_node, "label_declaration")
         && let Some(label) = find_child(label_decl, "label")
     {
-        let name = text[label.byte_range()].to_lowercase();
+        let name = text[label.byte_range()].to_string();
         tree.name = Some(name);
     }
 
@@ -362,22 +344,12 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
 
     if let Some(body_node) = body_node {
         if let Some(head_node) = find_child(body_node, "generate_head") {
-            for signal_decl in collect_descendants(head_node, "signal_declaration") {
-                tree.declarations.extend(create_declarations_from_node(
-                    signal_decl,
-                    text,
-                    DeclType::Signal,
-                ));
-                collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
-            }
-            for const_decl in collect_descendants(head_node, "constant_declaration") {
-                tree.declarations.extend(create_declarations_from_node(
-                    const_decl,
-                    text,
-                    DeclType::Constant,
-                ));
-                collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
-            }
+            tree.declarations = extract_declaration_from_node(
+                head_node,
+                text,
+                RegionType::Concurrent,
+                &mut tree.local_usage,
+            )
         }
         if let Some(block_node) = find_child(body_node, "generate_block") {
             for child in block_node.children(&mut block_node.walk()) {
@@ -435,7 +407,7 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
     if let Some(label_decl) = find_child(generate_node, "label_declaration")
         && let Some(label) = find_child(label_decl, "label")
     {
-        let name = text[label.byte_range()].to_lowercase();
+        let name = text[label.byte_range()].to_string();
         tree.name = Some(name);
     }
 
@@ -456,22 +428,12 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
 
     if let Some(body_node) = body_node {
         if let Some(head_node) = find_child(body_node, "generate_head") {
-            for signal_decl in collect_descendants(head_node, "signal_declaration") {
-                tree.declarations.extend(create_declarations_from_node(
-                    signal_decl,
-                    text,
-                    DeclType::Signal,
-                ));
-                collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
-            }
-            for const_decl in collect_descendants(head_node, "constant_declaration") {
-                tree.declarations.extend(create_declarations_from_node(
-                    const_decl,
-                    text,
-                    DeclType::Constant,
-                ));
-                collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
-            }
+            tree.declarations = extract_declaration_from_node(
+                head_node,
+                text,
+                RegionType::Concurrent,
+                &mut tree.local_usage,
+            );
         }
         if let Some(block_node) = find_child(body_node, "generate_block") {
             for child in block_node.children(&mut block_node.walk()) {
@@ -529,27 +491,17 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
     if let Some(label_decl) = find_child(block_node, "label_declaration")
         && let Some(label) = find_child(label_decl, "label")
     {
-        let name = text[label.byte_range()].to_lowercase();
+        let name = text[label.byte_range()].to_string();
         tree.name = Some(name);
     }
     // Collect declarations from block_head
     if let Some(head_node) = find_child(block_node, "block_head") {
-        for signal_decl in collect_descendants(head_node, "signal_declaration") {
-            tree.declarations.extend(create_declarations_from_node(
-                signal_decl,
-                text,
-                DeclType::Signal,
-            ));
-            collect_identifier_from_decl(&signal_decl, text, &mut tree.local_usage);
-        }
-        for const_decl in collect_descendants(head_node, "constant_declaration") {
-            tree.declarations.extend(create_declarations_from_node(
-                const_decl,
-                text,
-                DeclType::Constant,
-            ));
-            collect_identifier_from_decl(&const_decl, text, &mut tree.local_usage);
-        }
+        tree.declarations = extract_declaration_from_node(
+            head_node,
+            text,
+            RegionType::Concurrent,
+            &mut tree.local_usage,
+        );
     }
 
     // Process concurrent_block
@@ -589,6 +541,32 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
         }
     }
     tree.rebuild_index();
+    tree
+}
+
+/// Build scope tree for a package
+///
+/// # Arguments
+///
+/// * `package_node` - Tree-sitter node of type `package_declaration`
+/// * `text` - Full source text
+///
+/// # Returns
+///
+/// Scope tree node representing the package
+pub fn build_package_scope_tree(package_node: Node, text: &str) -> ScopeTree {
+    let mut tree = ScopeTree::new(ScopeKind::Package, &package_node);
+    if let Some(name_node) = package_node.child_by_field_name("package") {
+        tree.name = Some(text[name_node.byte_range()].to_string());
+    }
+    if let Some(decl_body) = find_child(package_node, "package_declaration_body") {
+        tree.declarations = extract_declaration_from_node(
+            decl_body,
+            text,
+            RegionType::Concurrent,
+            &mut tree.local_usage,
+        );
+    }
     tree
 }
 
@@ -824,4 +802,176 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
         range: node_to_range(node),
         selection_range,
     }
+}
+
+/// Create a declaration from a subprograme node, can be a procedure or a function
+///
+/// # Arguments
+/// `node` - Subprogram node
+/// `text` - Fill source text
+/// `type` - Type of subprogram node
+///
+/// # Returns
+/// A Declaration for the node
+fn create_subprogram_declaration_from_node(
+    node: Node,
+    text: &str,
+    decl_type: DeclType,
+) -> Declaration {
+    let doc_comment = extract_doc_comment(node, text);
+    let mut selection_range = node_to_range(node);
+    let mut name = "".to_string();
+    let name_node_id = {
+        match decl_type {
+            DeclType::Function => "function",
+            DeclType::Procedure => "procedure",
+            _ => panic!("We should not get here with other decl_type than Function or Procedure"),
+        }
+    };
+    if let Some(name_node) = node.child_by_field_name(name_node_id) {
+        name = text[name_node.byte_range()].to_string();
+        selection_range = node_to_range(name_node);
+    }
+    // For now we just extract the name of the function.
+    Declaration {
+        name,
+        decl_type,
+        range: node_to_range(node),
+        selection_range,
+        type_info: TypeInfo::new(),
+        default_value: None,
+        doc_comment,
+    }
+}
+
+/// Create a declaration from a type node, can be a procedure or a function
+///
+/// # Arguments
+/// `node` - Type delcaration node
+/// `text` - Fill source text
+///
+/// # Returns
+/// A Declaration for the node
+fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
+    let doc_comment = extract_doc_comment(node, text);
+    let mut selection_range = node_to_range(node);
+    let mut name = "".to_string();
+    if let Some(id_node) = node.child_by_field_name("type") {
+        name = text[id_node.byte_range()].to_string();
+        selection_range = node_to_range(id_node);
+    }
+    Declaration {
+        name,
+        decl_type: DeclType::Type,
+        range: node_to_range(node),
+        selection_range,
+        type_info: TypeInfo::new(),
+        default_value: None,
+        doc_comment,
+    }
+}
+
+/// Create a declaration from a subprograme node, can be a procedure or a function
+///
+/// # Arguments
+/// `node` - Type delcaration node
+/// `text` - Fill source text
+///
+/// # Returns
+/// A Declaration for the node
+fn create_subtype_declaration_from_node(node: Node, text: &str) -> Declaration {
+    let doc_comment = extract_doc_comment(node, text);
+    let mut selection_range = node_to_range(node);
+    let mut name = "".to_string();
+    if let Some(id_node) = node.child_by_field_name("type") {
+        name = text[id_node.byte_range()].to_string();
+        selection_range = node_to_range(id_node);
+    }
+    Declaration {
+        name,
+        decl_type: DeclType::Subtype,
+        range: node_to_range(node),
+        selection_range,
+        type_info: TypeInfo::new(),
+        default_value: None,
+        doc_comment,
+    }
+}
+
+/// Extract all the declarations from a node according to its region type and usages
+///
+/// Concurrent region can contain signals, components, types, subtypes, functions, procedures,
+/// constants
+/// Sequential region can contain variable, constants, functions, procedures, types, subtypes
+/// Usages is used to find all identifier that are used on the right hand side of the declaration
+///
+/// # Arguments
+/// `node` - Node to extract declaration from
+/// `text` - Full source text
+/// `region_type` - Region type for the given node
+/// `references` - HashSet containing all the used references for the declarations
+///
+/// # Returns
+/// A vector containing all the declarations extracted
+fn extract_declaration_from_node(
+    node: Node,
+    text: &str,
+    region_type: RegionType,
+    references: &mut HashSet<Usage>,
+) -> Vec<Declaration> {
+    let mut declarations = Vec::new();
+    for const_decl in collect_descendants(node, "constant_declaration") {
+        declarations.extend(create_declarations_from_node(
+            const_decl,
+            text,
+            DeclType::Constant,
+        ));
+        collect_identifier_from_decl(&const_decl, text, references);
+    }
+    for type_decl in collect_descendants(node, "type_declaration") {
+        declarations.push(create_type_declaration_from_node(type_decl, text));
+        collect_identifier_from_decl(&type_decl, text, references);
+    }
+    for subtype_decl in collect_descendants(node, "subtype_declaration") {
+        declarations.push(create_subtype_declaration_from_node(subtype_decl, text));
+        collect_identifier_from_decl(&subtype_decl, text, references);
+    }
+    for sub_prog in collect_descendants(node, "subprogram_declaration") {
+        if let Some(function_node) = find_child(sub_prog, "function_specification") {
+            declarations.push(create_subprogram_declaration_from_node(
+                function_node,
+                text,
+                DeclType::Function,
+            ));
+        } else if let Some(proc_node) = find_child(sub_prog, "procedure_specification") {
+            declarations.push(create_subprogram_declaration_from_node(
+                proc_node,
+                text,
+                DeclType::Procedure,
+            ));
+        }
+    }
+    match region_type {
+        RegionType::Concurrent => {
+            for signal_decl in collect_descendants(node, "signal_declaration") {
+                declarations.extend(create_declarations_from_node(
+                    signal_decl,
+                    text,
+                    DeclType::Signal,
+                ));
+                collect_identifier_from_decl(&signal_decl, text, references);
+            }
+        }
+        RegionType::Sequential => {
+            for var_decl in collect_descendants(node, "variable_declaration") {
+                declarations.extend(create_declarations_from_node(
+                    var_decl,
+                    text,
+                    DeclType::Variable,
+                ));
+                collect_identifier_from_decl(&var_decl, text, references);
+            }
+        }
+    }
+    declarations
 }

@@ -138,6 +138,18 @@ pub fn format_declaration_hover(decl: &Declaration) -> String {
         DeclType::Variable => {
             md.push_str(&format!("```vhdl\nvariable {} : ", &decl.name));
         }
+        DeclType::Type => {
+            md.push_str(&format!("```vhdl\ntype {} : ", &decl.name));
+        }
+        DeclType::Subtype => {
+            md.push_str(&format!("```vhdl\nsubtype {} : ", &decl.name));
+        }
+        DeclType::Function => {
+            md.push_str(&format!("```vhdl\nfunction {} : ", &decl.name));
+        }
+        DeclType::Procedure => {
+            md.push_str(&format!("```vhdl\nprocedure {} : ", &decl.name));
+        }
     };
     md.push_str(&decl.type_info.base_type);
     if let Some(constraint) = &decl.type_info.constraints {

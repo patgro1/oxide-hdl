@@ -1,6 +1,5 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Range,
-    Url,
+    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
 };
 use tree_sitter::{Node, Point};
 
@@ -1023,83 +1022,6 @@ fn collect_generics(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
     }
 }
 
-/// Recursively flattens the symbol tree into suggestions based on context.
-fn collect_symbols(
-    symbol: &Symbol,
-    context: &CompletionContext,
-    position: Position,
-    items: &mut Vec<CompletionItem>,
-) {
-    let is_strict_scope = matches!(
-        symbol.kind,
-        OxideSymbolKind::Architecture
-            | OxideSymbolKind::Block
-            | OxideSymbolKind::Generate
-            | OxideSymbolKind::Process
-    );
-
-    // Stop if symbol is outside the containing scope
-    if is_strict_scope && !range_contains(symbol.range, position) {
-        return;
-    }
-
-    // Add symbol if visible in current context
-    if is_visible(symbol, context)
-        && !is_strict_scope
-        && let Some(item) = symbol_to_completion(symbol)
-    {
-        items.push(item);
-    }
-
-    // Recurse into children
-    for child in &symbol.children {
-        collect_symbols(child, context, position, items);
-    }
-}
-
-/// Determines if a symbol should be visible in the given completion context.
-fn is_visible(sym: &Symbol, context: &CompletionContext) -> bool {
-    match context {
-        CompletionContext::Architecture => matches!(
-            sym.kind,
-            OxideSymbolKind::Component
-                | OxideSymbolKind::Entity
-                | OxideSymbolKind::Package
-                | OxideSymbolKind::Constant
-                | OxideSymbolKind::Port
-                | OxideSymbolKind::Signal
-        ),
-        CompletionContext::Process => matches!(
-            sym.kind,
-            OxideSymbolKind::Signal
-                | OxideSymbolKind::Variable
-                | OxideSymbolKind::Constant
-                | OxideSymbolKind::Port
-        ),
-        CompletionContext::PortMapRhs | CompletionContext::GenericMapRhs => {
-            matches!(
-                sym.kind,
-                OxideSymbolKind::Signal | OxideSymbolKind::Constant | OxideSymbolKind::Port
-            )
-        }
-        _ => true,
-    }
-}
-
-/// Checks if a position is contained within a range.
-fn range_contains(range: Range, position: Position) -> bool {
-    if position.line < range.start.line || position.line > range.end.line {
-        return false;
-    }
-    if position.line == range.start.line && position.character < range.start.character {
-        return false;
-    }
-    if position.line == range.end.line && position.character > range.end.character {
-        return false;
-    }
-    true
-}
-
 /// Converts a Symbol to a CompletionItem.
 fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {
     let kind = match symbol.kind {
@@ -1134,6 +1056,10 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Signal => CompletionItemKind::VARIABLE,
         DeclType::Generic => CompletionItemKind::CONSTANT,
         DeclType::Port(_) => CompletionItemKind::FIELD,
+        DeclType::Function => CompletionItemKind::FUNCTION,
+        DeclType::Type => CompletionItemKind::STRUCT,
+        DeclType::Subtype => CompletionItemKind::STRUCT,
+        DeclType::Procedure => CompletionItemKind::FUNCTION,
     };
 
     let mut details = decl.type_info.base_type.clone();

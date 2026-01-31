@@ -846,3 +846,176 @@ end architecture;
     assert_eq!(inst.label, "u_mem");
     assert_eq!(inst.component, "memory_controller");
 }
+
+// =========================================================================
+// Package scope tree tests
+// =========================================================================
+
+#[test]
+fn test_package_scope_tree_name() {
+    let code = r#"
+package my_pkg is
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.name, Some("my_pkg".to_string()));
+}
+
+#[test]
+fn test_package_constant() {
+    let code = r#"
+package my_pkg is
+    constant C_MAX : integer := 255;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 1);
+
+    let constant = &pkg.declarations[0];
+    assert_eq!(constant.name, "C_MAX");
+    assert!(matches!(constant.decl_type, DeclType::Constant));
+}
+
+#[test]
+fn test_package_multiple_constants() {
+    let code = r#"
+package my_pkg is
+    constant C_WIDTH : integer := 8;
+    constant C_DEPTH : integer := 1024;
+    constant C_ENABLE : std_logic := '1';
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 3);
+
+    let names: Vec<&str> = pkg.declarations.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"C_WIDTH"));
+    assert!(names.contains(&"C_DEPTH"));
+    assert!(names.contains(&"C_ENABLE"));
+}
+
+#[test]
+fn test_package_type_declaration() {
+    let code = r#"
+package my_pkg is
+    type t_state is (IDLE, RUN, STOP);
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 1);
+
+    let type_decl = &pkg.declarations[0];
+    assert_eq!(type_decl.name, "t_state");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+}
+
+#[test]
+fn test_package_function_declaration() {
+    let code = r#"
+package my_pkg is
+    function calc_parity(data : std_logic_vector) return std_logic;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 1);
+
+    let func_decl = &pkg.declarations[0];
+    assert_eq!(func_decl.name, "calc_parity");
+    assert!(matches!(func_decl.decl_type, DeclType::Function));
+}
+
+#[test]
+fn test_package_procedure_declaration() {
+    let code = r#"
+package my_pkg is
+    procedure do_reset(signal rst : out std_logic);
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 1);
+
+    let proc_decl = &pkg.declarations[0];
+    assert_eq!(proc_decl.name, "do_reset");
+    assert!(matches!(proc_decl.decl_type, DeclType::Procedure));
+}
+
+#[test]
+fn test_package_mixed_declarations() {
+    let code = r#"
+package my_pkg is
+    type t_state is (IDLE, RUN, STOP);
+    constant C_MAX : integer := 255;
+    function calculate_parity(data : std_logic_vector) return std_logic;
+    procedure init_system(signal ready : out std_logic);
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 4);
+}
+
+#[test]
+fn test_package_subtype_declaration() {
+    let code = r#"
+package my_pkg is
+    subtype t_byte is std_logic_vector(7 downto 0);
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 1);
+
+    let subtype_decl = &pkg.declarations[0];
+    assert_eq!(subtype_decl.name, "t_byte");
+    assert!(matches!(subtype_decl.decl_type, DeclType::Subtype));
+}
+
+#[test]
+fn test_package_type_and_subtype() {
+    let code = r#"
+package my_pkg is
+    type t_data is array (0 to 7) of std_logic_vector(7 downto 0);
+    subtype t_index is integer range 0 to 7;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    assert_eq!(pkg.declarations.len(), 2);
+
+    let names: Vec<&str> = pkg.declarations.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"t_data"));
+    assert!(names.contains(&"t_index"));
+}

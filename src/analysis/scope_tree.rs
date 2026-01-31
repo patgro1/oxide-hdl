@@ -25,7 +25,6 @@ use tree_sitter::Node;
 #[derive(Debug, Clone)]
 pub struct ScopeTree {
     /// Kind of scope this node represents
-    #[allow(dead_code)]
     pub kind: ScopeKind,
 
     /// Range where the Scope is
@@ -52,6 +51,22 @@ pub struct ScopeTree {
 
     /// List of the instantiation in the current scope
     pub instantiations: Vec<Instance>,
+}
+
+/// Enum precising the type of scope we are in.
+///
+/// Two kind of scopes exists: SEQUENTIAL and CONCURRENT
+/// Arch, Generate, Blocks are concurrent blocks because they implement concurrent logic
+/// Packages, Process are Sequential
+///
+/// This distinction is used to split the kind of declaration we can find in a specific
+/// scope.
+// #[derive(Clone, Debug, Copy)]
+pub enum RegionType {
+    /// Architecture, Generate, Blocks
+    Concurrent,
+    /// Process, Function, Procedure
+    Sequential,
 }
 
 impl ScopeTree {
@@ -127,13 +142,17 @@ impl ScopeTree {
     pub fn is_used_anywhere(&self, decl: &Declaration) -> bool {
         let decl_name_lower = decl.name.to_lowercase();
         let used_locally = match decl.decl_type {
-            DeclType::Constant | DeclType::Generic => {
-                self.local_usage.iter().any(|u| u.name == decl_name_lower)
-            }
-            DeclType::Port(_) | DeclType::Signal | DeclType::Variable => self
+            DeclType::Constant | DeclType::Generic => self
                 .local_usage
                 .iter()
-                .any(|u| u.name == decl_name_lower && u.context == UsageContext::Behavioral),
+                .any(|u| u.name.to_lowercase() == decl_name_lower),
+            DeclType::Port(_) | DeclType::Signal | DeclType::Variable => {
+                self.local_usage.iter().any(|u| {
+                    u.name.to_lowercase() == decl_name_lower
+                        && u.context == UsageContext::Behavioral
+                })
+            }
+            DeclType::Subtype | DeclType::Function | DeclType::Type | DeclType::Procedure => true,
         };
         if used_locally {
             return true;

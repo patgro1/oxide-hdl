@@ -50,6 +50,9 @@ pub struct Analysis {
 
     /// Scope tree with signals, constants, types declaration and usage
     pub scope_trees: Vec<ScopeTree>,
+
+    /// Scope tree for packages
+    pub package_scope_trees: HashMap<String, ScopeTree>,
 }
 
 impl Analysis {
@@ -61,6 +64,7 @@ impl Analysis {
             parse_level: ParseLevel::Shallow,
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
+            package_scope_trees: HashMap::new(),
         }
     }
 
@@ -181,7 +185,7 @@ pub fn collect_identifiers_recursive(
     for child in node.children(&mut cursor) {
         if child.kind() == "identifier" {
             references.insert(Usage {
-                name: text[child.byte_range()].to_string().to_lowercase(),
+                name: text[child.byte_range()].to_string(),
                 context,
                 range: node_to_range(child),
             });
