@@ -75,6 +75,7 @@ pub fn collect_document_symbol(analysis: &Analysis) -> Vec<DocumentSymbol> {
     let mut scope_trees: Vec<&ScopeTree> = Vec::new();
     scope_trees.extend(analysis.scope_trees.iter());
     scope_trees.extend(analysis.entity_scope_trees.values().collect::<Vec<_>>());
+    scope_trees.extend(analysis.package_scope_trees.values().collect::<Vec<_>>());
     // Now we need to sort then by start value to make sure the ordering is respected in the
     // document
     scope_trees.sort_by_key(|a| a.range.start);

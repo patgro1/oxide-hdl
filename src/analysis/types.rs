@@ -189,6 +189,14 @@ pub enum DeclType {
     Signal,
     /// Variable declaration (process/function/procedure level)
     Variable,
+    /// Type declaration
+    Type,
+    /// Subtype declaration
+    Subtype,
+    /// Function subprogram
+    Function,
+    /// Procedure subprogram
+    Procedure,
 }
 
 impl fmt::Display for DeclType {
@@ -199,6 +207,10 @@ impl fmt::Display for DeclType {
             DeclType::Constant => "constant",
             DeclType::Signal => "signal",
             DeclType::Variable => "variable",
+            DeclType::Type => "type",
+            DeclType::Subtype => "subtype",
+            DeclType::Function => "function",
+            DeclType::Procedure => "procedure",
         };
         write!(f, "{}", s)
     }
@@ -212,6 +224,10 @@ impl From<DeclType> for SymbolKind {
             DeclType::Constant => SymbolKind::CONSTANT,
             DeclType::Variable => SymbolKind::VARIABLE,
             DeclType::Signal => SymbolKind::VARIABLE,
+            DeclType::Type => SymbolKind::STRUCT,
+            DeclType::Subtype => SymbolKind::STRUCT,
+            DeclType::Function => SymbolKind::FUNCTION,
+            DeclType::Procedure => SymbolKind::FUNCTION,
         }
     }
 }
@@ -262,6 +278,8 @@ pub enum ScopeKind {
     Generate,
     /// Block scope - can declare signals and constants
     Block,
+    /// Package scope - can declare components, functions, procedure, types, constants subtypes
+    Package,
 }
 
 impl fmt::Display for ScopeKind {
@@ -272,6 +290,7 @@ impl fmt::Display for ScopeKind {
             ScopeKind::Process => "process",
             ScopeKind::Generate => "generate",
             ScopeKind::Block => "block",
+            ScopeKind::Package => "package",
         };
         write!(f, "{}", s)
     }
@@ -285,6 +304,7 @@ impl From<ScopeKind> for SymbolKind {
             ScopeKind::Process => SymbolKind::METHOD,
             ScopeKind::Generate => SymbolKind::NAMESPACE,
             ScopeKind::Block => SymbolKind::NAMESPACE,
+            ScopeKind::Package => SymbolKind::PACKAGE,
         }
     }
 }

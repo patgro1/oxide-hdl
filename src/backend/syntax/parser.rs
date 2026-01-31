@@ -2,6 +2,7 @@
 
 use crate::analysis::{
     Analysis, OxideSymbolKind, ParseLevel, Symbol, build_arch_scope_tree, build_entity_scope_tree,
+    build_package_scope_tree,
 };
 use crate::utils::node_to_range;
 use tree_sitter::{Node, TreeCursor};
@@ -26,12 +27,12 @@ use tree_sitter::{Node, TreeCursor};
 pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     let mut analysis = Analysis::new();
     analysis.parse_level = ParseLevel::Deep;
-    let mut cursor = root_node.walk();
-    let symbols = visit_node(&mut cursor, text);
-
-    for sym in symbols {
-        analysis.symbols.insert(sym.name.to_lowercase(), sym);
-    }
+    // let mut cursor = root_node.walk();
+    // let symbols = visit_node(&mut cursor, text);
+    //
+    // for sym in symbols {
+    //     analysis.symbols.insert(sym.name.to_lowercase(), sym);
+    // }
 
     let mut cursor = root_node.walk();
     for node in root_node.children(&mut cursor) {
@@ -46,6 +47,14 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
                 if child.kind() == "architecture_definition" {
                     let scope_tree = build_arch_scope_tree(child, text);
                     analysis.scope_trees.push(scope_tree);
+                }
+                if child.kind() == "package_declaration" {
+                    let scope_tree = build_package_scope_tree(child, text);
+                    if let Some(ref name) = scope_tree.name {
+                        analysis
+                            .package_scope_trees
+                            .insert(name.clone(), scope_tree);
+                    }
                 }
             }
         }
@@ -66,25 +75,25 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
 /// # Returns
 /// * `Some(OxideSymbolKind)` - The specific kind (Port, Generic, Function Parameter).
 /// * `None` - If the context could not be determined.
-fn determine_interface_kind(node: Node) -> Option<OxideSymbolKind> {
-    let mut current_node = node.parent();
-    while let Some(n) = current_node {
-        match n.kind() {
-            "port_clause" => return Some(OxideSymbolKind::Port),
-            "generic_clause" => return Some(OxideSymbolKind::Generic),
-            "subprogram_header" | "function_specification" | "procedure_specification" => {
-                return Some(OxideSymbolKind::Port);
-            }
-
-            "entity_declaration" | "architecture_body" | "package_declaration" => return None,
-
-            _ => {
-                current_node = n.parent();
-            }
-        }
-    }
-    None
-}
+// fn determine_interface_kind(node: Node) -> Option<OxideSymbolKind> {
+//     let mut current_node = node.parent();
+//     while let Some(n) = current_node {
+//         match n.kind() {
+//             "port_clause" => return Some(OxideSymbolKind::Port),
+//             "generic_clause" => return Some(OxideSymbolKind::Generic),
+//             "subprogram_header" | "function_specification" | "procedure_specification" => {
+//                 return Some(OxideSymbolKind::Port);
+//             }
+//
+//             "entity_declaration" | "architecture_body" | "package_declaration" => return None,
+//
+//             _ => {
+//                 current_node = n.parent();
+//             }
+//         }
+//     }
+//     None
+// }
 
 /// Recursively walks the AST to find and extract symbols.
 ///
@@ -104,67 +113,67 @@ fn determine_interface_kind(node: Node) -> Option<OxideSymbolKind> {
 ///
 /// # Returns
 /// A vector of `Symbol` structs found at this level of the tree.
-fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
-    let mut symbols = Vec::new();
-    if cursor.goto_first_child() {
-        loop {
-            let node = cursor.node();
-            let kind = node.kind();
-            let (symbol_kind, is_container) = match kind {
-                // Scope
-                "package_declaration" => (Some(OxideSymbolKind::Package), true),
-                "component_declaration" => (Some(OxideSymbolKind::Component), true),
-                "entity_declaration" => (Some(OxideSymbolKind::Entity), true),
-                "subprogram_definition" => (Some(OxideSymbolKind::Function), true),
-                "subprogram_declaration" => (Some(OxideSymbolKind::Function), true),
-                // "function_specification" | "procedure_specification" => {
-                //     (Some(OxideSymbolKind::Function), true)
-                // }
-                "package_definition" => (Some(OxideSymbolKind::Package), true),
-                "architecture_definition" => (Some(OxideSymbolKind::Architecture), true),
-                "block_statement" => (Some(OxideSymbolKind::Block), true),
-                "if_generate_statement" | "for_generate_statement" => {
-                    (Some(OxideSymbolKind::Generate), true)
-                }
-                "process_statement" => (Some(OxideSymbolKind::Process), true),
-
-                // Leaf
-                "type_declaration" => (Some(OxideSymbolKind::Struct), false),
-                "subtype_declaration" => (Some(OxideSymbolKind::Struct), false),
-                "signal_declaration" => (Some(OxideSymbolKind::Signal), false),
-                "variable_declaration" => (Some(OxideSymbolKind::Variable), false),
-                "constant_declaration" => (Some(OxideSymbolKind::Constant), false),
-                "interface_declaration" => {
-                    let kind = determine_interface_kind(node);
-                    (kind, false)
-                }
-                "component_instantiation_statement" => {
-                    (Some(OxideSymbolKind::ComponentInstantiation), false)
-                }
-                _ => (None, true),
-            };
-
-            let inner_symbols = if is_container {
-                visit_node(&mut node.walk(), text)
-            } else {
-                Vec::new()
-            };
-
-            if let Some(k) = symbol_kind {
-                let extracted = extract_details(node, k, text, inner_symbols);
-                symbols.extend(extracted);
-            } else {
-                symbols.extend(inner_symbols);
-            }
-
-            if !cursor.goto_next_sibling() {
-                break;
-            }
-        }
-        cursor.goto_parent();
-    }
-    symbols
-}
+// fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
+//     let mut symbols = Vec::new();
+//     if cursor.goto_first_child() {
+//         loop {
+//             let node = cursor.node();
+//             let kind = node.kind();
+//             let (symbol_kind, is_container) = match kind {
+//                 // Scope
+//                 "package_declaration" => (Some(OxideSymbolKind::Package), true),
+//                 "component_declaration" => (Some(OxideSymbolKind::Component), true),
+//                 "entity_declaration" => (Some(OxideSymbolKind::Entity), true),
+//                 "subprogram_definition" => (Some(OxideSymbolKind::Function), true),
+//                 "subprogram_declaration" => (Some(OxideSymbolKind::Function), true),
+//                 // "function_specification" | "procedure_specification" => {
+//                 //     (Some(OxideSymbolKind::Function), true)
+//                 // }
+//                 "package_definition" => (Some(OxideSymbolKind::Package), true),
+//                 "architecture_definition" => (Some(OxideSymbolKind::Architecture), true),
+//                 "block_statement" => (Some(OxideSymbolKind::Block), true),
+//                 "if_generate_statement" | "for_generate_statement" => {
+//                     (Some(OxideSymbolKind::Generate), true)
+//                 }
+//                 "process_statement" => (Some(OxideSymbolKind::Process), true),
+//
+//                 // Leaf
+//                 "type_declaration" => (Some(OxideSymbolKind::Struct), false),
+//                 "subtype_declaration" => (Some(OxideSymbolKind::Struct), false),
+//                 "signal_declaration" => (Some(OxideSymbolKind::Signal), false),
+//                 "variable_declaration" => (Some(OxideSymbolKind::Variable), false),
+//                 "constant_declaration" => (Some(OxideSymbolKind::Constant), false),
+//                 "interface_declaration" => {
+//                     let kind = determine_interface_kind(node);
+//                     (kind, false)
+//                 }
+//                 "component_instantiation_statement" => {
+//                     (Some(OxideSymbolKind::ComponentInstantiation), false)
+//                 }
+//                 _ => (None, true),
+//             };
+//
+//             let inner_symbols = if is_container {
+//                 visit_node(&mut node.walk(), text)
+//             } else {
+//                 Vec::new()
+//             };
+//
+//             if let Some(k) = symbol_kind {
+//                 let extracted = extract_details(node, k, text, inner_symbols);
+//                 symbols.extend(extracted);
+//             } else {
+//                 symbols.extend(inner_symbols);
+//             }
+//
+//             if !cursor.goto_next_sibling() {
+//                 break;
+//             }
+//         }
+//         cursor.goto_parent();
+//     }
+//     symbols
+// }
 
 /// Extracts detailed information (name, type, children) from a specific AST node.
 ///
@@ -187,167 +196,167 @@ fn visit_node(cursor: &mut TreeCursor, text: &str) -> Vec<Symbol> {
 /// # Returns
 /// A vector of `Symbol` structs. (Returns a vector because a single declaration like
 /// `signal x, y : bit` produces multiple symbols).
-fn extract_details(
-    node: Node,
-    kind: OxideSymbolKind,
-    text: &str,
-    children: Vec<Symbol>,
-) -> Vec<Symbol> {
-    let mut result = Vec::new();
-
-    let mut name_nodes = Vec::new();
-
-    let get_text = |n: Node| n.utf8_text(text.as_bytes()).unwrap_or("").to_string();
-
-    // Special case for architecture name extraction
-    if let Some(arch) = node.child_by_field_name("architecture") {
-        name_nodes.push(arch)
-    }
-    // We start by handling the name of the symbol
-    else if let Some(label) = node.child_by_field_name("label") {
-        if let Some(label) = label.child_by_field_name("label") {
-            name_nodes.push(label);
-        }
-    } else if let Some(name) = node.child_by_field_name("name") {
-        name_nodes.push(name);
-    } else {
-        // Here we will try to find the first label/identifier underneath
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "identifier" => name_nodes.push(child),
-                "identifier_list" | "label_declaration" => {
-                    let mut list_cursor = child.walk();
-                    for list_item in child.children(&mut list_cursor) {
-                        if list_item.kind() == "identifier" || list_item.kind() == "label" {
-                            name_nodes.push(list_item);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Handle subprogram
-    if name_nodes.is_empty() && kind == OxideSymbolKind::Function {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind().contains("specification") {
-                let mut spec_cursor = child.walk();
-                for grand_child in child.children(&mut spec_cursor) {
-                    if grand_child.kind() == "identifier" || grand_child.kind() == "designator" {
-                        name_nodes.push(grand_child);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    let mut detail_text = None;
-    // Handle instantiation
-    // We need to make sure we capture also the entity name
-    if kind == OxideSymbolKind::ComponentInstantiation {
-        if let Some(comp_node) = node.child_by_field_name("component") {
-            detail_text = Some(get_text(comp_node));
-        } else if let Some(ent_node) = node.child_by_field_name("entity") {
-            let raw = get_text(ent_node);
-            // Remove any library from the compoenent name
-            let clean = raw.split('.').next_back().unwrap_or(&raw).to_string();
-            detail_text = Some(clean);
-        } else {
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                if child.kind() == "instantiated_unit" {
-                    let mut inner_cursor = child.walk();
-                    for inner in child.named_children(&mut inner_cursor) {
-                        if let Some(name_node) = inner.child_by_field_name("name") {
-                            let raw = get_text(name_node);
-                            let clean = raw.split('.').next_back().unwrap_or(&raw).to_string();
-                            detail_text = Some(clean);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if kind == OxideSymbolKind::Function {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind().contains("specification") {
-                if let Some(return_type) = child.child_by_field_name("type") {
-                    detail_text = Some(get_text(return_type));
-                }
-                break;
-            }
-        }
-    }
-
-    // Now we can try to extract the details
-    if detail_text.is_none() {
-        if let Some(type_node) = node.child_by_field_name("type") {
-            detail_text = Some(get_text(type_node));
-        } else {
-            // Fallback to subtype indication
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                let k = child.kind();
-                // Direct hit on the type
-                if k.contains("subtype") || k.contains("type") {
-                    detail_text = Some(get_text(child));
-                    break;
-                }
-                // Port and generics might be deeper
-                if k == "simple_mode_indication" {
-                    let mut inner_cursor = child.walk();
-                    for inner in child.named_children(&mut inner_cursor) {
-                        if inner.kind() == "subtype_indication" {
-                            detail_text = Some(get_text(inner));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Handle special cases
-    if name_nodes.is_empty() {
-        if kind == OxideSymbolKind::Process {
-            // NOTE: We need to make sure we do not crash on unamed process...
-            result.push(Symbol {
-                name: "process".to_string(),
-                kind,
-                range: node_to_range(node),
-                detail: detail_text,
-                children,
-            });
-        }
-    } else {
-        for name_node in name_nodes {
-            result.push(Symbol {
-                name: name_node
-                    .utf8_text(text.as_bytes())
-                    .unwrap_or("?")
-                    .to_string(),
-                kind,
-                range: node_to_range(node),
-                detail: detail_text.clone(),
-                children: children.clone(),
-            });
-        }
-    }
-    if kind == OxideSymbolKind::Architecture || kind == OxideSymbolKind::Entity {
-        if result.is_empty() {
-            return Vec::new();
-        }
-        return result.into_iter().take(1).collect();
-    }
-
-    result
-}
+// fn extract_details(
+//     node: Node,
+//     kind: OxideSymbolKind,
+//     text: &str,
+//     children: Vec<Symbol>,
+// ) -> Vec<Symbol> {
+//     let mut result = Vec::new();
+//
+//     let mut name_nodes = Vec::new();
+//
+//     let get_text = |n: Node| n.utf8_text(text.as_bytes()).unwrap_or("").to_string();
+//
+//     // Special case for architecture name extraction
+//     if let Some(arch) = node.child_by_field_name("architecture") {
+//         name_nodes.push(arch)
+//     }
+//     // We start by handling the name of the symbol
+//     else if let Some(label) = node.child_by_field_name("label") {
+//         if let Some(label) = label.child_by_field_name("label") {
+//             name_nodes.push(label);
+//         }
+//     } else if let Some(name) = node.child_by_field_name("name") {
+//         name_nodes.push(name);
+//     } else {
+//         // Here we will try to find the first label/identifier underneath
+//         let mut cursor = node.walk();
+//         for child in node.children(&mut cursor) {
+//             match child.kind() {
+//                 "identifier" => name_nodes.push(child),
+//                 "identifier_list" | "label_declaration" => {
+//                     let mut list_cursor = child.walk();
+//                     for list_item in child.children(&mut list_cursor) {
+//                         if list_item.kind() == "identifier" || list_item.kind() == "label" {
+//                             name_nodes.push(list_item);
+//                         }
+//                     }
+//                 }
+//                 _ => {}
+//             }
+//         }
+//     }
+//
+//     // Handle subprogram
+//     if name_nodes.is_empty() && kind == OxideSymbolKind::Function {
+//         let mut cursor = node.walk();
+//         for child in node.children(&mut cursor) {
+//             if child.kind().contains("specification") {
+//                 let mut spec_cursor = child.walk();
+//                 for grand_child in child.children(&mut spec_cursor) {
+//                     if grand_child.kind() == "identifier" || grand_child.kind() == "designator" {
+//                         name_nodes.push(grand_child);
+//                         break;
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//
+//     let mut detail_text = None;
+//     // Handle instantiation
+//     // We need to make sure we capture also the entity name
+//     if kind == OxideSymbolKind::ComponentInstantiation {
+//         if let Some(comp_node) = node.child_by_field_name("component") {
+//             detail_text = Some(get_text(comp_node));
+//         } else if let Some(ent_node) = node.child_by_field_name("entity") {
+//             let raw = get_text(ent_node);
+//             // Remove any library from the compoenent name
+//             let clean = raw.split('.').next_back().unwrap_or(&raw).to_string();
+//             detail_text = Some(clean);
+//         } else {
+//             let mut cursor = node.walk();
+//             for child in node.named_children(&mut cursor) {
+//                 if child.kind() == "instantiated_unit" {
+//                     let mut inner_cursor = child.walk();
+//                     for inner in child.named_children(&mut inner_cursor) {
+//                         if let Some(name_node) = inner.child_by_field_name("name") {
+//                             let raw = get_text(name_node);
+//                             let clean = raw.split('.').next_back().unwrap_or(&raw).to_string();
+//                             detail_text = Some(clean);
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//
+//     if kind == OxideSymbolKind::Function {
+//         let mut cursor = node.walk();
+//         for child in node.named_children(&mut cursor) {
+//             if child.kind().contains("specification") {
+//                 if let Some(return_type) = child.child_by_field_name("type") {
+//                     detail_text = Some(get_text(return_type));
+//                 }
+//                 break;
+//             }
+//         }
+//     }
+//
+//     // Now we can try to extract the details
+//     if detail_text.is_none() {
+//         if let Some(type_node) = node.child_by_field_name("type") {
+//             detail_text = Some(get_text(type_node));
+//         } else {
+//             // Fallback to subtype indication
+//             let mut cursor = node.walk();
+//             for child in node.named_children(&mut cursor) {
+//                 let k = child.kind();
+//                 // Direct hit on the type
+//                 if k.contains("subtype") || k.contains("type") {
+//                     detail_text = Some(get_text(child));
+//                     break;
+//                 }
+//                 // Port and generics might be deeper
+//                 if k == "simple_mode_indication" {
+//                     let mut inner_cursor = child.walk();
+//                     for inner in child.named_children(&mut inner_cursor) {
+//                         if inner.kind() == "subtype_indication" {
+//                             detail_text = Some(get_text(inner));
+//                             break;
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//
+//     // Handle special cases
+//     if name_nodes.is_empty() {
+//         if kind == OxideSymbolKind::Process {
+//             // NOTE: We need to make sure we do not crash on unamed process...
+//             result.push(Symbol {
+//                 name: "process".to_string(),
+//                 kind,
+//                 range: node_to_range(node),
+//                 detail: detail_text,
+//                 children,
+//             });
+//         }
+//     } else {
+//         for name_node in name_nodes {
+//             result.push(Symbol {
+//                 name: name_node
+//                     .utf8_text(text.as_bytes())
+//                     .unwrap_or("?")
+//                     .to_string(),
+//                 kind,
+//                 range: node_to_range(node),
+//                 detail: detail_text.clone(),
+//                 children: children.clone(),
+//             });
+//         }
+//     }
+//     if kind == OxideSymbolKind::Architecture || kind == OxideSymbolKind::Entity {
+//         if result.is_empty() {
+//             return Vec::new();
+//         }
+//         return result.into_iter().take(1).collect();
+//     }
+//
+//     result
+// }
 
 #[cfg(test)]
 mod tests {
