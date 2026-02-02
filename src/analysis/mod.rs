@@ -134,6 +134,11 @@ impl Analysis {
                     .values()
                     .find(|scope_tree| position_in_range(*pos, scope_tree.range))
             })
+            .or_else(|| {
+                self.package_scope_trees
+                    .values()
+                    .find(|scope_tree| position_in_range(*pos, scope_tree.range))
+            })
     }
 
     /// Find the declaration of the given name that is visible at the given position
@@ -159,6 +164,13 @@ impl Analysis {
                 && let Some(entity_scope_tree) = self.entity_scope_trees.get(entity_name)
             {
                 return entity_scope_tree.get_declaration(name);
+            }
+            // At that point, we might need to check in the package declaration. If the scope_tree links
+            // to one, check if we can find the name in it.
+            if let Some(package_name) = &scope_tree.package
+                && let Some(package_scope_tree) = self.package_scope_trees.get(package_name)
+            {
+                return package_scope_tree.get_declaration(name);
             }
         }
         None
