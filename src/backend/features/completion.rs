@@ -976,13 +976,18 @@ pub fn complete_scope(
         // }
         if let Some(scope_tree) = current_analysis.find_scope_tree_at(&position) {
             let innermost_scope = scope_tree.find_innermost_scope(&position);
-            let declarations = scope_tree.collect_visible_declarations(
-                &innermost_scope.range,
-                scope_tree
-                    .entity
-                    .as_ref()
-                    .and_then(|name| current_analysis.entity_scope_trees.get(name)),
-            );
+            let header = scope_tree
+                .entity
+                .as_ref()
+                .and_then(|name| current_analysis.entity_scope_trees.get(name))
+                .or_else(|| {
+                    scope_tree
+                        .package
+                        .as_ref()
+                        .and_then(|name| current_analysis.package_scope_trees.get(name))
+                });
+            let declarations =
+                scope_tree.collect_visible_declarations(&innermost_scope.range, header);
             if let Some(declarations) = declarations {
                 for decl in declarations {
                     items.push(declaration_to_completion(&decl));
