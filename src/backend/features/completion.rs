@@ -1056,6 +1056,7 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Signal => CompletionItemKind::VARIABLE,
         DeclType::Generic => CompletionItemKind::CONSTANT,
         DeclType::Port(_) => CompletionItemKind::FIELD,
+        DeclType::Parameter(_, _) => CompletionItemKind::FIELD,
         DeclType::Function => CompletionItemKind::FUNCTION,
         DeclType::Type => CompletionItemKind::STRUCT,
         DeclType::Subtype => CompletionItemKind::STRUCT,

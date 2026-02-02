@@ -11,6 +11,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 10),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![
                 make_decl_with_range("arch_sig", DeclType::Signal, Range::default()),
                 make_decl_with_range("arch_const", DeclType::Constant, Range::default()),
@@ -38,6 +39,7 @@ mod collect_visible_tests {
             range: make_line_range(5, 15),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "proc_var",
                 DeclType::Variable,
@@ -54,6 +56,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 20),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "arch_sig",
                 DeclType::Signal,
@@ -83,6 +86,7 @@ mod collect_visible_tests {
             range: make_line_range(10, 20),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "level2",
                 DeclType::Variable,
@@ -99,6 +103,7 @@ mod collect_visible_tests {
             range: make_line_range(5, 25),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "level1",
                 DeclType::Signal,
@@ -115,6 +120,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 30),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "level0",
                 DeclType::Signal,
@@ -144,6 +150,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 10),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "sig",
                 DeclType::Signal,
@@ -168,6 +175,7 @@ mod collect_visible_tests {
             range: make_line_range(8, 12),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![],
             local_usage: HashSet::new(),
             children: vec![],
@@ -180,6 +188,7 @@ mod collect_visible_tests {
             range: make_line_range(5, 15),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "gen1_sig",
                 DeclType::Signal,
@@ -196,6 +205,7 @@ mod collect_visible_tests {
             range: make_line_range(16, 25),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "gen2_sig",
                 DeclType::Signal,
@@ -212,6 +222,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 30),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "arch_sig",
                 DeclType::Signal,
@@ -241,6 +252,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 10),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![],
             local_usage: HashSet::new(),
             children: vec![],
@@ -263,6 +275,7 @@ mod collect_visible_tests {
             range: make_line_range(18, 22),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "proc_var",
                 DeclType::Variable,
@@ -279,6 +292,7 @@ mod collect_visible_tests {
             range: make_line_range(5, 15),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "gen1_sig",
                 DeclType::Signal,
@@ -295,6 +309,7 @@ mod collect_visible_tests {
             range: make_line_range(16, 25),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "gen2_sig",
                 DeclType::Signal,
@@ -311,6 +326,7 @@ mod collect_visible_tests {
             range: make_line_range(26, 35),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "gen3_sig",
                 DeclType::Signal,
@@ -327,6 +343,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 40),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "arch_sig",
                 DeclType::Signal,
@@ -360,6 +377,7 @@ mod collect_visible_tests {
             range: make_line_range(5, 15),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "data",
                 DeclType::Variable,
@@ -376,6 +394,7 @@ mod collect_visible_tests {
             range: make_line_range(0, 20),
             name: None,
             entity: None,
+            package: None,
             declarations: vec![make_decl_with_range(
                 "data",
                 DeclType::Signal,
@@ -526,5 +545,124 @@ end architecture;
                 .iter()
                 .any(|d| d.name == "tx_ready" && matches!(d.decl_type, DeclType::Port(_)))
         );
+    }
+
+    #[test]
+    fn test_package_body_visibility_includes_header() {
+        // Package body should see declarations from package header
+        let pkg_header = ScopeTree {
+            kind: ScopeKind::Package,
+            range: make_line_range(0, 10),
+            name: Some("my_pkg".to_string()),
+            entity: None,
+            package: None,
+            declarations: vec![
+                make_decl_with_range("PUBLIC_CONST", DeclType::Constant, Range::default()),
+                make_decl_with_range("t_public_type", DeclType::Type, Range::default()),
+            ],
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+            instantiations: Vec::new(),
+        };
+
+        let pkg_body = ScopeTree {
+            kind: ScopeKind::PackageBody,
+            range: make_line_range(15, 30),
+            name: Some("my_pkg".to_string()),
+            entity: None,
+            package: Some("my_pkg".to_string()),
+            declarations: vec![make_decl_with_range(
+                "PRIVATE_CONST",
+                DeclType::Constant,
+                Range::default(),
+            )],
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+            instantiations: Vec::new(),
+        };
+
+        let target = make_line_range(15, 30);
+        // Note: collect_visible_declarations uses entity parameter for linked scope
+        // For package body, we'd pass the package header as the "linked" scope
+        let result = pkg_body.collect_visible_declarations(&target, Some(&pkg_header));
+        println!("Results: {:?}", result);
+
+        assert!(result.is_some());
+        let decls = result.unwrap();
+        assert_eq!(decls.len(), 3);
+        assert!(decls.iter().any(|d| d.name == "PRIVATE_CONST"));
+        assert!(decls.iter().any(|d| d.name == "PUBLIC_CONST"));
+        assert!(decls.iter().any(|d| d.name == "t_public_type"));
+    }
+
+    #[test]
+    fn test_function_scope_in_package_body() {
+        // Function inside package body should see:
+        // 1. Its own local variables
+        // 2. Package body private declarations
+        // 3. Package header public declarations (via linked scope)
+
+        let func_scope = ScopeTree {
+            kind: ScopeKind::Function,
+            range: make_line_range(20, 25),
+            name: Some("my_func".to_string()),
+            entity: None,
+            package: None,
+            declarations: vec![make_decl_with_range(
+                "local_var",
+                DeclType::Variable,
+                Range::default(),
+            )],
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+            instantiations: Vec::new(),
+        };
+
+        let pkg_body = ScopeTree {
+            kind: ScopeKind::PackageBody,
+            range: make_line_range(15, 30),
+            name: Some("my_pkg".to_string()),
+            entity: None,
+            package: Some("my_pkg".to_string()),
+            declarations: vec![make_decl_with_range(
+                "body_const",
+                DeclType::Constant,
+                Range::default(),
+            )],
+            local_usage: HashSet::new(),
+            children: vec![func_scope],
+            decl_index: HashMap::new(),
+            instantiations: Vec::new(),
+        };
+
+        let pkg_header = ScopeTree {
+            kind: ScopeKind::Package,
+            range: make_line_range(0, 10),
+            name: Some("my_pkg".to_string()),
+            entity: None,
+            package: None,
+            declarations: vec![make_decl_with_range(
+                "header_const",
+                DeclType::Constant,
+                Range::default(),
+            )],
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+            instantiations: Vec::new(),
+        };
+
+        let target = make_line_range(20, 25); // Function range
+        let result = pkg_body.collect_visible_declarations(&target, Some(&pkg_header));
+
+        assert!(result.is_some());
+        let decls = result.unwrap();
+        assert_eq!(decls.len(), 3);
+        assert!(decls.iter().any(|d| d.name == "local_var"));
+        assert!(decls.iter().any(|d| d.name == "body_const"));
+        assert!(decls.iter().any(|d| d.name == "header_const"));
     }
 }

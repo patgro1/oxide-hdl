@@ -5,14 +5,15 @@
 
 use crate::{
     analysis::{
-        DeclType, Declaration, Instance, PortDirection, RegionType, ScopeKind, ScopeTree, TypeInfo,
-        Usage, UsageContext, collect_identifiers_recursive,
+        DeclType, Declaration, Instance, ParameterClass, PortDirection, RegionType, ScopeKind,
+        ScopeTree, TypeInfo, Usage, UsageContext, collect_identifiers_recursive,
     },
     utils::{
-        ast::{collect_descendants, find_child, find_descendant, navigate_path},
+        ast::{collect_children, collect_descendants, find_child, find_descendant, navigate_path},
         node_to_range,
     },
 };
+use clap::Subcommand;
 use std::collections::HashSet;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;
@@ -79,6 +80,7 @@ fn extract_decl_from_generic_clause(generic_clause: Node, text: &str) -> Vec<Dec
                     type_info: extract_type_info(&interface_decl, text),
                     default_value: default_value.clone(),
                     doc_comment: doc_comment.clone(),
+                    parameters: None,
                 });
             }
         }
@@ -120,6 +122,7 @@ fn extract_decl_from_port_clause(port_clause: Node, text: &str) -> Vec<Declarati
                     type_info: extract_type_info(&interface_decl, text),
                     default_value: default_value.clone(),
                     doc_comment: doc_comment.clone(),
+                    parameters: None,
                 });
             }
         }
@@ -225,6 +228,9 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                             &mut tree.local_usage,
                         );
                     }
+                    "subprogram_definition" => tree
+                        .children
+                        .push(build_subprogram_scope_tree(inner_child, text)),
                     _ => collect_identifiers_recursive(
                         inner_child,
                         text,
@@ -374,6 +380,9 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                             &mut tree.local_usage,
                         );
                     }
+                    "subprogram_definition" => {
+                        tree.children.push(build_subprogram_scope_tree(child, text))
+                    }
                     _ => collect_identifiers_recursive(
                         child,
                         text,
@@ -458,6 +467,9 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                             &mut tree.local_usage,
                         );
                     }
+                    "subprogram_definition" => {
+                        tree.children.push(build_subprogram_scope_tree(child, text))
+                    }
                     _ => collect_identifiers_recursive(
                         child,
                         text,
@@ -531,6 +543,9 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                         &mut tree.local_usage,
                     );
                 }
+                "subprogram_definition" => tree
+                    .children
+                    .push(build_subprogram_scope_tree(inner_child, text)),
                 _ => collect_identifiers_recursive(
                     inner_child,
                     text,
@@ -544,7 +559,7 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
     tree
 }
 
-/// Build scope tree for a package
+/// Build scope tree for a package definition
 ///
 /// # Arguments
 ///
@@ -566,6 +581,40 @@ pub fn build_package_scope_tree(package_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+    }
+    tree
+}
+
+/// Build scope tree for package implementation
+/// # Arguments
+///
+/// * `package_node` - Tree-sitter node of the package_defintion
+/// * `text` - Full source text
+///
+/// # Returns
+/// Scope tree for the package implementation
+pub fn build_package_body_scope_tree(package_node: Node, text: &str) -> ScopeTree {
+    let mut tree = ScopeTree::new(ScopeKind::PackageBody, &package_node);
+    if let Some(name) = package_node.child_by_field_name("package") {
+        tree.name = Some(text[name.byte_range()].to_string());
+        tree.package = tree.name.clone();
+    }
+    if let Some(decl_body) = find_child(package_node, "package_definition_body") {
+        tree.declarations = extract_declaration_from_node(
+            decl_body,
+            text,
+            RegionType::Implementation,
+            &mut tree.local_usage,
+        );
+
+        for child in decl_body.children(&mut decl_body.walk()) {
+            match child.kind() {
+                "subprogram_definition" => {
+                    tree.children.push(build_subprogram_scope_tree(child, text))
+                }
+                _ => continue,
+            }
+        }
     }
     tree
 }
@@ -759,6 +808,7 @@ fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) ->
             type_info: extract_type_info(&node, text),
             default_value: default_value.clone(),
             doc_comment: doc_comment.clone(),
+            parameters: None,
         })
         .collect()
 }
@@ -804,7 +854,7 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
     }
 }
 
-/// Create a declaration from a subprograme node, can be a procedure or a function
+/// Create a declaration from a subprogram node, can be a procedure or a function
 ///
 /// # Arguments
 /// `node` - Subprogram node
@@ -832,16 +882,75 @@ fn create_subprogram_declaration_from_node(
         name = text[name_node.byte_range()].to_string();
         selection_range = node_to_range(name_node);
     }
+    let parameters = extract_parameters_from_subprogram(node, text);
     // For now we just extract the name of the function.
     Declaration {
         name,
         decl_type,
         range: node_to_range(node),
         selection_range,
+        parameters: Some(parameters),
         type_info: TypeInfo::new(),
         default_value: None,
         doc_comment,
     }
+}
+
+/// Create a scope tree for subprogram (can be function or procedure)
+///
+/// # Argument
+///
+/// `node` - Subprogram definition node
+/// `text` - Full source text
+///
+/// # Returns
+/// Scopetree for the subprogram
+pub fn build_subprogram_scope_tree(subprogram_node: Node, text: &str) -> ScopeTree {
+    // We need to check if we have a procedure or a function here.
+    let mut scope_kind = ScopeKind::Function;
+    let mut spec_node: Option<Node> = None;
+    let mut name = "".to_string();
+    if let Some(specification_node) = find_child(subprogram_node, "function_specification") {
+        spec_node = Some(specification_node);
+        if let Some(name_node) = specification_node.child_by_field_name("function") {
+            name = text[name_node.byte_range()].to_string();
+        }
+    } else if let Some(specification_node) = find_child(subprogram_node, "procedure_specification")
+    {
+        if let Some(name_node) = specification_node.child_by_field_name("procedure") {
+            name = text[name_node.byte_range()].to_string();
+        }
+        spec_node = Some(specification_node);
+        scope_kind = ScopeKind::Procedure;
+    }
+    let mut tree = ScopeTree::new(scope_kind, &subprogram_node);
+    tree.name = Some(name);
+    if let Some(spec_node) = spec_node {
+        tree.declarations
+            .extend(extract_parameters_from_subprogram(spec_node, text));
+    }
+
+    if let Some(header_node) = find_child(subprogram_node, "subprogram_head") {
+        tree.declarations.extend(extract_declaration_from_node(
+            header_node,
+            text,
+            RegionType::Sequential,
+            &mut tree.local_usage,
+        ))
+    }
+    for child in subprogram_node.children(&mut subprogram_node.walk()) {
+        if child.kind() == "sequential_block" {
+            collect_identifiers_recursive(
+                child,
+                text,
+                UsageContext::Behavioral,
+                &mut tree.local_usage,
+            );
+            break;
+        }
+    }
+
+    tree
 }
 
 /// Create a declaration from a type node, can be a procedure or a function
@@ -868,6 +977,7 @@ fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
         type_info: TypeInfo::new(),
         default_value: None,
         doc_comment,
+        parameters: None,
     }
 }
 
@@ -891,6 +1001,7 @@ fn create_subtype_declaration_from_node(node: Node, text: &str) -> Declaration {
         name,
         decl_type: DeclType::Subtype,
         range: node_to_range(node),
+        parameters: None,
         selection_range,
         type_info: TypeInfo::new(),
         default_value: None,
@@ -972,6 +1083,79 @@ fn extract_declaration_from_node(
                 collect_identifier_from_decl(&var_decl, text, references);
             }
         }
+        // There are no specific addition in the packages for now. Shared
+        // variables are a thing but are voluntarily left out for now.
+        RegionType::Implementation => {}
     }
     declarations
+}
+
+/// Extract parameters from the specification
+///
+/// Expects the node to be function_specification or procedure_specification
+///
+/// # Arguments
+/// `node` - The specification node
+/// `text` - The full source text
+///
+/// # Returns
+/// A vector with all the parameters
+fn extract_parameters_from_subprogram(node: Node, text: &str) -> Vec<Declaration> {
+    // Declaration {
+    //     name: "data",
+    //     decl_type: DeclType::Parameter(PortDirection::In),
+    //     type_info: /* std_logic_vector */,
+    //     parameters: None,
+    //     ...
+    // }
+    let mut params = Vec::new();
+    if let Some(interface_list_node) =
+        navigate_path(node, &["parameter_list_specification", "interface_list"])
+    {
+        // There are 4 possible cases for subprogram parameters
+        // interface_constant_declaration
+        // interface_signal_declaration
+        // interface_variable_declaration
+        // interface_declaration
+        // The first 3 are only valid for procedures. The 4th one is valid for both.
+        // When getting a simple interface_declaration, we need to parse the internal
+        // to define what kind a parameter we have.
+        for child in interface_list_node.children(&mut interface_list_node.walk()) {
+            let direction = extract_direction_from_interface(child, text);
+            let names = extract_signal_names(child, text);
+            let doc_comment = extract_doc_comment(child, text);
+            let default_value = extract_default_value(child, text);
+            let param_type: (PortDirection, Option<ParameterClass>) = match child.kind() {
+                "interface_constant_declaration" => {
+                    (PortDirection::In, Some(ParameterClass::Constant))
+                }
+                "interface_variable_declaration" => (direction, Some(ParameterClass::Variable)),
+                "interface_signal_declaration" => (direction, Some(ParameterClass::Signal)),
+                "interface_file_declaration" => (direction, Some(ParameterClass::File)),
+                "interface_declaration" => {
+                    let class = if direction == PortDirection::In {
+                        ParameterClass::Constant
+                    } else {
+                        ParameterClass::Variable
+                    };
+                    (direction, Some(class))
+                }
+                _ => continue,
+            };
+            for (name, range) in names {
+                params.push(Declaration {
+                    name,
+                    decl_type: DeclType::Parameter(param_type.0, param_type.1),
+                    range: node_to_range(child),
+                    selection_range: range,
+                    type_info: extract_type_info(&child, text),
+                    default_value: default_value.clone(),
+                    doc_comment: doc_comment.clone(),
+                    parameters: None,
+                })
+            }
+        }
+    }
+
+    params
 }

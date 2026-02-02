@@ -1019,3 +1019,217 @@ end package;
     assert!(names.contains(&"t_data"));
     assert!(names.contains(&"t_index"));
 }
+
+// =========================================================================
+// Package body scope tree tests
+// =========================================================================
+
+#[test]
+fn test_package_body_scope_tree_name() {
+    let code = r#"
+package body my_pkg is
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    assert_eq!(analysis.scope_trees.len(), 1);
+    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(pkg_body.name, Some("my_pkg".to_string()));
+    assert!(matches!(pkg_body.kind, ScopeKind::PackageBody));
+}
+
+#[test]
+fn test_package_body_links_to_header() {
+    let code = r#"
+package body my_pkg is
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(pkg_body.package, Some("my_pkg".to_string()));
+}
+
+#[test]
+fn test_package_body_private_constant() {
+    let code = r#"
+package body my_pkg is
+    constant C_INTERNAL : integer := 42;
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(pkg_body.declarations.len(), 1);
+
+    let constant = &pkg_body.declarations[0];
+    assert_eq!(constant.name, "C_INTERNAL");
+    assert!(matches!(constant.decl_type, DeclType::Constant));
+}
+
+#[test]
+fn test_package_body_private_type() {
+    let code = r#"
+package body my_pkg is
+    type t_internal_state is (INIT, WORK, DONE);
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(pkg_body.declarations.len(), 1);
+
+    let type_decl = &pkg_body.declarations[0];
+    assert_eq!(type_decl.name, "t_internal_state");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+}
+
+#[test]
+fn test_package_body_function_implementation() {
+    let code = r#"
+package body my_pkg is
+    function calc_parity(data : std_logic_vector) return std_logic is
+        variable result : std_logic := '0';
+    begin
+        return result;
+    end function;
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    // Function implementation should create a child scope
+    assert_eq!(pkg_body.children.len(), 1);
+
+    let func_scope = &pkg_body.children[0];
+    assert!(matches!(func_scope.kind, ScopeKind::Function));
+    assert_eq!(func_scope.name, Some("calc_parity".to_string()));
+}
+
+#[test]
+fn test_package_body_procedure_implementation() {
+    let code = r#"
+package body my_pkg is
+    procedure do_reset(signal rst : out std_logic) is
+    begin
+        rst <= '1';
+    end procedure;
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(pkg_body.children.len(), 1);
+
+    let proc_scope = &pkg_body.children[0];
+    assert!(matches!(proc_scope.kind, ScopeKind::Procedure));
+    assert_eq!(proc_scope.name, Some("do_reset".to_string()));
+}
+
+#[test]
+fn test_package_body_function_with_variables() {
+    let code = r#"
+package body my_pkg is
+    function add_one(x : integer) return integer is
+        variable temp : integer;
+    begin
+        temp := x + 1;
+        return temp;
+    end function;
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    let func_scope = &pkg_body.children[0];
+
+    // Function should have parameter and local variable
+    let var = func_scope
+        .declarations
+        .iter()
+        .find(|d| d.name == "temp")
+        .expect("Variable temp not found");
+    assert!(matches!(var.decl_type, DeclType::Variable));
+}
+
+#[test]
+fn test_package_body_mixed_declarations() {
+    let code = r#"
+package body my_pkg is
+    constant C_PRIVATE : integer := 100;
+    type t_private is (A, B, C);
+
+    function helper(x : integer) return integer is
+    begin
+        return x;
+    end function;
+
+    procedure init is
+    begin
+        null;
+    end procedure;
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+
+    // Top-level declarations: constant + type
+    assert_eq!(pkg_body.declarations.len(), 2);
+
+    // Child scopes: function + procedure
+    assert_eq!(pkg_body.children.len(), 2);
+}
+
+#[test]
+fn test_package_body_multiple_functions() {
+    let code = r#"
+package body my_pkg is
+    function func_a return integer is
+    begin
+        return 1;
+    end function;
+
+    function func_b return integer is
+    begin
+        return 2;
+    end function;
+
+    function func_c return integer is
+    begin
+        return 3;
+    end function;
+end package body;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(pkg_body.children.len(), 3);
+
+    let names: Vec<&str> = pkg_body
+        .children
+        .iter()
+        .filter_map(|c| c.name.as_deref())
+        .collect();
+    assert!(names.contains(&"func_a"));
+    assert!(names.contains(&"func_b"));
+    assert!(names.contains(&"func_c"));
+}
