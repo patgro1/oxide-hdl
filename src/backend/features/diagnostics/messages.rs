@@ -30,6 +30,7 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
         message: match decl.decl_type {
             DeclType::Generic => format!("Unused generic '{}'", decl.name),
             DeclType::Port(_) => format!("Unused port '{}'", decl.name),
+            DeclType::Parameter(_, _) => format!("Unused parameter '{}'", decl.name),
             DeclType::Variable => format!("Unused variable '{}'", decl.name),
             DeclType::Constant => format!("Unused constant '{}'", decl.name),
             DeclType::Signal => format!("Unused signal '{}'", decl.name),

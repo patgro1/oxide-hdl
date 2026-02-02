@@ -183,6 +183,8 @@ pub enum DeclType {
     Generic,
     /// Entity port with direction
     Port(PortDirection),
+    /// Subprogram parameter
+    Parameter(PortDirection, Option<ParameterClass>),
     /// Constant declaration (value cannot change)
     Constant,
     /// Signal declaration (architecture/generate/block level)
@@ -204,6 +206,7 @@ impl fmt::Display for DeclType {
         let s = match self {
             DeclType::Generic => "generic",
             DeclType::Port(direction) => &format!("port({})", direction),
+            DeclType::Parameter(direction, _) => &format!("parameter({})", direction),
             DeclType::Constant => "constant",
             DeclType::Signal => "signal",
             DeclType::Variable => "variable",
@@ -221,6 +224,7 @@ impl From<DeclType> for SymbolKind {
         match kind {
             DeclType::Generic => SymbolKind::CONSTANT,
             DeclType::Port(_) => SymbolKind::FIELD,
+            DeclType::Parameter(_, _) => SymbolKind::FIELD,
             DeclType::Constant => SymbolKind::CONSTANT,
             DeclType::Variable => SymbolKind::VARIABLE,
             DeclType::Signal => SymbolKind::VARIABLE,
@@ -235,7 +239,7 @@ impl From<DeclType> for SymbolKind {
 /// Port Direction
 ///
 /// Distinguishes between mode indications
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortDirection {
     /// Input Port
     In,
@@ -280,6 +284,12 @@ pub enum ScopeKind {
     Block,
     /// Package scope - can declare components, functions, procedure, types, constants subtypes
     Package,
+    /// Package implementation - can declare functions, procedure, types and constants
+    PackageBody,
+    /// Function scope - can declare variables and constants
+    Function,
+    /// Procedure scope - can declare variables and constants
+    Procedure,
 }
 
 impl fmt::Display for ScopeKind {
@@ -291,6 +301,9 @@ impl fmt::Display for ScopeKind {
             ScopeKind::Generate => "generate",
             ScopeKind::Block => "block",
             ScopeKind::Package => "package",
+            ScopeKind::PackageBody => "package body",
+            ScopeKind::Function => "function",
+            ScopeKind::Procedure => "procedure",
         };
         write!(f, "{}", s)
     }
@@ -305,6 +318,9 @@ impl From<ScopeKind> for SymbolKind {
             ScopeKind::Generate => SymbolKind::NAMESPACE,
             ScopeKind::Block => SymbolKind::NAMESPACE,
             ScopeKind::Package => SymbolKind::PACKAGE,
+            ScopeKind::PackageBody => SymbolKind::PACKAGE,
+            ScopeKind::Function => SymbolKind::FUNCTION,
+            ScopeKind::Procedure => SymbolKind::FUNCTION,
         }
     }
 }
@@ -357,6 +373,8 @@ pub struct Declaration {
     pub name: String,
     /// Type of declaration
     pub decl_type: DeclType,
+    /// Parameters stored for function and procedures
+    pub parameters: Option<Vec<Declaration>>,
     /// Source location information
     pub range: Range,
     /// Range of the name itself for jumps
@@ -367,6 +385,19 @@ pub struct Declaration {
     pub default_value: Option<String>,
     // Doc string
     pub doc_comment: Option<String>,
+}
+
+/// Parameter class to differentiate procedure parameter
+#[derive(Debug, Clone, Copy)]
+pub enum ParameterClass {
+    /// Has to be explicit, is the default for inout
+    Variable,
+    /// Signals has to be explicit all the time
+    Signal,
+    /// Constant are implicit and default for in
+    Constant,
+    /// File specifier
+    File,
 }
 
 /// Type information for the VHDL declaration

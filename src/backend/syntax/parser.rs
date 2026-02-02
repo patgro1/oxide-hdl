@@ -2,7 +2,7 @@
 
 use crate::analysis::{
     Analysis, OxideSymbolKind, ParseLevel, Symbol, build_arch_scope_tree, build_entity_scope_tree,
-    build_package_scope_tree,
+    build_package_body_scope_tree, build_package_scope_tree,
 };
 use crate::utils::node_to_range;
 use tree_sitter::{Node, TreeCursor};
@@ -55,6 +55,10 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
                             .package_scope_trees
                             .insert(name.clone(), scope_tree);
                     }
+                }
+                if child.kind() == "package_definition" {
+                    let scope_tree = build_package_body_scope_tree(child, text);
+                    analysis.scope_trees.push(scope_tree)
                 }
             }
         }

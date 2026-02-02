@@ -30,11 +30,14 @@ pub struct ScopeTree {
     /// Range where the Scope is
     pub range: Range,
 
-    // Name of the current scope (label, entity name, arch name)
+    /// Name of the current scope (label, entity name, arch name)
     pub name: Option<String>,
 
-    // Entity attached to the current scope tree
+    /// Entity attached to the current scope tree
     pub entity: Option<String>,
+
+    /// Package head attached to the current scope tree
+    pub package: Option<String>,
 
     /// Declarations made in this scope
     pub declarations: Vec<Declaration>,
@@ -45,7 +48,6 @@ pub struct ScopeTree {
     /// Child scopes nested within this scope
     pub children: Vec<ScopeTree>,
 
-    /// Flat map of declarations with their index in the declaration vector.
     /// Using lower case because VHDL is case insensitive
     pub decl_index: HashMap<String, usize>,
 
@@ -67,6 +69,8 @@ pub enum RegionType {
     Concurrent,
     /// Process, Function, Procedure
     Sequential,
+    // Package body deserve a special case
+    Implementation,
 }
 
 impl ScopeTree {
@@ -80,6 +84,7 @@ impl ScopeTree {
             kind,
             name: None,
             entity: None,
+            package: None,
             range: node_to_range(*node),
             declarations: Vec::new(),
             local_usage: HashSet::new(),
@@ -146,12 +151,12 @@ impl ScopeTree {
                 .local_usage
                 .iter()
                 .any(|u| u.name.to_lowercase() == decl_name_lower),
-            DeclType::Port(_) | DeclType::Signal | DeclType::Variable => {
-                self.local_usage.iter().any(|u| {
-                    u.name.to_lowercase() == decl_name_lower
-                        && u.context == UsageContext::Behavioral
-                })
-            }
+            DeclType::Parameter(_, _)
+            | DeclType::Port(_)
+            | DeclType::Signal
+            | DeclType::Variable => self.local_usage.iter().any(|u| {
+                u.name.to_lowercase() == decl_name_lower && u.context == UsageContext::Behavioral
+            }),
             DeclType::Subtype | DeclType::Function | DeclType::Type | DeclType::Procedure => true,
         };
         if used_locally {
@@ -179,25 +184,30 @@ impl ScopeTree {
     ///
     /// # Arguments
     /// `target` - Range we want to get visible declarations from
-    /// `entity` - Entity attached to the current scope tree
+    /// `header` - Header attached to the current scope tree
     ///
     /// # Returns
     /// Vector of all visible declarations for the range
     pub fn collect_visible_declarations(
         &self,
         target: &Range,
-        entity: Option<&ScopeTree>,
+        header: Option<&ScopeTree>,
     ) -> Option<Vec<Declaration>> {
         // Breaking recursion if we are the target
+        let mut decls = self.collect_visible_internal(target)?;
+        if let Some(header) = header {
+            decls.extend(header.declarations.clone());
+        }
+        Some(decls)
+    }
+
+    fn collect_visible_internal(&self, target: &Range) -> Option<Vec<Declaration>> {
         if self.range == *target {
             return Some(self.declarations.clone());
         }
         for child in &self.children {
-            if let Some(mut child_decl) = child.collect_visible_declarations(target, None) {
+            if let Some(mut child_decl) = child.collect_visible_internal(target) {
                 child_decl.extend(self.declarations.clone());
-                if let Some(entity) = entity {
-                    child_decl.extend(entity.declarations.clone());
-                }
                 return Some(child_decl);
             }
         }

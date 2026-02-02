@@ -587,6 +587,7 @@ pub mod test_utils {
             type_info: TypeInfo::new(),
             default_value: None,
             doc_comment: None,
+            parameters: None,
         }
     }
 
@@ -600,6 +601,7 @@ pub mod test_utils {
             type_info: TypeInfo::new(),
             default_value: None,
             doc_comment: None,
+            parameters: None,
         }
     }
 
@@ -610,6 +612,7 @@ pub mod test_utils {
             range,
             name: None,
             entity: None,
+            package: None,
             declarations,
             local_usage: HashSet::new(),
             children: vec![],

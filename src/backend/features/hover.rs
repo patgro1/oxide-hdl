@@ -126,6 +126,12 @@ pub fn format_declaration_hover(decl: &Declaration) -> String {
         DeclType::Port(direction) => {
             md.push_str(&format!("```vhdl\nport {} : {} ", &decl.name, direction));
         }
+        DeclType::Parameter(direction, _) => {
+            md.push_str(&format!(
+                "```vhdl\nparameter {} : {} ",
+                &decl.name, direction
+            ));
+        }
         DeclType::Generic => {
             md.push_str(&format!("```vhdl\ngeneric {} : ", &decl.name));
         }
