@@ -42,6 +42,9 @@ pub struct Analysis {
     /// Contains the location within the scope trees of all symbols
     pub symbols_index: HashMap<String, DeclarationRef>,
 
+    /// List of all the use clause found in the file
+    pub use_clauses: Vec<UseClause>,
+
     /// How the file was parsed
     pub parse_level: ParseLevel,
 
@@ -65,6 +68,7 @@ impl Analysis {
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
             package_scope_trees: HashMap::new(),
+            use_clauses: Vec::new(),
         }
     }
 

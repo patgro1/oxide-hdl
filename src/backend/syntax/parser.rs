@@ -1,8 +1,14 @@
 // src/backend/syntax/parser.rs
 
-use crate::analysis::{
-    Analysis, ParseLevel, build_arch_scope_tree, build_entity_scope_tree,
-    build_package_body_scope_tree, build_package_scope_tree,
+use crate::{
+    analysis::{
+        Analysis, ParseLevel, UseClause, build_arch_scope_tree, build_entity_scope_tree,
+        build_package_body_scope_tree, build_package_scope_tree,
+    },
+    utils::{
+        ast::{collect_children, find_child},
+        node_to_range,
+    },
 };
 use tree_sitter::Node;
 
@@ -31,6 +37,11 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     for node in root_node.children(&mut cursor) {
         if node.kind() == "design_unit" {
             for child in node.children(&mut node.walk()) {
+                if child.kind() == "use_clause" {
+                    analysis
+                        .use_clauses
+                        .extend(extract_imported_packages_from_node(child, text));
+                }
                 if child.kind() == "entity_declaration" {
                     let scope_tree = build_entity_scope_tree(child, text);
                     if let Some(ref name) = scope_tree.name {
@@ -56,6 +67,44 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
             }
         }
     }
-
     analysis
+}
+
+/// This function is used to extract all imported packages from a single use clause
+///
+/// # Arguments
+/// * `node` - The use clause node
+/// * `text` - Full source text
+///
+/// # Returns
+/// A vector of UseClause containing all the imports
+fn extract_imported_packages_from_node(node: Node, text: &str) -> Vec<UseClause> {
+    let mut packages = Vec::new();
+    if let Some(use_list) = find_child(node, "selected_name_list") {
+        for import in collect_children(use_list, "selected_name") {
+            if let Some(library_node) = import.child_by_field_name("library")
+                && let Some(package_node) = import.child_by_field_name("package")
+            {
+                if find_child(import, "ALL").is_some() {
+                    packages.push(UseClause {
+                        range: node_to_range(import),
+                        library: text[library_node.byte_range()].to_string(),
+                        name: text[package_node.byte_range()].to_string(),
+                        all_import: true,
+                        imported_symbol: None,
+                    });
+                } else if let Some(name_node) = import.named_child(import.named_child_count() - 1) {
+                    packages.push(UseClause {
+                        range: node_to_range(import),
+                        library: text[library_node.byte_range()].to_string(),
+                        name: text[package_node.byte_range()].to_string(),
+                        all_import: false,
+                        imported_symbol: Some(text[name_node.byte_range()].to_string()),
+                    })
+                }
+            }
+        }
+    }
+
+    packages
 }

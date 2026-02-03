@@ -435,3 +435,18 @@ pub struct Instance {
     /// Range of the label for jumps
     pub selection_range: Range,
 }
+
+/// Structure representing a use clause for package extractions
+#[derive(Debug, Clone)]
+pub struct UseClause {
+    /// Import location
+    pub range: Range,
+    /// Library containing the package
+    pub library: String,
+    /// Package Name
+    pub name: String,
+    /// Full import flag
+    pub all_import: bool,
+    /// Symbol imported from the package (if not all)
+    pub imported_symbol: Option<String>,
+}
