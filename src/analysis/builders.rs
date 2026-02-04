@@ -9,11 +9,10 @@ use crate::{
         ScopeTree, TypeInfo, Usage, UsageContext, collect_identifiers_recursive,
     },
     utils::{
-        ast::{collect_children, collect_descendants, find_child, find_descendant, navigate_path},
+        ast::{collect_descendants, find_child, find_descendant, navigate_path},
         node_to_range,
     },
 };
-use clap::Subcommand;
 use std::collections::HashSet;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;
@@ -1026,6 +1025,47 @@ fn create_subtype_declaration_from_node(node: Node, text: &str) -> Declaration {
     }
 }
 
+/// Create a component declaration node from a component_declaration
+///
+/// # Arguments
+/// `node` - component_declaration node
+/// `text` - Full source text
+///
+/// # Returns
+/// Declaration for the component
+fn create_component_declaration_from_node(node: Node, text: &str) -> Declaration {
+    let doc_comment = extract_doc_comment(node, text);
+    let mut selection_range = node_to_range(node);
+    let mut name = "".to_string();
+
+    if let Some(id_node) = find_child(node, "identifier") {
+        name = text[id_node.byte_range()].to_string();
+        selection_range = node_to_range(id_node);
+    }
+
+    let mut parameters = Vec::new();
+
+    if let Some(body_node) = find_child(node, "component_body") {
+        if let Some(generic_clause) = find_child(body_node, "generic_clause") {
+            parameters.extend(extract_decl_from_generic_clause(generic_clause, text));
+        }
+        if let Some(port_clause) = find_child(body_node, "port_clause") {
+            parameters.extend(extract_decl_from_port_clause(port_clause, text));
+        }
+    }
+
+    Declaration {
+        name,
+        decl_type: DeclType::Component,
+        range: node_to_range(node),
+        selection_range,
+        type_info: TypeInfo::new(),
+        default_value: None,
+        doc_comment,
+        parameters: Some(parameters),
+    }
+}
+
 /// Extract all the declarations from a node according to its region type and usages
 ///
 /// Concurrent region can contain signals, components, types, subtypes, functions, procedures,
@@ -1078,6 +1118,9 @@ fn extract_declaration_from_node(
                 DeclType::Procedure,
             ));
         }
+    }
+    for comp_decl in collect_descendants(node, "component_declaration") {
+        declarations.push(create_component_declaration_from_node(comp_decl, text));
     }
     match region_type {
         RegionType::Concurrent => {

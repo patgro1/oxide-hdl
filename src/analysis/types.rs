@@ -179,6 +179,8 @@ pub enum ParseLevel {
 /// more specific diagnostic messages.
 #[derive(Debug, Clone, Copy)]
 pub enum DeclType {
+    /// Component Declaration
+    Component,
     /// Entity Generic
     Generic,
     /// Entity port with direction
@@ -204,6 +206,7 @@ pub enum DeclType {
 impl fmt::Display for DeclType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match self {
+            DeclType::Component => "component",
             DeclType::Generic => "generic",
             DeclType::Port(direction) => &format!("port({})", direction),
             DeclType::Parameter(direction, _) => &format!("parameter({})", direction),
@@ -222,6 +225,7 @@ impl fmt::Display for DeclType {
 impl From<DeclType> for SymbolKind {
     fn from(kind: DeclType) -> Self {
         match kind {
+            DeclType::Component => SymbolKind::INTERFACE,
             DeclType::Generic => SymbolKind::CONSTANT,
             DeclType::Port(_) => SymbolKind::FIELD,
             DeclType::Parameter(_, _) => SymbolKind::FIELD,
@@ -232,6 +236,24 @@ impl From<DeclType> for SymbolKind {
             DeclType::Subtype => SymbolKind::STRUCT,
             DeclType::Function => SymbolKind::FUNCTION,
             DeclType::Procedure => SymbolKind::FUNCTION,
+        }
+    }
+}
+
+impl From<DeclType> for OxideSymbolKind {
+    fn from(kind: DeclType) -> Self {
+        match kind {
+            DeclType::Component => OxideSymbolKind::Component,
+            DeclType::Generic => OxideSymbolKind::Generic,
+            DeclType::Port(_) => OxideSymbolKind::Port,
+            DeclType::Parameter(_, _) => OxideSymbolKind::Port,
+            DeclType::Constant => OxideSymbolKind::Constant,
+            DeclType::Variable => OxideSymbolKind::Variable,
+            DeclType::Signal => OxideSymbolKind::Signal,
+            DeclType::Type => OxideSymbolKind::Struct,
+            DeclType::Subtype => OxideSymbolKind::Struct,
+            DeclType::Function => OxideSymbolKind::Function,
+            DeclType::Procedure => OxideSymbolKind::Function,
         }
     }
 }

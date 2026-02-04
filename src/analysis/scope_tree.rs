@@ -157,7 +157,11 @@ impl ScopeTree {
             | DeclType::Variable => self.local_usage.iter().any(|u| {
                 u.name.to_lowercase() == decl_name_lower && u.context == UsageContext::Behavioral
             }),
-            DeclType::Subtype | DeclType::Function | DeclType::Type | DeclType::Procedure => true,
+            DeclType::Subtype
+            | DeclType::Function
+            | DeclType::Type
+            | DeclType::Procedure
+            | DeclType::Component => true,
         };
         if used_locally {
             return true;
