@@ -1,13 +1,15 @@
 // src/backend/workspace.rs
 
-use crate::analysis::{Analysis, ParseLevel};
+use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel};
 use crate::backend::AnalysisMap;
 use crate::backend::syntax::{parser, scanner};
 use crate::config::OxideConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::io::Join;
 use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::task::JoinSet;
 use tower_lsp::Client;
 use tower_lsp::lsp_types::Diagnostic;
 use tower_lsp::lsp_types::{MessageType, Url};
@@ -48,16 +50,12 @@ pub async fn index_workspace(
         .log_message(MessageType::INFO, "Starting indexing...")
         .await;
 
-    let max_concurrency = 16;
-    let semaphone = Arc::new(Semaphore::new(max_concurrency));
     let matcher = config.build_globset();
-
     let paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
-            // Filter 1 : extension
             if let Some(ext) = e.path().extension() {
                 let ext_str = ext.to_string_lossy().to_string();
                 if !config.extensions.contains(&ext_str) {
@@ -66,31 +64,38 @@ pub async fn index_workspace(
             } else {
                 return false;
             }
-
-            // Filter 2: Ignore list
             if let Ok(relative) = e.path().strip_prefix(&root_path)
                 && matcher.is_match(relative)
             {
                 return false;
             }
-
             true
         })
         .map(|e| e.path().to_path_buf())
         .collect();
-    let mut handles = Vec::new();
+    client
+        .log_message(
+            MessageType::WARNING,
+            format!("Found {} VHDL files to index", paths.len()),
+        )
+        .await;
+
+    let max_concurrency = 16;
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let mut join_set = JoinSet::new();
 
     for path in paths {
+        let sem_clone = semaphore.clone();
         let path_uri = match Url::from_file_path(&path) {
             Ok(u) => u,
             Err(_) => continue,
         };
-        let sem_clone = semaphone.clone();
-        let handle = tokio::task::spawn(async move {
+        join_set.spawn(async move {
             let _permit = sem_clone.acquire_owned().await.unwrap();
             tokio::task::spawn_blocking(move || {
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
                 let symbols = scanner::scan_fast(&text);
+
                 let mut analysis = Analysis::new();
                 for s in symbols {
                     analysis.symbols.insert(s.name.clone().to_lowercase(), s);
@@ -100,34 +105,117 @@ pub async fn index_workspace(
             .await
             .unwrap()
         });
-        handles.push(handle);
     }
-    for handle in handles {
-        if let Ok((uri, analysis)) = handle.await {
-            let mut map = analysis_map.write().await;
-            // NOTE:We need to check if better data is available to prevent
-            // a race condition where we open a file, it gets parse and then
-            // the fast indexer reaches that file and overwrite good data
-            // with shallow data.
-            if let Some(exisiting_analysis) = map.get(&uri) {
-                let existing_is_deep = exisiting_analysis
-                    .symbols
-                    .values()
-                    .any(|s| !s.children.is_empty());
-                if existing_is_deep {
-                    continue;
-                }
+
+    let mut batch = Vec::with_capacity(50);
+    while let Some(res) = join_set.join_next().await {
+        if let Ok((uri, analysis)) = res {
+            batch.push((uri, analysis));
+            if batch.len() >= 50 {
+                insert_batch(&analysis_map, &mut batch).await;
             }
-            map.insert(uri, analysis);
         }
     }
+
+    if !batch.is_empty() {
+        insert_batch(&analysis_map, &mut batch).await;
+    }
+    // let max_concurrency = 16;
+    // let semaphone = Arc::new(Semaphore::new(max_concurrency));
+    // let matcher = config.build_globset();
+    //
+    // let paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
+    //     .into_iter()
+    //     .filter_map(|e| e.ok())
+    //     .filter(|e| e.file_type().is_file())
+    //     .filter(|e| {
+    //         // Filter 1 : extension
+    //         if let Some(ext) = e.path().extension() {
+    //             let ext_str = ext.to_string_lossy().to_string();
+    //             if !config.extensions.contains(&ext_str) {
+    //                 return false;
+    //             }
+    //         } else {
+    //             return false;
+    //         }
+    //
+    //         // Filter 2: Ignore list
+    //         if let Ok(relative) = e.path().strip_prefix(&root_path)
+    //             && matcher.is_match(relative)
+    //         {
+    //             return false;
+    //         }
+    //
+    //         true
+    //     })
+    //     .map(|e| e.path().to_path_buf())
+    //     .collect();
+    // let mut handles = Vec::new();
+    //
+    // for path in paths {
+    //     let path_uri = match Url::from_file_path(&path) {
+    //         Ok(u) => u,
+    //         Err(_) => continue,
+    //     };
+    //     let sem_clone = semaphone.clone();
+    //     let handle = tokio::task::spawn(async move {
+    //         let _permit = sem_clone.acquire_owned().await.unwrap();
+    //         tokio::task::spawn_blocking(move || {
+    //             let text = std::fs::read_to_string(&path).unwrap_or_default();
+    //             let symbols = scanner::scan_fast(&text);
+    //             let mut analysis = Analysis::new();
+    //             for s in symbols {
+    //                 analysis.symbols.insert(s.name.clone().to_lowercase(), s);
+    //             }
+    //             (path_uri, analysis)
+    //         })
+    //         .await
+    //         .unwrap()
+    //     });
+    //     handles.push(handle);
+    // }
+    // for handle in handles {
+    //     if let Ok((uri, analysis)) = handle.await {
+    //         let mut map = analysis_map.write().await;
+    //         // NOTE:We need to check if better data is available to prevent
+    //         // a race condition where we open a file, it gets parse and then
+    //         // the fast indexer reaches that file and overwrite good data
+    //         // with shallow data.
+    //         if let Some(exisiting_analysis) = map.get(&uri) {
+    //             let existing_is_deep = exisiting_analysis
+    //                 .symbols
+    //                 .values()
+    //                 .any(|s| !s.children.is_empty());
+    //             if existing_is_deep {
+    //                 continue;
+    //             }
+    //         }
+    //         map.insert(uri, analysis);
+    //     }
+    // }
     let duration = start.elapsed();
     client
         .log_message(
-            MessageType::INFO,
+            MessageType::WARNING,
             format!("Inxedx workspace in {:?}", duration),
         )
         .await;
+}
+
+async fn insert_batch(
+    map_lock: &Arc<RwLock<HashMap<Url, Analysis>>>,
+    batch: &mut Vec<(Url, Analysis)>,
+) {
+    let mut map = map_lock.write().await;
+    for (uri, analysis) in batch.drain(..) {
+        if let Some(existing) = map.get(&uri) {
+            let existing_is_deep = existing.symbols.values().any(|s| !s.children.is_empty());
+            if existing_is_deep {
+                continue;
+            }
+        }
+        map.insert(uri, analysis);
+    }
 }
 
 /// Parses a single document using the full Tree-sitter grammar and updates the global map.
@@ -144,61 +232,136 @@ pub async fn index_workspace(
 ///
 /// # Arguments
 ///
+/// * `client` - The LSP client handle used to log progress and errors.
 /// * `analysis_map` - The global symbol table to update with the new data.
 /// * `parser` - The shared, mutex-protected Tree-sitter parser instance.
 /// * `uri` - The URI of the file being parsed.
 /// * `text` - The full content of the file as an owned String.
 pub async fn parse_and_update_document(
+    client: &Client,
     analysis_map: Arc<RwLock<AnalysisMap>>,
     parser: Arc<Mutex<crate::backend::Parser>>,
     uri: &Url,
     text: String,
 ) -> Vec<Diagnostic> {
     let uri = uri.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
-        let thread_result = builder
-            .spawn(move || {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let tree = {
-                        let mut parser = parser.blocking_lock();
-                        let language = unsafe { crate::tree_sitter_vhdl() };
-                        let _ = parser.set_language(&language);
-                        parser.parse(&text, None)
-                    };
-                    match tree {
-                        Some(t) => {
-                            let root = t.root_node();
-                            let analysis = parser::extract_document_symbols(&text, root);
+    let text_for_diag = text.clone();
+    let parser_for_diag = parser.clone();
 
-                            let diagnostics =
-                                crate::backend::features::diagnostics::collect_all_diagnostics(
-                                    root, &analysis, &text,
-                                );
-
-                            Some(Box::new((analysis, diagnostics)))
+    // Phase 1: Parse current file, extract analysis and needed packages
+    let phase1_result = {
+        let parser = parser.clone();
+        tokio::task::spawn_blocking(move || {
+            let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
+            let thread_result = builder
+                .spawn(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let tree = {
+                            let mut parser = parser.blocking_lock();
+                            let language = unsafe { crate::tree_sitter_vhdl() };
+                            let _ = parser.set_language(&language);
+                            parser.parse(&text, None)
+                        };
+                        match tree {
+                            Some(t) => {
+                                let root = t.root_node();
+                                let analysis = parser::extract_document_symbols(&text, root);
+                                let needed_packages: Vec<String> = analysis
+                                    .use_clauses
+                                    .iter()
+                                    .map(|u| u.name.clone())
+                                    .collect();
+                                Some((analysis, needed_packages))
+                            }
+                            None => None,
                         }
-                        None => None,
-                    }
-                }))
-            })
-            .unwrap()
-            .join();
-        if let Ok(Ok(Some(boxed_result))) = thread_result {
-            let (analysis, diagnostics) = *boxed_result;
-            (Some(analysis), diagnostics)
-        } else {
-            (None, Vec::new())
+                    }))
+                })
+                .unwrap()
+                .join();
+            match thread_result {
+                Ok(Ok(Some(result))) => Some(result),
+                _ => None,
+            }
+        })
+        .await
+        .unwrap()
+    };
+
+    let (analysis, needed_packages) = match phase1_result {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+
+    // Phase 2: JIT parse any missing packages
+    for pkg_name in &needed_packages {
+        let pkg_uri = {
+            let map = analysis_map.read().await;
+            find_package_file(pkg_name, &map)
+        };
+        if let Some(pkg_uri) = pkg_uri {
+            ensure_fully_parsed(client, &analysis_map, &parser_for_diag, &pkg_uri).await;
         }
-    })
-    .await
-    .unwrap();
-    let (analysis_opt, diagnostics) = result;
-    if let Some(analysis) = analysis_opt {
+    }
+
+    // Phase 3: Run diagnostics (now with access to imported packages)
+    let diagnostics = {
+        let analysis_for_diag = analysis.clone();
+        tokio::task::spawn_blocking(move || {
+            let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
+            let thread_result = builder
+                .spawn(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let tree = {
+                            let mut parser = parser_for_diag.blocking_lock();
+                            let language = unsafe { crate::tree_sitter_vhdl() };
+                            let _ = parser.set_language(&language);
+                            parser.parse(&text_for_diag, None)
+                        };
+                        match tree {
+                            Some(t) => {
+                                let root = t.root_node();
+                                crate::backend::features::diagnostics::collect_all_diagnostics(
+                                    root,
+                                    &analysis_for_diag,
+                                    &text_for_diag,
+                                )
+                            }
+                            None => Vec::new(),
+                        }
+                    }))
+                })
+                .unwrap()
+                .join();
+            match thread_result {
+                Ok(Ok(diags)) => diags,
+                _ => Vec::new(),
+            }
+        })
+        .await
+        .unwrap()
+    };
+
+    // Phase 4: Store analysis in map
+    {
         let mut map = analysis_map.write().await;
         map.insert(uri.clone(), analysis);
     }
+
     diagnostics
+}
+
+/// Helper to find which file contains a package by name
+fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
+    let name_lc = name.to_lowercase();
+    for (uri, analysis) in map.iter() {
+        if let Some(symbol) = analysis.symbols.get(&name_lc)
+            && symbol.kind == OxideSymbolKind::Package
+        {
+            return Some(uri.clone());
+        }
+    }
+    None
 }
 
 /// Checks if a file has only been Shallow-Indexed and performs a JIT upgrade if needed.
@@ -272,12 +435,15 @@ pub async fn ensure_fully_parsed(
     .await
     .unwrap();
     if let Some(analysis) = result {
-        if analysis.symbols.is_empty() {
+        if analysis.package_scope_trees.is_empty()
+            && analysis.entity_scope_trees.is_empty()
+            && analysis.scope_trees.is_empty()
+        {
             client
                 .log_message(
                     MessageType::WARNING,
                     format!(
-                        "JIT Parse returned 0 symbols for {}. Keeping existing index",
+                        "JIT Parse returned no scope trees for {}. Keeping existing index",
                         uri
                     ),
                 )
@@ -287,11 +453,7 @@ pub async fn ensure_fully_parsed(
         client
             .log_message(
                 MessageType::INFO,
-                format!(
-                    "JIT Parse returned {} symbols for {}. Updating index.",
-                    analysis.symbols.len(),
-                    uri
-                ),
+                format!("JIT Parse completed for {}. Updating index.", uri),
             )
             .await;
         let mut map = analysis_map.write().await;

@@ -8,12 +8,13 @@ pub mod workspace;
 use crate::config::OxideConfig;
 use features::hover;
 use syntax::utils::get_word_at_pos;
+use tokio::time::Instant;
 
 use crate::analysis::{self, Analysis, OxideSymbolKind, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 
@@ -46,6 +47,7 @@ pub struct Backend {
     parser: Arc<Mutex<Parser>>,
     analysis_map: Arc<RwLock<AnalysisMap>>,
     root_uri: Arc<RwLock<Option<Url>>>,
+    indexing_complete: Arc<RwLock<Option<oneshot::Receiver<()>>>>,
 }
 
 // Debugger helper function
@@ -72,6 +74,7 @@ impl Backend {
             analysis_map: Arc::new(RwLock::new(HashMap::new())),
             parser: Arc::new(Mutex::new(parser)),
             root_uri: Arc::new(RwLock::new(None)),
+            indexing_complete: Arc::new(RwLock::new(None)),
             // shallow_query: Arc::new(shallow_query),
         }
     }
@@ -96,6 +99,7 @@ impl Backend {
     /// * `text` - The full text content of the document.
     async fn on_change(&self, uri: Url, text: String) {
         let diagnostics = workspace::parse_and_update_document(
+            &self.client,
             self.analysis_map.clone(),
             self.parser.clone(),
             &uri,
@@ -179,6 +183,8 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        let (tx, rx) = oneshot::channel();
+        *self.indexing_complete.write().await = Some(rx);
         self.client
             .log_message(MessageType::INFO, "Oxide HDL initialized!")
             .await;
@@ -208,14 +214,20 @@ impl LanguageServer for Backend {
                 let mut w = self.config.write().await;
                 *w = Some(config.clone());
             }
-            tokio::spawn(async move { workspace::index_workspace(client, map, uri, config).await });
+            tokio::spawn(async move {
+                workspace::index_workspace(client, map, uri, config).await;
+                let _ = tx.send(());
+            });
         }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let start_time = Instant::now();
+        if let Some(rx) = self.indexing_complete.write().await.take() {
+            let _ = rx.await;
+        }
         let uri = params.text_document.uri;
         let text = params.text_document.text;
-
         self.client
             .log_message(MessageType::INFO, format!("Opened file {}", uri))
             .await;
@@ -225,7 +237,14 @@ impl LanguageServer for Backend {
             let mut map = self.document_map.write().await;
             map.insert(uri.clone(), rope.clone());
         }
-        self.on_change(uri, text).await;
+        self.on_change(uri.clone(), text).await;
+        let duration = start_time.elapsed();
+        self.client
+            .log_message(
+                MessageType::WARNING,
+                format!("did_open for {} took {:?}", uri, duration),
+            )
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
