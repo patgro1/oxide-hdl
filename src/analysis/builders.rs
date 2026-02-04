@@ -883,6 +883,23 @@ fn create_subprogram_declaration_from_node(
         selection_range = node_to_range(name_node);
     }
     let parameters = extract_parameters_from_subprogram(node, text);
+
+    let mut type_info = TypeInfo::new();
+    if let DeclType::Function = decl_type
+        && let Some(return_type_node) = node.child_by_field_name("type")
+    {
+        if let Some(id) = find_child(return_type_node, "identifier")
+            .or_else(|| find_child(return_type_node, "library_type"))
+        {
+            type_info.base_type = text[id.byte_range()].to_string();
+        } else {
+            type_info.base_type = text[return_type_node.byte_range()].to_string();
+        }
+
+        if let Some(paren_node) = find_child(return_type_node, "parenthesis_group") {
+            type_info.constraints = Some(text[paren_node.byte_range()].to_string());
+        }
+    }
     // For now we just extract the name of the function.
     Declaration {
         name,
@@ -890,7 +907,7 @@ fn create_subprogram_declaration_from_node(
         range: node_to_range(node),
         selection_range,
         parameters: Some(parameters),
-        type_info: TypeInfo::new(),
+        type_info,
         default_value: None,
         doc_comment,
     }
