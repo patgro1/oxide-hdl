@@ -9,7 +9,7 @@ use crate::{
         ScopeTree, TypeInfo, Usage, UsageContext, collect_identifiers_recursive,
     },
     utils::{
-        ast::{collect_descendants, find_child, find_descendant, navigate_path},
+        ast::{collect_children, collect_descendants, find_child, find_descendant, navigate_path},
         node_to_range,
     },
 };
@@ -196,6 +196,11 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        // Special case here for subprogram_declaration (implementation)
+        for subprogram_node in collect_children(architecture_head, "subprogram_definition") {
+            tree.children
+                .push(build_subprogram_scope_tree(subprogram_node, text));
+        }
     }
 
     // Process concurrent_block to find usage and child scopes
@@ -227,9 +232,6 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                             &mut tree.local_usage,
                         );
                     }
-                    "subprogram_definition" => tree
-                        .children
-                        .push(build_subprogram_scope_tree(inner_child, text)),
                     _ => collect_identifiers_recursive(
                         inner_child,
                         text,
