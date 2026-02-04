@@ -142,6 +142,10 @@ pub fn check_process_sensitivity(
             } => read_signals.extend(clocks.clone()),
         };
 
+        let has_wait = process_node
+            .children(&mut process_node.walk())
+            .any(|child| find_descendant(child, "wait_statement").is_some());
+
         // Filter to only signals/ports (exclude variables, constants, generics)
         if let Some(visible_decl) =
             analysis.collect_visible_declarations(scope_tree, node_to_range(process_node))
@@ -162,16 +166,18 @@ pub fn check_process_sensitivity(
                 .collect();
 
             // Check for missing signals
-            for read_signal in &read_signals {
-                let lower_name = read_signal.name.to_lowercase();
-                if !sensitivity_list
-                    .iter()
-                    .any(|v| v.name.to_lowercase() == lower_name)
-                {
-                    collectors.sensitivity.push(messages::missing_sensitivity(
-                        &read_signal.name,
-                        &process_node,
-                    ));
+            if !has_wait {
+                for read_signal in &read_signals {
+                    let lower_name = read_signal.name.to_lowercase();
+                    if !sensitivity_list
+                        .iter()
+                        .any(|v| v.name.to_lowercase() == lower_name)
+                    {
+                        collectors.sensitivity.push(messages::missing_sensitivity(
+                            &read_signal.name,
+                            &process_node,
+                        ));
+                    }
                 }
             }
 
@@ -188,6 +194,7 @@ pub fn check_process_sensitivity(
                 if !read_signals
                     .iter()
                     .any(|s| s.name.to_lowercase() == sensitive.name.to_lowercase())
+                    || has_wait
                 {
                     collectors
                         .sensitivity
