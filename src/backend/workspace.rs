@@ -51,8 +51,28 @@ pub async fn index_workspace(
         .await;
 
     let matcher = config.build_globset();
+
+    let is_ignored = |entry: &walkdir::DirEntry| -> bool {
+        let name = entry.file_name().to_string_lossy();
+
+        // A. HARDCODED SAFETY NET (The Guard Rails)
+        // These are checked via string comparison which is faster than Glob matching.
+        // It prevents the LSP from crashing even if config is broken/empty.
+        if name == ".git" || name == "target" {
+            return true;
+        }
+
+        // B. USER CONFIG (The Flexibility)
+        // Check relative path against oxide.toml patterns
+        if let Ok(relative) = entry.path().strip_prefix(&root_path) {
+            return matcher.is_match(relative);
+        }
+        false
+    };
+
     let paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
         .into_iter()
+        .filter_entry(|e| !is_ignored(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
@@ -62,11 +82,6 @@ pub async fn index_workspace(
                     return false;
                 }
             } else {
-                return false;
-            }
-            if let Ok(relative) = e.path().strip_prefix(&root_path)
-                && matcher.is_match(relative)
-            {
                 return false;
             }
             true
