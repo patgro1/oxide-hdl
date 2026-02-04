@@ -645,26 +645,29 @@ fn extract_signals_read(
 
         // Name nodes (signal references) - check if read or write
         "name" => {
-            for child in start_node.children(&mut start_node.walk()) {
-                if child.kind() == "parenthesis_group" {
-                    // Array indices are always reads, even on LHS
-                    extract_signals_read(
-                        child,
-                        text,
-                        read_signals,
-                        false,
-                        scope_tree,
-                        analysis,
-                        global_map,
-                        current_uri,
-                    );
-                } else if child.kind() == "identifier" && !is_lhs {
-                    // Identifier on RHS is a read
-                    read_signals.insert(Usage {
-                        name: text[child.byte_range()].to_string(),
-                        context: UsageContext::Behavioral,
-                        range: node_to_range(child),
-                    });
+            if find_child(start_node, "attribute").is_none() {
+                for child in start_node.children(&mut start_node.walk()) {
+                    // If the name contains an attribute node, we should skip
+                    if child.kind() == "parenthesis_group" {
+                        // Array indices are always reads, even on LHS
+                        extract_signals_read(
+                            child,
+                            text,
+                            read_signals,
+                            false,
+                            scope_tree,
+                            analysis,
+                            global_map,
+                            current_uri,
+                        );
+                    } else if child.kind() == "identifier" && !is_lhs {
+                        // Identifier on RHS is a read
+                        read_signals.insert(Usage {
+                            name: text[child.byte_range()].to_string(),
+                            context: UsageContext::Behavioral,
+                            range: node_to_range(child),
+                        });
+                    }
                 }
             }
         }
