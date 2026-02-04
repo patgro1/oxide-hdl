@@ -377,6 +377,7 @@ mod tests {
     use crate::backend::features::diagnostics::DiagnosticMessage;
     use crate::backend::test_utils::parse_text;
     use tower_lsp::lsp_types::Diagnostic;
+    use tower_lsp::lsp_types::Url;
 
     /// Recursively prints the AST structure for debugging.
     ///
@@ -411,9 +412,14 @@ mod tests {
     fn check_syntax_errors(code: &str) -> Vec<Diagnostic> {
         let tree = parse_text(code);
         let root = tree.root_node();
-        let analysis = crate::backend::syntax::parser::extract_document_symbols(code, root);
+        let dummy_uri = Url::parse("file:///test.vhd").unwrap();
 
-        let all_diags = super::super::collect_all_diagnostics(root, &analysis, code);
+        let analysis = crate::backend::syntax::parser::extract_document_symbols(code, root);
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(dummy_uri.clone(), analysis.clone());
+
+        let all_diags =
+            super::super::collect_all_diagnostics(root, &analysis, code, &analysis_map, &dummy_uri);
 
         // DEBUG: Print what we got
         eprintln!("\n=== Diagnostics returned: {} ===", all_diags.len());

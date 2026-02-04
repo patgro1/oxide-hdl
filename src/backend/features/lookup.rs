@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 use crate::{
-    analysis::{Analysis, Declaration, OxideSymbolKind, ScopeTree, Symbol},
+    analysis::{Analysis, DeclType, Declaration, OxideSymbolKind, ScopeTree, Symbol},
     backend::AnalysisMap,
 };
 
@@ -81,6 +81,23 @@ pub fn lookup_symbol(
     }
 
     results
+}
+
+pub fn lookup_procedure_declaration(
+    name: &str,
+    uri: &Url,
+    map: &AnalysisMap,
+    pos: &Position,
+) -> Option<Declaration> {
+    let results = lookup_symbol(name, uri, map, pos);
+
+    results.into_iter().find_map(|res| match res.item {
+        ResolvedItem::Declaration(decl) => match decl.decl_type {
+            DeclType::Procedure | DeclType::Function => Some(decl),
+            _ => None,
+        },
+        ResolvedItem::Symbol(_) => None,
+    })
 }
 
 /// Resolves 'use' clauses by looking up packages in the global map

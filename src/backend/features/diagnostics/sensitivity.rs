@@ -20,13 +20,15 @@
 //! - Package constants: Conservatively assumed valid if undeclared
 
 use crate::analysis::{
-    Analysis, DeclType, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
+    Analysis, DeclType, Declaration, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
 };
+use crate::backend::AnalysisMap;
 use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
+use crate::backend::features::lookup::lookup_procedure_declaration;
 use crate::utils::ast::{find_child, find_descendant};
 use crate::utils::node_to_range;
 use std::collections::HashSet;
-use tower_lsp::lsp_types::Diagnostic;
+use tower_lsp::lsp_types::{Diagnostic, Position, Url};
 use tree_sitter::Node;
 
 /// Classification of a VHDL process based on its structure.
@@ -101,6 +103,8 @@ pub fn check_process_sensitivity(
     scope_tree: Option<&ScopeTree>,
     analysis: &Analysis,
     collectors: &mut DiagnosticCollectors,
+    global_map: &AnalysisMap,
+    current_uri: &Url,
 ) {
     let sensitivity_list = extract_sensitivity_list(process_node, text);
 
@@ -123,9 +127,16 @@ pub fn check_process_sensitivity(
 
         // Extract signals based on process type
         match process_type {
-            ProcessType::Combinatorial => {
-                extract_signals_read(sequential_block, text, &mut read_signals, false)
-            }
+            ProcessType::Combinatorial => extract_signals_read(
+                sequential_block,
+                text,
+                &mut read_signals,
+                false,
+                Some(scope_tree),
+                analysis,
+                global_map,
+                current_uri,
+            ),
             ProcessType::Synchronous {
                 clock_signals: ref clocks,
             } => read_signals.extend(clocks.clone()),
@@ -541,6 +552,7 @@ fn extract_sensitivity_list(process_node: Node, text: &str) -> HashSet<Usage> {
 /// - **Always read**: Waveforms, expressions, conditions, case expressions
 /// - **Context-dependent**: Names (read unless on LHS of assignment)
 /// - **Indexing**: Always read (even on LHS, e.g., `array(index) <= value`)
+/// - **Function/Procedure output must be discarded as read signals
 ///
 /// # Examples
 ///
@@ -554,6 +566,10 @@ fn extract_signals_read(
     text: &str,
     read_signals: &mut HashSet<Usage>,
     is_lhs: bool,
+    scope_tree: Option<&ScopeTree>,
+    analysis: &Analysis,
+    global_map: &AnalysisMap,
+    current_uri: &Url,
 ) {
     match start_node.kind() {
         // Nodes where all identifiers are reads
@@ -574,11 +590,49 @@ fn extract_signals_read(
             for child in start_node.children(&mut start_node.walk()) {
                 if child.kind() == "name" {
                     // First 'name' is LHS (write target)
-                    extract_signals_read(child, text, read_signals, true);
+                    extract_signals_read(
+                        child,
+                        text,
+                        read_signals,
+                        true,
+                        scope_tree,
+                        analysis,
+                        global_map,
+                        current_uri,
+                    );
                 } else {
                     // Everything else is RHS (read)
-                    extract_signals_read(child, text, read_signals, false);
+                    extract_signals_read(
+                        child,
+                        text,
+                        read_signals,
+                        false,
+                        scope_tree,
+                        analysis,
+                        global_map,
+                        current_uri,
+                    );
                 }
+            }
+        }
+        "conditional_expression"
+        | "simple_expression"
+        | "term"
+        | "factor"
+        | "primary"
+        | "parenthesis_group" => {
+            for child in start_node.children(&mut start_node.walk()) {
+                // Propagate 'is_lhs' down!
+                extract_signals_read(
+                    child,
+                    text,
+                    read_signals,
+                    is_lhs,
+                    scope_tree,
+                    analysis,
+                    global_map,
+                    current_uri,
+                );
             }
         }
 
@@ -587,7 +641,16 @@ fn extract_signals_read(
             for child in start_node.children(&mut start_node.walk()) {
                 if child.kind() == "parenthesis_group" {
                     // Array indices are always reads, even on LHS
-                    extract_signals_read(child, text, read_signals, false);
+                    extract_signals_read(
+                        child,
+                        text,
+                        read_signals,
+                        false,
+                        scope_tree,
+                        analysis,
+                        global_map,
+                        current_uri,
+                    );
                 } else if child.kind() == "identifier" && !is_lhs {
                     // Identifier on RHS is a read
                     read_signals.insert(Usage {
@@ -598,11 +661,178 @@ fn extract_signals_read(
                 }
             }
         }
+        "procedure_call_statement" => {
+            let name_node = find_child(start_node, "name");
+
+            if let Some(name_node) = name_node {
+                let mut proc_name = None;
+                let mut args_node = None;
+                for child in name_node.children(&mut name_node.walk()) {
+                    match child.kind() {
+                        "identifier" | "selected_name" => {
+                            proc_name = Some(text[child.byte_range()].to_string());
+                        }
+                        "parenthesis_group" => {
+                            args_node = Some(child);
+                        }
+                        _ => {}
+                    }
+                }
+
+                let pos: Position = Position {
+                    line: start_node.range().start_point.row as u32,
+                    character: start_node.range().start_point.column as u32,
+                };
+
+                if let Some(name) = proc_name
+                    && let Some(declaration) =
+                        lookup_procedure_declaration(&name, current_uri, global_map, &pos)
+                {
+                    match declaration.decl_type {
+                        DeclType::Function => {
+                            // Function only uses input as parameter
+                            if let Some(args) = args_node {
+                                extract_signals_read(
+                                    args,
+                                    text,
+                                    read_signals,
+                                    false,
+                                    scope_tree,
+                                    analysis,
+                                    global_map,
+                                    current_uri,
+                                );
+                            }
+                        }
+                        DeclType::Procedure => {
+                            // Check parameter per parameter what is input, what is inout and what
+                            // is out.
+                            if let Some(args) = args_node {
+                                analyze_procedure_arguments(
+                                    args,
+                                    &declaration,
+                                    text,
+                                    read_signals,
+                                    scope_tree,
+                                    analysis,
+                                    global_map,
+                                    current_uri,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
 
         // Default: recurse into children
         _ => {
             for child in start_node.children(&mut start_node.walk()) {
-                extract_signals_read(child, text, read_signals, false);
+                extract_signals_read(
+                    child,
+                    text,
+                    read_signals,
+                    false,
+                    scope_tree,
+                    analysis,
+                    global_map,
+                    current_uri,
+                );
+            }
+        }
+    }
+}
+
+/// Analyzes arguments of a procedure call to determine if they are Reads or Writes.
+///
+/// Maps the "Actual" arguments (in the call) to the "Formal" parameters (in the definition)
+/// to check their direction (IN vs OUT).
+fn analyze_procedure_arguments(
+    parenthesis_group: Node,
+    decl: &Declaration,
+    text: &str,
+    read_signals: &mut HashSet<Usage>,
+    // Context needed for recursion
+    scope_tree: Option<&ScopeTree>,
+    analysis: &Analysis,
+    global_map: &AnalysisMap,
+    current_uri: &Url,
+) {
+    let mut cursor = parenthesis_group.walk();
+    let list_node = parenthesis_group
+        .children(&mut cursor)
+        .find(|c| c.kind() == "association_or_range_list")
+        .unwrap_or(parenthesis_group);
+
+    let mut param_cursor = 0;
+
+    for child in list_node.children(&mut list_node.walk()) {
+        if child.kind() == "association_element" {
+            let mut target_param = None;
+            let mut actual_node = None;
+
+            let children: Vec<Node> = child
+                .children(&mut child.walk())
+                .filter(|c| !c.kind().contains("comment"))
+                .collect();
+            if children.len() >= 2 {
+                // Named association list
+                let formal_node = children[0];
+                let formal_name = text[formal_node.byte_range()].to_string();
+                if let Some(params) = &decl.parameters {
+                    target_param = params
+                        .iter()
+                        .find(|p| p.name.eq_ignore_ascii_case(&formal_name));
+                }
+                actual_node = children.last().cloned();
+            } else if children.len() == 1 {
+                // Positional assoc
+                actual_node = Some(children[0]);
+                if let Some(params) = &decl.parameters
+                    && param_cursor < params.len()
+                {
+                    target_param = Some(&params[param_cursor]);
+                    param_cursor += 1;
+                }
+            }
+
+            // Resolution
+            if let Some(param) = target_param {
+                let is_write_only = match &param.decl_type {
+                    DeclType::Parameter(direction, _) => {
+                        let dir_str = direction.to_string().to_lowercase();
+                        dir_str == "out"
+                    }
+                    _ => false,
+                };
+
+                if let Some(actual) = actual_node {
+                    extract_signals_read(
+                        actual,
+                        text,
+                        read_signals,
+                        is_write_only,
+                        scope_tree,
+                        analysis,
+                        global_map,
+                        current_uri,
+                    );
+                }
+            } else {
+                // Fallback, we assume inputs
+                if let Some(actual) = actual_node {
+                    extract_signals_read(
+                        actual,
+                        text,
+                        read_signals,
+                        false,
+                        scope_tree,
+                        analysis,
+                        global_map,
+                        current_uri,
+                    );
+                }
             }
         }
     }
@@ -611,7 +841,7 @@ fn extract_signals_read(
 /// Placeholder for future synchronous process validation.
 ///
 /// Will validate that all clock signals are present in the sensitivity list
-/// and that async reset signals (when detected) are also included.
+/// and that async rese signals (when detected) are also included.
 ///
 /// # TODO v0.5
 ///
@@ -644,13 +874,18 @@ fn check_comb_process(
 mod tests {
     use super::*;
     use crate::backend::test_utils::parse_text;
+    use tower_lsp::lsp_types::Url;
 
     fn check_sensitivity(code: &str) -> Vec<Diagnostic> {
         let tree = parse_text(code);
         let root = tree.root_node();
+        let dummy_uri = Url::parse("file:///test.vhd").unwrap();
 
         // Build full analysis (includes entity scopes + arch scope trees)
         let analysis = crate::backend::syntax::parser::extract_document_symbols(code, root);
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(dummy_uri.clone(), analysis.clone());
 
         let mut collectors = super::super::DiagnosticCollectors::new();
 
@@ -669,6 +904,8 @@ mod tests {
                                 scope_tree,
                                 &analysis,
                                 &mut collectors,
+                                &analysis_map,
+                                &dummy_uri,
                             );
                         }
                         arch_index += 1;
@@ -684,15 +921,33 @@ mod tests {
         node: Node,
         text: &str,
         scope_tree: &ScopeTree,
-        analysis: &Analysis, // ← ADD THIS
+        analysis: &Analysis,
         collectors: &mut DiagnosticCollectors,
+        global_map: &AnalysisMap,
+        current_uri: &Url,
     ) {
         if node.kind() == "process_statement" {
-            check_process_sensitivity(node, text, Some(scope_tree), analysis, collectors);
+            check_process_sensitivity(
+                node,
+                text,
+                Some(scope_tree),
+                analysis,
+                collectors,
+                global_map,
+                current_uri,
+            );
         }
 
         for child in node.children(&mut node.walk()) {
-            find_and_check_processes(child, text, scope_tree, analysis, collectors);
+            find_and_check_processes(
+                child,
+                text,
+                scope_tree,
+                analysis,
+                collectors,
+                global_map,
+                current_uri,
+            );
         }
     }
 
@@ -1347,4 +1602,45 @@ end architecture;
         assert_eq!(diags.len(), 2, "Should detect both unnecessary items");
     }
 
+    #[test]
+    fn test_function_output_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    procedure std_extract(variable v_in: inout std_logic_vector; signal v_out : out std_logic_vector) is
+    begin
+        v_out <= v_in;
+    end;
+begin
+    p_the_process: process is 
+        variable var: std_logic_vector(31 downto 0);
+    begin
+        std_extract(var, result);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 0, "Sensitivity list must be empty");
+    }
+
+    #[test]
+    fn test_function_output_not_flagged_input_flagged() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    signal inp: std_logic_vector(31 downto 0);
+    procedure std_extract(signal v_in: in std_logic_vector; signal v_out : out std_logic_vector) is
+    begin
+        v_out <= v_in;
+    end;
+begin
+    p_the_process: process is 
+    begin
+        std_extract(inp, result);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 1, "inp should be in sensitivity list");
+    }
 }

@@ -861,7 +861,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.name, Some("my_pkg".to_string()));
 }
 
@@ -876,7 +879,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let constant = &pkg.declarations[0];
@@ -897,7 +903,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 3);
 
     let names: Vec<&str> = pkg.declarations.iter().map(|d| d.name.as_str()).collect();
@@ -917,7 +926,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let type_decl = &pkg.declarations[0];
@@ -936,7 +948,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let func_decl = &pkg.declarations[0];
@@ -955,7 +970,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let proc_decl = &pkg.declarations[0];
@@ -977,7 +995,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 4);
 }
 
@@ -992,7 +1013,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let subtype_decl = &pkg.declarations[0];
@@ -1012,7 +1036,10 @@ end package;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg = analysis.package_scope_trees.get("my_pkg").expect("Package not found");
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 2);
 
     let names: Vec<&str> = pkg.declarations.iter().map(|d| d.name.as_str()).collect();
@@ -1191,7 +1218,7 @@ end package body;
     let pkg_body = &analysis.scope_trees[0];
 
     // Top-level declarations: constant + type
-    assert_eq!(pkg_body.declarations.len(), 2);
+    assert_eq!(pkg_body.declarations.len(), 4);
 
     // Child scopes: function + procedure
     assert_eq!(pkg_body.children.len(), 2);

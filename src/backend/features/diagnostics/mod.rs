@@ -9,8 +9,11 @@ pub mod sensitivity;
 pub mod syntax;
 pub mod unused;
 
-use crate::analysis::{Analysis, ScopeTree};
-use tower_lsp::lsp_types::Diagnostic;
+use crate::{
+    analysis::{Analysis, ScopeTree},
+    backend::AnalysisMap,
+};
+use tower_lsp::lsp_types::{Diagnostic, Url};
 use tree_sitter::Node;
 
 /// The kind identifier for ERROR nodes in the Tree-sitter AST.
@@ -143,7 +146,13 @@ impl DiagnosticCollectors {
 /// let diagnostics = collect_all_diagnostics(tree.root_node(), analysis, source_code);
 /// client.publish_diagnostics(uri, diagnostics, None).await;
 /// ```
-pub fn collect_all_diagnostics(root: Node, analysis: &Analysis, text: &str) -> Vec<Diagnostic> {
+pub fn collect_all_diagnostics(
+    root: Node,
+    analysis: &Analysis,
+    text: &str,
+    global_map: &AnalysisMap,
+    current_uri: &Url,
+) -> Vec<Diagnostic> {
     let mut collectors = DiagnosticCollectors::new();
 
     if root.kind() == ERROR_NODE_KIND {
@@ -157,14 +166,38 @@ pub fn collect_all_diagnostics(root: Node, analysis: &Analysis, text: &str) -> V
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "architecture_definition" {
                     let scope_tree = analysis.scope_trees.get(arch_index);
-                    walk_node(child, text, scope_tree, analysis, &mut collectors);
+                    walk_node(
+                        child,
+                        text,
+                        scope_tree,
+                        analysis,
+                        &mut collectors,
+                        &global_map,
+                        current_uri,
+                    );
                     arch_index += 1;
                 } else {
-                    walk_node(child, text, None, analysis, &mut collectors);
+                    walk_node(
+                        child,
+                        text,
+                        None,
+                        analysis,
+                        &mut collectors,
+                        &global_map,
+                        current_uri,
+                    );
                 }
             }
         } else {
-            walk_node(node, text, None, analysis, &mut collectors);
+            walk_node(
+                node,
+                text,
+                None,
+                analysis,
+                &mut collectors,
+                &global_map,
+                current_uri,
+            );
         }
     }
 
@@ -188,12 +221,30 @@ fn walk_node(
     scope_tree: Option<&ScopeTree>,
     analysis: &Analysis,
     collectors: &mut DiagnosticCollectors,
+    global_map: &AnalysisMap,
+    current_uri: &Url,
 ) {
-    check_node(node, text, scope_tree, analysis, collectors);
+    check_node(
+        node,
+        text,
+        scope_tree,
+        analysis,
+        collectors,
+        &global_map,
+        &current_uri,
+    );
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_node(child, text, scope_tree, analysis, collectors);
+        walk_node(
+            child,
+            text,
+            scope_tree,
+            analysis,
+            collectors,
+            &global_map,
+            current_uri,
+        );
     }
 }
 
@@ -226,6 +277,8 @@ fn check_node(
     scope_tree: Option<&ScopeTree>,
     analysis: &Analysis,
     collectors: &mut DiagnosticCollectors,
+    global_map: &AnalysisMap,
+    current_uri: &Url,
 ) {
     if node.kind() == ERROR_NODE_KIND {
         syntax::check_syntax_error(node, collectors);
@@ -250,7 +303,15 @@ fn check_node(
             )
         }
         "process_statement" => {
-            sensitivity::check_process_sensitivity(node, text, scope_tree, analysis, collectors);
+            sensitivity::check_process_sensitivity(
+                node,
+                text,
+                scope_tree,
+                analysis,
+                collectors,
+                &global_map,
+                &current_uri,
+            );
         }
         "interface_declaration" => {
             syntax::check_port_declaration(node, collectors);

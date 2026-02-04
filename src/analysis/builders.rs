@@ -1121,6 +1121,21 @@ fn extract_declaration_from_node(
             ));
         }
     }
+    for sub_prog in collect_descendants(node, "subprogram_definition") {
+        if let Some(function_node) = find_child(sub_prog, "function_specification") {
+            declarations.push(create_subprogram_declaration_from_node(
+                function_node,
+                text,
+                DeclType::Function,
+            ));
+        } else if let Some(proc_node) = find_child(sub_prog, "procedure_specification") {
+            declarations.push(create_subprogram_declaration_from_node(
+                proc_node,
+                text,
+                DeclType::Procedure,
+            ));
+        }
+    }
     for comp_decl in collect_descendants(node, "component_declaration") {
         declarations.push(create_component_declaration_from_node(comp_decl, text));
     }
