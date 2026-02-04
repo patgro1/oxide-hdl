@@ -1,6 +1,6 @@
-use crate::analysis::OxideSymbolKind;
+use crate::backend::features::lookup::lookup_symbol;
 use crate::backend::{AnalysisMap, Location};
-use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::{Position, Url};
 
 /// Resolves the definition location(s) for a given symbol.
 ///
@@ -21,6 +21,7 @@ use tower_lsp::lsp_types::Url;
 /// * `target` - The identifier string to look up (e.g., "clk", "my_func").
 /// * `current_uri` - The URI of the file where the request originated (used for local search).
 /// * `analysis_map` - The global index of all parsed files.
+/// * `pos` - Position of the cursor
 ///
 /// # Returns
 ///
@@ -30,36 +31,15 @@ pub fn lookup_definition(
     target: &str,
     current_uri: &Url,
     analysis_map: &AnalysisMap,
+    pos: Position,
 ) -> Vec<Location> {
-    let mut locations = Vec::new();
-    if let Some(analysis) = analysis_map.get(current_uri)
-        && let Some(sym) = analysis.find_symbol(target)
-    {
-        locations.push(Location {
-            uri: current_uri.clone(),
-            range: sym.range,
-        });
-    }
-    if locations.is_empty() {
-        for (file_uri, analysis) in analysis_map.iter() {
-            if let Some(symbol) = analysis.symbols.get(target) {
-                locations.push(Location {
-                    uri: file_uri.clone(),
-                    range: symbol.range,
-                });
-            }
-            // Nested match
-            for root_sym in analysis.symbols.values() {
-                if root_sym.kind == OxideSymbolKind::Package
-                    && let Some(child) = root_sym.find_child(target)
-                {
-                    locations.push(Location {
-                        uri: file_uri.clone(),
-                        range: child.range,
-                    });
-                }
-            }
-        }
-    }
-    locations
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos);
+
+    results
+        .into_iter()
+        .map(|res| Location {
+            uri: res.source_uri,
+            range: res.item.selection_range(),
+        })
+        .collect()
 }

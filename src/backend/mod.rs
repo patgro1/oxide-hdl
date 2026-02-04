@@ -326,7 +326,7 @@ impl LanguageServer for Backend {
                     .to_vec(),
                 )));
             } else {
-                let locations = features::goto::lookup_definition(target, &uri, &map);
+                let locations = features::goto::lookup_definition(target, &uri, &map, position);
                 if !locations.is_empty() {
                     return Ok(Some(GotoDefinitionResponse::Array(locations)));
                 }
@@ -366,26 +366,23 @@ impl LanguageServer for Backend {
         if let Some(word) = get_word_at_pos(&rope, position) {
             let target = word.to_lowercase();
 
-            // Fast track using local scope tree
-            {
+            let (candidates, needs_jit) = {
                 let map = self.analysis_map.read().await;
-                if let Some(analysis) = map.get(&uri)
-                    && let Some(decl) = analysis.find_declaration_at(&target, &position)
-                {
-                    return Ok(Some(self.markup(hover::format_declaration_hover(decl))));
+                let results = hover::resolve_rich_hover(&target, &uri, &map, position);
+                let mut to_upgrade = Vec::new();
+                for res in &results {
+                    if let Some(def_uri) = &res.definition_uri
+                        && let Some(analysis) = map.get(def_uri)
+                        && analysis.parse_level == crate::analysis::ParseLevel::Shallow
+                    {
+                        to_upgrade.push(def_uri.clone());
+                    }
                 }
-            }
-
-            let candidates = {
-                let map = self.analysis_map.read().await;
-                hover::resolve_rich_hover(&target, &uri, &map)
+                (results, to_upgrade)
             };
 
-            let mut fallback_markdown: Option<String> = None;
-
-            for resolution in candidates {
-                // JIT parse if we have a separate def uri
-                if let Some(def_uri) = resolution.definition_uri {
+            if !needs_jit.is_empty() {
+                for def_uri in needs_jit {
                     workspace::ensure_fully_parsed(
                         &self.client,
                         &self.analysis_map,
@@ -393,31 +390,17 @@ impl LanguageServer for Backend {
                         &def_uri,
                     )
                     .await;
+                }
+                let map = self.analysis_map.read().await;
+                let refined_results = hover::resolve_rich_hover(&target, &uri, &map, position);
 
-                    // Fetch data and render
-                    let map = self.analysis_map.read().await;
-                    if let Some(analysis) = map.get(&def_uri)
-                        && let Some(deep_sym) = analysis.find_symbol(&target)
-                    {
-                        let is_rich = !deep_sym.children.is_empty() || deep_sym.detail.is_some();
-                        let markdown = if deep_sym.kind == OxideSymbolKind::Function {
-                            hover::format_function_hover(deep_sym)
-                        } else {
-                            hover::format_instantiation_hover(&resolution.symbol.name, deep_sym)
-                        };
-                        if is_rich {
-                            return Ok(Some(self.markup(markdown)));
-                        } else if fallback_markdown.is_none() {
-                            fallback_markdown = Some(markdown)
-                        }
-                    }
-                } else {
-                    let markdown = hover::format_basic(&resolution.symbol);
+                if let Some(match_res) = refined_results.first() {
+                    let markdown = hover::format_hover_result(match_res);
                     return Ok(Some(self.markup(markdown)));
                 }
-            }
-            if let Some(md) = fallback_markdown {
-                return Ok(Some(self.markup(md)));
+            } else if let Some(match_res) = candidates.first() {
+                let markdown = hover::format_hover_result(match_res);
+                return Ok(Some(self.markup(markdown)));
             }
         }
         Ok(None)

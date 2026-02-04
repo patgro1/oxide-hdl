@@ -1,8 +1,11 @@
-use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::{Position, Url};
 
 use crate::{
-    analysis::{DeclType, Declaration, OxideSymbolKind, Symbol},
-    backend::AnalysisMap,
+    analysis::{DeclType, Declaration, OxideSymbolKind, Symbol, TypeInfo},
+    backend::{
+        AnalysisMap,
+        features::lookup::{ResolvedItem, lookup_symbol},
+    },
 };
 
 /// Represents the result of a hover lookup operation.
@@ -13,9 +16,63 @@ use crate::{
 /// It carries the symbol found, and crucially, the location (`definition_uri`) where the
 /// rich definition resides, allowing the backend to trigger a JIT parse if needed.
 pub struct HoverResolution {
-    pub symbol: Symbol,
+    /// Declaration  or symbol issued from the lookup
+    pub item: ResolvedItem,
+    /// Uri of the item location
     pub definition_uri: Option<Url>,
-    pub target_definition_key: Option<String>,
+}
+
+/// Dispatcher for the different hover resolution formatter
+///
+/// # Arguments
+/// `res` - HoverResolution to format for Hover
+///
+/// # Returns
+/// Formatted hover markdown string
+pub fn format_hover_result(res: &HoverResolution) -> String {
+    match &res.item {
+        ResolvedItem::Declaration(d) => format_rich_declaration(d),
+        ResolvedItem::Symbol(s) => match s.kind {
+            OxideSymbolKind::ComponentInstantiation => format_instantiation_hover(&s.name, s),
+            OxideSymbolKind::Function | OxideSymbolKind::Process => format_function_hover(s),
+            _ => format_basic(s),
+        },
+    }
+}
+
+/// Generate markdown for a [`Declaration`]
+///
+/// # Arguments
+/// `decl`: [`Declaration`] to format
+///
+/// # Returns
+/// String containing the markdown
+pub fn format_rich_declaration(decl: &Declaration) -> String {
+    let mut md = String::new();
+    // Doc comments
+    if let Some(doc) = &decl.doc_comment {
+        md.push_str(doc);
+        md.push_str("\n\n---\n\n");
+    }
+
+    md.push_str("```vhdl\n");
+
+    match &decl.decl_type {
+        // Handle Functions/Procedures with parameters
+        DeclType::Function | DeclType::Procedure => {
+            md.push_str(&format_subprogram_signature(decl));
+        }
+        DeclType::Component => {
+            md.push_str(&format_component_hover(decl));
+        }
+        // Handle Everything Else (Signals, Ports, Vars)
+        _ => {
+            md.push_str(&format_data_declaration(decl));
+        }
+    }
+
+    md.push_str("\n```");
+    md
 }
 
 /// Formats a basic hover tooltip for generic symbols (Signals, Variables, etc.).
@@ -105,69 +162,6 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
     md
 }
 
-/// Format a rich hover tooltip for a declaration
-///
-/// # Arguments
-///
-/// * `decl` - The declaration to be formatted
-///
-/// # Returns
-///
-/// A `String` containing the markdown formatted VHDL declaration
-pub fn format_declaration_hover(decl: &Declaration) -> String {
-    let mut md = String::new();
-    if let Some(doc_comment) = &decl.doc_comment {
-        doc_comment.lines().for_each(|line| {
-            md.push_str(&format!("-- {}\n", line));
-        })
-    }
-    md.push_str(&format!("**{}**\n", &decl.name).to_string());
-    match decl.decl_type {
-        DeclType::Port(direction) => {
-            md.push_str(&format!("```vhdl\nport {} : {} ", &decl.name, direction));
-        }
-        DeclType::Parameter(direction, _) => {
-            md.push_str(&format!(
-                "```vhdl\nparameter {} : {} ",
-                &decl.name, direction
-            ));
-        }
-        DeclType::Generic => {
-            md.push_str(&format!("```vhdl\ngeneric {} : ", &decl.name));
-        }
-        DeclType::Constant => {
-            md.push_str(&format!("```vhdl\nconstant {} : ", &decl.name));
-        }
-        DeclType::Signal => {
-            md.push_str(&format!("```vhdl\nsignal {} : ", &decl.name));
-        }
-        DeclType::Variable => {
-            md.push_str(&format!("```vhdl\nvariable {} : ", &decl.name));
-        }
-        DeclType::Type => {
-            md.push_str(&format!("```vhdl\ntype {} : ", &decl.name));
-        }
-        DeclType::Subtype => {
-            md.push_str(&format!("```vhdl\nsubtype {} : ", &decl.name));
-        }
-        DeclType::Function => {
-            md.push_str(&format!("```vhdl\nfunction {} : ", &decl.name));
-        }
-        DeclType::Procedure => {
-            md.push_str(&format!("```vhdl\nprocedure {} : ", &decl.name));
-        }
-    };
-    md.push_str(&decl.type_info.base_type);
-    if let Some(constraint) = &decl.type_info.constraints {
-        md.push_str(constraint);
-    }
-    if let Some(default_val) = &decl.default_value {
-        md.push_str(&format!(" := {}", default_val).to_string());
-    }
-    md.push_str(";\n```");
-    md
-}
-
 /// Formats a rich hover tooltip for Function or Procedure calls.
 ///
 /// Reconstructs the function signature (parameters and return type) from the
@@ -235,67 +229,200 @@ pub fn format_function_hover(sym: &Symbol) -> String {
 pub fn resolve_rich_hover(
     target: &str,
     current_uri: &Url,
-    map: &AnalysisMap,
+    analysis_map: &AnalysisMap,
+    pos: Position,
 ) -> Vec<HoverResolution> {
-    let lower_target = target.to_lowercase();
-    // Check locally:
-    if let Some(analysis) = map.get(current_uri)
-        && let Some(sym) = analysis.find_symbol(&lower_target)
-    {
-        let mut resolution = HoverResolution {
-            symbol: sym.clone(),
-            definition_uri: None,
-            target_definition_key: None,
-        };
-
-        // If it is an instantiation symbol, we seek the definition location
-        // to get generics and ports
-        if sym.kind == OxideSymbolKind::ComponentInstantiation {
-            if let Some(target_name) = &sym.detail {
-                let def_key = target_name.to_lowercase();
-                for (f_uri, f_analysis) in map.iter() {
-                    if f_analysis.symbols.contains_key(&def_key) {
-                        resolution.definition_uri = Some(f_uri.clone());
-                        resolution.target_definition_key = Some(def_key);
-                        // NOTE: Usually, when we find a component instatiation,
-                        // it makes sense to assume that all entites implementing
-                        // this compoenent will share the same interfaces so for
-                        // performance it makes sense to stop at the first we
-                        // find.
-                        break;
-                    }
-                }
-            }
-        }
-        // If the symbol is an entity or a function, the definition uri is the current uri
-        else if sym.kind == OxideSymbolKind::Entity || sym.kind == OxideSymbolKind::Function {
-            resolution.definition_uri = Some(current_uri.clone());
-            resolution.target_definition_key = Some(lower_target);
-        }
-        return vec![resolution];
-    }
-    // Global check
-    let mut results = Vec::new();
-    for (f_uri, f_analysis) in map.iter() {
-        if let Some(sym) = f_analysis.symbols.get(&lower_target) {
-            results.push(HoverResolution {
-                symbol: sym.clone(),
-                definition_uri: Some(f_uri.clone()),
-                target_definition_key: Some(lower_target.clone()),
-            });
-        }
-        // Nested match
-        for root_sym in f_analysis.symbols.values() {
-            if root_sym.kind == OxideSymbolKind::Package
-                && let Some(child) = root_sym.find_child(&lower_target)
-            {
-                results.push(HoverResolution {
-                    symbol: child.clone(),
-                    definition_uri: Some(f_uri.clone()),
-                    target_definition_key: Some(root_sym.name.to_lowercase()),
-                });
-            }
-        }
-    }
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos);
+    eprintln!("Results: {:?}", results);
     results
+        .into_iter()
+        .map(|res| HoverResolution {
+            item: res.item,
+            definition_uri: Some(res.source_uri),
+        })
+        .collect()
+}
+// --- Formatting Functions ---
+
+/// Formats a rich hover tooltip for a declaration.
+///
+/// Distinguishes between data objects (signals, vars) and subprograms (functions)
+/// to render standard VHDL syntax.
+pub fn format_declaration_hover(decl: &Declaration) -> String {
+    let mut md = String::new();
+
+    // 1. Documentation (Markdown Text Top)
+    if let Some(doc) = &decl.doc_comment {
+        md.push_str(doc);
+        md.push_str("\n\n---\n\n"); // Horizontal rule separator
+    }
+
+    // 2. Code Block
+    md.push_str("```vhdl\n");
+
+    match &decl.decl_type {
+        DeclType::Function | DeclType::Procedure => {
+            md.push_str(&format_subprogram_signature(decl));
+        }
+        _ => {
+            md.push_str(&format_data_declaration(decl));
+        }
+    }
+
+    md.push_str("\n```");
+    md
+}
+
+/// Helper to format Signals, Variables, Ports, Constants, Types
+fn format_data_declaration(decl: &Declaration) -> String {
+    let type_str = format_type_info(&decl.type_info);
+    let default_part = decl
+        .default_value
+        .as_ref()
+        .map(|v| format!(" := {}", v))
+        .unwrap_or_default();
+
+    match decl.decl_type {
+        DeclType::Port(dir) => {
+            format!("port {} : {} {}{};", decl.name, dir, type_str, default_part)
+        }
+
+        DeclType::Generic => format!("generic {} : {}{};", decl.name, type_str, default_part),
+
+        DeclType::Signal => format!("signal {} : {}{};", decl.name, type_str, default_part),
+
+        DeclType::Variable => format!("variable {} : {}{};", decl.name, type_str, default_part),
+
+        DeclType::Constant => format!("constant {} : {}{};", decl.name, type_str, default_part),
+
+        DeclType::Type => format!("type {} is {};", decl.name, type_str), // "is" for types
+
+        DeclType::Subtype => format!("subtype {} is {};", decl.name, type_str),
+
+        DeclType::Parameter(dir, _) => {
+            format!("{} : {} {}{}", decl.name, dir, type_str, default_part)
+        } // Inside parameter list
+
+        // Fallback (should be handled by subprogram formatter)
+        DeclType::Function | DeclType::Procedure | DeclType::Component => String::new(),
+    }
+}
+
+/// Helper to format Functions and Procedures with parameters
+fn format_subprogram_signature(decl: &Declaration) -> String {
+    let mut out = String::new();
+    let keyword = if matches!(decl.decl_type, DeclType::Function) {
+        "function"
+    } else {
+        "procedure"
+    };
+
+    out.push_str(&format!("{} {}", keyword, decl.name));
+
+    // Parameters
+    if let Some(params) = &decl.parameters
+        && !params.is_empty()
+    {
+        out.push_str(" (\n");
+        for (i, param) in params.iter().enumerate() {
+            let sep = if i < params.len() - 1 { ";" } else { "" };
+            // Recursive call to format the parameter declaration
+            // Note: parameters are usually DeclType::Parameter or Constant
+            let param_str = format_data_declaration(param);
+            // Remove trailing semicolon from the helper output for cleaner list syntax
+            let clean_param = param_str.trim_end_matches(';');
+            out.push_str(&format!("    {}{}\n", clean_param, sep));
+        }
+        out.push(')');
+    }
+
+    // Return type (only for functions)
+    if matches!(decl.decl_type, DeclType::Function) {
+        let ret_type = format_type_info(&decl.type_info);
+        out.push_str(&format!("\nreturn {};", ret_type));
+    } else {
+        out.push(';');
+    }
+
+    out
+}
+
+/// Combines base type and constraints (e.g., "std_logic_vector" + "(7 downto 0)")
+fn format_type_info(info: &TypeInfo) -> String {
+    match &info.constraints {
+        Some(c) => format!("{}{}", info.base_type, c),
+        None => info.base_type.clone(),
+    }
+}
+
+/// Format component hover
+fn format_component_hover(decl: &Declaration) -> String {
+    let mut md = String::new();
+    md.push_str(&format!("component {} is\n", decl.name));
+
+    if let Some(params) = &decl.parameters {
+        // 1. GENERICS
+        let generics: Vec<&Declaration> = params
+            .iter()
+            .filter(|d| matches!(d.decl_type, DeclType::Generic))
+            .collect();
+
+        if !generics.is_empty() {
+            md.push_str("    generic (\n");
+            for (i, g) in generics.iter().enumerate() {
+                let sep = if i < generics.len() - 1 { ";" } else { "" };
+
+                // Format: "name : type := default"
+                let type_str = format_type_info(&g.type_info);
+                let default_part = g
+                    .default_value
+                    .as_ref()
+                    .map(|v| format!(" := {}", v))
+                    .unwrap_or_default();
+
+                md.push_str(&format!(
+                    "        {} : {}{}{}\n",
+                    g.name, type_str, default_part, sep
+                ));
+            }
+            md.push_str("    );\n");
+        }
+
+        // 2. PORTS
+        let ports: Vec<&Declaration> = params
+            .iter()
+            .filter(|d| matches!(d.decl_type, DeclType::Port(_)))
+            .collect();
+
+        if !ports.is_empty() {
+            md.push_str("    port (\n");
+            for (i, p) in ports.iter().enumerate() {
+                let sep = if i < ports.len() - 1 { ";" } else { "" };
+
+                // Format: "name : direction type := default"
+                let type_str = format_type_info(&p.type_info);
+                let default_part = p
+                    .default_value
+                    .as_ref()
+                    .map(|v| format!(" := {}", v))
+                    .unwrap_or_default();
+
+                // Extract direction
+                let dir_str = if let DeclType::Port(d) = p.decl_type {
+                    format!("{} ", d)
+                } else {
+                    String::new()
+                };
+
+                md.push_str(&format!(
+                    "        {} : {}{}{}{}\n",
+                    p.name, dir_str, type_str, default_part, sep
+                ));
+            }
+            md.push_str("    );\n");
+        }
+    }
+
+    md.push_str("end component;");
+    md
 }
