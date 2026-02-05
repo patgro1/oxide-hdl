@@ -63,6 +63,13 @@ pub struct Analysis {
 impl Analysis {
     /// Creates a new, empty Analysis struct.
     pub fn new() -> Self {
+        let implicit_standard = UseClause {
+            library: "std".to_string(),
+            name: "standard".to_string(),
+            all_import: true,
+            range: Range::default(),
+            imported_symbol: None,
+        };
         Self {
             symbols: HashMap::new(),
             symbols_index: HashMap::new(),
@@ -70,7 +77,7 @@ impl Analysis {
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
             package_scope_trees: HashMap::new(),
-            use_clauses: Vec::new(),
+            use_clauses: vec![implicit_standard],
         }
     }
 

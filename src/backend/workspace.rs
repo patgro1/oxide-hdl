@@ -239,21 +239,36 @@ pub async fn parse_and_update_document(
         .unwrap()
     };
 
-    let (analysis, needed_packages) = match phase1_result {
+    let (analysis, _needed_packages) = match phase1_result {
         Some(r) => r,
         None => return Vec::new(),
     };
 
     // Phase 2: JIT parse any missing packages
-    for pkg_name in &needed_packages {
-        let pkg_uri = {
+    for clause in &analysis.use_clauses {
+        let package_name = &clause.name;
+        let library = &clause.library;
+        let mut pkg_uri = {
             let map = analysis_map.read().await;
-            find_package_file(pkg_name, &map)
+            find_package_file(package_name, &map)
         };
+        if pkg_uri.is_none() {
+            pkg_uri = crate::backend::features::lookup::resolve_import_uri(library, package_name);
+        }
+
         if let Some(pkg_uri) = pkg_uri {
-            ensure_fully_parsed(client, &analysis_map, &parser_for_diag, &pkg_uri).await;
+            ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri).await;
         }
     }
+    // for pkg_name in &needed_packages {
+    //     let pkg_uri = {
+    //         let map = analysis_map.read().await;
+    //         find_package_file(pkg_name, &map)
+    //     };
+    //     if let Some(pkg_uri) = pkg_uri {
+    //         ensure_fully_parsed(client, &analysis_map, &parser_for_diag, &pkg_uri).await;
+    //     }
+    // }
 
     // Phase 3: Run diagnostics (now with access to imported packages)
     let diagnostics = {

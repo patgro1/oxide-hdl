@@ -45,7 +45,9 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
                 if child.kind() == "entity_declaration" {
                     let scope_tree = build_entity_scope_tree(child, text);
                     if let Some(ref name) = scope_tree.name {
-                        analysis.entity_scope_trees.insert(name.clone(), scope_tree);
+                        analysis
+                            .entity_scope_trees
+                            .insert(name.to_lowercase(), scope_tree);
                     }
                 }
                 if child.kind() == "architecture_definition" {
@@ -57,7 +59,7 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
                     if let Some(ref name) = scope_tree.name {
                         analysis
                             .package_scope_trees
-                            .insert(name.clone(), scope_tree);
+                            .insert(name.to_lowercase(), scope_tree);
                     }
                 }
                 if child.kind() == "package_definition" {

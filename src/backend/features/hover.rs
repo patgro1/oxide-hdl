@@ -351,7 +351,7 @@ fn format_subprogram_signature(decl: &Declaration) -> String {
 /// Combines base type and constraints (e.g., "std_logic_vector" + "(7 downto 0)")
 fn format_type_info(info: &TypeInfo) -> String {
     match &info.constraints {
-        Some(c) => format!("{}{}", info.base_type, c),
+        Some(c) => format!("{} {}", info.base_type, c),
         None => info.base_type.clone(),
     }
 }

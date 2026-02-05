@@ -45,12 +45,8 @@ impl BuiltinManager {
     /// Files are only written if they don't already exist, making subsequent
     /// startups faster. This should be called once at LSP initialization.
     pub fn initialize(&self) {
-        eprintln!("Extracting standard libraries to {:?}", self.cache_root);
-
         // We just dump the libraries in the cache directory
         self.extract_embedded_files(&VHDL_LIBRARIES, &self.cache_root);
-
-        eprintln!("Standard libraries extracted");
     }
 
     /// Recursively extracts files from an embedded directory to the filesystem.

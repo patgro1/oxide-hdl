@@ -681,11 +681,13 @@ fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSe
 /// A structure TypeInfo with as much information as what was extracted
 fn extract_type_info(node: &Node, text: &str) -> TypeInfo {
     let mut type_info = TypeInfo::new();
-    if let Some(indication_node) =
-        navigate_path(*node, &["simple_mode_indication", "subtype_indication"])
-            .or_else(|| find_child(*node, "subtype_indication"))
-    {
-        if let Some(name_node) = find_descendant(indication_node, "name") {
+
+    // 1. Attempt to find subtype_indication (used by Signals, Ports, Constants, and Subtypes)
+    let indication_node = navigate_path(*node, &["simple_mode_indication", "subtype_indication"])
+        .or_else(|| find_child(*node, "subtype_indication"));
+
+    if let Some(ind_node) = indication_node {
+        if let Some(name_node) = find_descendant(ind_node, "name") {
             if let Some(id) = find_child(name_node, "identifier")
                 .or_else(|| find_child(name_node, "library_type"))
             {
@@ -697,8 +699,24 @@ fn extract_type_info(node: &Node, text: &str) -> TypeInfo {
                 type_info.constraints = Some(text[paren_node.byte_range()].to_string())
             }
         }
-        if let Some(range_node) = find_descendant(indication_node, "range_constraints") {
+
+        // Handle explicit constraints on the subtype indication (e.g., range constraints)
+        if let Some(range_node) = find_child(ind_node, "range_constraint") {
             type_info.constraints = Some(text[range_node.byte_range()].to_string())
+        }
+    } else {
+        // 2. Fallback for Type Declarations where the definition is a direct child
+        // This handles: type T is range ...; type E is (...); type R is record ...;
+        if let Some(range_node) = find_child(*node, "range_constraint") {
+            type_info.constraints = Some(text[range_node.byte_range()].to_string());
+        } else if let Some(enum_node) = find_child(*node, "enumeration_type_definition") {
+            type_info.constraints = Some(text[enum_node.byte_range()].to_string());
+        } else if let Some(record_node) = find_child(*node, "record_type_definition") {
+            type_info.constraints = Some(text[record_node.byte_range()].to_string());
+        } else if let Some(phys_node) = find_child(*node, "physical_type_definition") {
+            type_info.constraints = Some(text[phys_node.byte_range()].to_string());
+        } else if let Some(phys_node) = find_child(*node, "array_type_definition") {
+            type_info.constraints = Some(text[phys_node.byte_range()].to_string());
         }
     }
     // "initialiser" => {
@@ -992,7 +1010,7 @@ fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
         decl_type: DeclType::Type,
         range: node_to_range(node),
         selection_range,
-        type_info: TypeInfo::new(),
+        type_info: extract_type_info(&node, text),
         default_value: None,
         doc_comment,
         parameters: None,
@@ -1021,7 +1039,7 @@ fn create_subtype_declaration_from_node(node: Node, text: &str) -> Declaration {
         range: node_to_range(node),
         parameters: None,
         selection_range,
-        type_info: TypeInfo::new(),
+        type_info: extract_type_info(&node, text),
         default_value: None,
         doc_comment,
     }
