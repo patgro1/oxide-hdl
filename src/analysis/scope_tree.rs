@@ -205,6 +205,11 @@ impl ScopeTree {
         Some(decls)
     }
 
+    /// Internal recursive helper for collecting visible declarations.
+    ///
+    /// Returns declarations from this scope if it matches the target range,
+    /// or recurses into children to find the target scope and accumulates
+    /// parent declarations on the way back up.
     fn collect_visible_internal(&self, target: &Range) -> Option<Vec<Declaration>> {
         if self.range == *target {
             return Some(self.declarations.clone());

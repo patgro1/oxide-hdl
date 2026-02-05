@@ -143,6 +143,16 @@ pub async fn index_workspace(
         .await;
 }
 
+/// Inserts a batch of analysis results into the global map with overwrite protection.
+///
+/// This function implements a "Do No Harm" policy: if a file already has deep analysis
+/// data (symbols with children), the shallow regex-based analysis will not overwrite it.
+/// This prevents race conditions where the fast indexer might overwrite rich data from
+/// an open file.
+///
+/// # Arguments
+/// * `map_lock` - The shared analysis map to insert into.
+/// * `batch` - Mutable vector of (URI, Analysis) pairs to insert; drained after insertion.
 async fn insert_batch(
     map_lock: &Arc<RwLock<HashMap<Url, Analysis>>>,
     batch: &mut Vec<(Url, Analysis)>,
@@ -297,7 +307,17 @@ pub async fn parse_and_update_document(
     diagnostics
 }
 
-/// Helper to find which file contains a package by name
+/// Finds the file URI containing a package declaration by name.
+///
+/// Searches through the shallow-indexed symbols to locate which file defines the given
+/// package. Used by JIT parsing to find package files that need to be deep-parsed.
+///
+/// # Arguments
+/// * `name` - The package name to search for (case-insensitive).
+/// * `map` - The global analysis map to search in.
+///
+/// # Returns
+/// The URI of the file containing the package, or `None` if not found.
 fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
     let name_lc = name.to_lowercase();
     for (uri, analysis) in map.iter() {

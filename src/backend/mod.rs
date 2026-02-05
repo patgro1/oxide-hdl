@@ -50,7 +50,15 @@ pub struct Backend {
     indexing_complete: Arc<RwLock<Option<oneshot::Receiver<()>>>>,
 }
 
-// Debugger helper function
+/// Recursively dumps a symbol hierarchy to a string for debugging purposes.
+///
+/// Formats each symbol with indentation based on depth, showing the kind and name.
+/// Useful for visualizing the nested structure of VHDL symbols.
+///
+/// # Arguments
+/// * `sym` - The symbol to dump.
+/// * `depth` - Current indentation depth (start with 0).
+/// * `output` - Mutable string to append the formatted output to.
 #[allow(dead_code)]
 pub fn dump_symbol_recursive(sym: &Symbol, depth: usize, output: &mut String) {
     let indent = "  ".repeat(depth);
@@ -79,7 +87,13 @@ impl Backend {
         }
     }
 
-    // Debugger helper function
+    /// Dumps the entire analysis symbol tree to a string for debugging.
+    ///
+    /// # Arguments
+    /// * `analysis` - The analysis containing symbols to dump.
+    ///
+    /// # Returns
+    /// A formatted string showing all symbols and their hierarchy.
     #[allow(dead_code)]
     fn dump_analysis_tree(&self, analysis: &Analysis) -> String {
         let mut output = String::new();

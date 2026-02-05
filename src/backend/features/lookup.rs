@@ -15,6 +15,7 @@ pub enum ResolvedItem {
 }
 
 impl ResolvedItem {
+    /// Returns the source location range of the resolved item.
     pub fn range(&self) -> Range {
         match self {
             ResolvedItem::Declaration(d) => d.range,
@@ -22,6 +23,7 @@ impl ResolvedItem {
         }
     }
 
+    /// Returns the selection range for navigation (name location only).
     pub fn selection_range(&self) -> Range {
         match self {
             ResolvedItem::Declaration(d) => d.selection_range,
@@ -29,6 +31,7 @@ impl ResolvedItem {
         }
     }
 
+    /// Returns the name of the resolved item.
     pub fn name(&self) -> &str {
         match self {
             ResolvedItem::Declaration(d) => &d.name,
@@ -44,6 +47,24 @@ pub struct LookupResult {
     pub source_uri: Url,
 }
 
+/// Looks up a symbol by name using hierarchical resolution.
+///
+/// Resolution order:
+/// 1. Local scope - signals, variables, constants visible at the cursor position
+/// 2. Imported packages - symbols from `use` clauses
+/// 3. Global top-level - entities and packages by name
+///
+/// Returns early if local matches are found, preventing shadowed global symbols
+/// from appearing in results.
+///
+/// # Arguments
+/// * `target` - The symbol name to look up (case-insensitive).
+/// * `current_uri` - The URI of the file containing the cursor.
+/// * `analysis_map` - The global analysis map for cross-file lookups.
+/// * `pos` - The cursor position for scope resolution.
+///
+/// # Returns
+/// A vector of all matching lookup results with source URIs.
 pub fn lookup_symbol(
     target: &str,
     current_uri: &Url,
@@ -83,6 +104,20 @@ pub fn lookup_symbol(
     results
 }
 
+/// Looks up a procedure or function declaration by name.
+///
+/// Uses `lookup_symbol` internally but filters results to only return
+/// declarations that are functions or procedures. Useful for resolving
+/// subprogram calls to get parameter information.
+///
+/// # Arguments
+/// * `name` - The procedure/function name to look up.
+/// * `uri` - The URI of the current file.
+/// * `map` - The global analysis map.
+/// * `pos` - The cursor position for scope context.
+///
+/// # Returns
+/// The declaration if a matching procedure/function is found.
 pub fn lookup_procedure_declaration(
     name: &str,
     uri: &Url,
@@ -100,7 +135,20 @@ pub fn lookup_procedure_declaration(
     })
 }
 
-/// Resolves 'use' clauses by looking up packages in the global map
+/// Resolves a symbol through imported packages from `use` clauses.
+///
+/// For each `use` clause in the current file's analysis, searches the referenced
+/// package for matching symbols. Handles both `use lib.pkg.all` (wildcard imports)
+/// and `use lib.pkg.symbol` (specific imports).
+///
+/// Checks both deep-parsed `package_scope_trees` and shallow-indexed `symbols`
+/// to handle packages at different parse levels.
+///
+/// # Arguments
+/// * `analysis` - The analysis of the current file containing `use` clauses.
+/// * `target` - The symbol name to find (lowercase).
+/// * `map` - The global analysis map to search packages in.
+/// * `results` - Mutable vector to append found results to.
 fn resolve_imports_for_symbol(
     analysis: &Analysis,
     target: &str,
@@ -158,7 +206,18 @@ fn resolve_imports_for_symbol(
     }
 }
 
-/// Fallback to global top-level entities of packages definition
+/// Resolves a symbol against global top-level definitions (entities and packages).
+///
+/// This is the fallback resolution when local and import lookups fail. Searches
+/// for entities and packages by name across all files in the workspace.
+///
+/// Checks both shallow-indexed `symbols` and deep-parsed `entity_scope_trees`
+/// and `package_scope_trees` to ensure consistent results regardless of parse level.
+///
+/// # Arguments
+/// * `target` - The symbol name to find (lowercase).
+/// * `map` - The global analysis map to search.
+/// * `results` - Mutable vector to append found results to.
 fn resolve_global_toplevel_symbols(
     target: &str,
     map: &AnalysisMap,
