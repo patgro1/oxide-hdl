@@ -7,6 +7,7 @@ edition = "2024"
 chrono = "0.4.42"
 clap = { version = "4.0", features = ["derive"] }
 globset = "0.4"
+include_dir = "0.7.4"
 lazy_static = "1.4"
 regex = "1"
 ropey = "1.6.1"

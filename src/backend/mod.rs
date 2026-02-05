@@ -5,12 +5,13 @@ pub mod features;
 pub mod syntax;
 pub mod workspace;
 
+use crate::backend::features::lookup;
 use crate::config::OxideConfig;
 use features::hover;
 use syntax::utils::get_word_at_pos;
 use tokio::time::Instant;
 
-use crate::analysis::{self, Analysis, OxideSymbolKind, Symbol};
+use crate::analysis::{Analysis, BuiltinManager, OxideSymbolKind, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,6 +76,8 @@ impl Backend {
     /// * `client` - The handle to the LSP client.
     /// * `parser` - An initialized Tree-sitter parser with the VHDL language set.
     pub fn new(client: Client, parser: Parser) -> Self {
+        let builtins = BuiltinManager::new();
+        builtins.initialize();
         Backend {
             client,
             config: Arc::new(RwLock::new(None)),
@@ -120,6 +123,7 @@ impl Backend {
             text,
         )
         .await;
+        self.ensure_dependencies_loaded(&uri).await;
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;
@@ -141,6 +145,60 @@ impl Backend {
                 },
             ),
             range: None,
+        }
+    }
+
+    /// Checks the dependencies of a parsed file and lazy-loads them if missing.
+    ///
+    /// Scans the file's `use` clauses to identify imported packages, then checks
+    /// if each dependency is already in the analysis map. Missing dependencies
+    /// (typically standard library packages like IEEE) are JIT-loaded from the cache.
+    ///
+    /// # Arguments
+    /// * `uri` - The URI of the file whose dependencies should be checked.
+    async fn ensure_dependencies_loaded(&self, uri: &Url) {
+        // 1. Get the analysis of the current file to find what it "uses"
+        let deps_to_load = {
+            let map = self.analysis_map.read().await;
+            let analysis = match map.get(uri) {
+                Some(a) => a,
+                None => return,
+            };
+
+            let mut missing_deps = Vec::new();
+
+            for clause in &analysis.use_clauses {
+                // CALL THE INTERCEPTOR!
+                if let Some(dep_uri) = lookup::resolve_import_uri(&clause.library, &clause.name) {
+                    if !map.contains_key(&dep_uri) {
+                        missing_deps.push(dep_uri);
+                    }
+                }
+            }
+            missing_deps
+        }; // Lock dropped here
+
+        // 2. Load the missing files (JIT)
+        for dep_uri in deps_to_load {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("JIT Loading dependency: {}", dep_uri),
+                )
+                .await;
+
+            if let Ok(path) = dep_uri.to_file_path() {
+                if let Ok(text) = tokio::fs::read_to_string(path).await {
+                    workspace::parse_and_update_document(
+                        &self.client,
+                        self.analysis_map.clone(),
+                        self.parser.clone(),
+                        &dep_uri,
+                        text,
+                    )
+                    .await;
+                }
+            }
         }
     }
 }

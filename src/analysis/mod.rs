@@ -5,10 +5,12 @@
 //! symbol resolution.
 
 mod builders;
+mod builtins;
 mod scope_tree;
 mod types;
 
 pub use builders::*;
+pub use builtins::*;
 pub use scope_tree::*;
 pub use types::*;
 

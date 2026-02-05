@@ -233,7 +233,6 @@ pub fn resolve_rich_hover(
     pos: Position,
 ) -> Vec<HoverResolution> {
     let results = lookup_symbol(target, current_uri, analysis_map, &pos);
-    eprintln!("Results: {:?}", results);
     results
         .into_iter()
         .map(|res| HoverResolution {
