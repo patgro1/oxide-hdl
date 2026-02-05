@@ -1158,6 +1158,7 @@ fn extract_declaration_from_node(
     }
     for alias_decl in collect_descendants(node, "alias_declaration") {
         declarations.push(create_alias_declaration_from_node(alias_decl, text));
+        collect_identifier_from_decl(&alias_decl, text, references);
     }
     for sub_prog in collect_descendants(node, "subprogram_declaration") {
         if let Some(function_node) = find_child(sub_prog, "function_specification") {
