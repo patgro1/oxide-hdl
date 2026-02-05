@@ -28,6 +28,7 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
         source: Some("oxide-hdl".to_string()),
         tags: vec![DiagnosticTag::UNNECESSARY].into(),
         message: match decl.decl_type {
+            DeclType::Alias => format!("Unused alias '{}'", decl.name),
             DeclType::Component => format!("Unused component '{}'", decl.name),
             DeclType::Generic => format!("Unused generic '{}'", decl.name),
             DeclType::Port(_) => format!("Unused port '{}'", decl.name),

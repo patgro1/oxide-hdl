@@ -289,6 +289,8 @@ fn format_data_declaration(decl: &Declaration) -> String {
 
         DeclType::Generic => format!("generic {} : {}{};", decl.name, type_str, default_part),
 
+        DeclType::Alias => format!("alias {} : {}{};", decl.name, type_str, default_part),
+
         DeclType::Signal => format!("signal {} : {}{};", decl.name, type_str, default_part),
 
         DeclType::Variable => format!("variable {} : {}{};", decl.name, type_str, default_part),

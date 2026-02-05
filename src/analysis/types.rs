@@ -201,6 +201,8 @@ pub enum DeclType {
     Function,
     /// Procedure subprogram
     Procedure,
+    /// Alias
+    Alias,
 }
 
 impl fmt::Display for DeclType {
@@ -217,6 +219,7 @@ impl fmt::Display for DeclType {
             DeclType::Subtype => "subtype",
             DeclType::Function => "function",
             DeclType::Procedure => "procedure",
+            DeclType::Alias => "alias",
         };
         write!(f, "{}", s)
     }
@@ -236,6 +239,7 @@ impl From<DeclType> for SymbolKind {
             DeclType::Subtype => SymbolKind::STRUCT,
             DeclType::Function => SymbolKind::FUNCTION,
             DeclType::Procedure => SymbolKind::FUNCTION,
+            DeclType::Alias => SymbolKind::VARIABLE,
         }
     }
 }
@@ -254,6 +258,7 @@ impl From<DeclType> for OxideSymbolKind {
             DeclType::Subtype => OxideSymbolKind::Struct,
             DeclType::Function => OxideSymbolKind::Function,
             DeclType::Procedure => OxideSymbolKind::Function,
+            DeclType::Alias => OxideSymbolKind::Variable,
         }
     }
 }

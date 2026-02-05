@@ -147,7 +147,7 @@ impl ScopeTree {
     pub fn is_used_anywhere(&self, decl: &Declaration) -> bool {
         let decl_name_lower = decl.name.to_lowercase();
         let used_locally = match decl.decl_type {
-            DeclType::Constant | DeclType::Generic => self
+            DeclType::Constant | DeclType::Generic | DeclType::Alias => self
                 .local_usage
                 .iter()
                 .any(|u| u.name.to_lowercase() == decl_name_lower),

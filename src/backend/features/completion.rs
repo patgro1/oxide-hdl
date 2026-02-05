@@ -1056,6 +1056,7 @@ fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {
 
 fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
     let kind = match decl.decl_type {
+        DeclType::Alias => CompletionItemKind::VARIABLE,
         DeclType::Component => CompletionItemKind::INTERFACE,
         DeclType::Constant => CompletionItemKind::CONSTANT,
         DeclType::Variable => CompletionItemKind::VARIABLE,
