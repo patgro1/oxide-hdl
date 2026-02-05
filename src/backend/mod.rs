@@ -21,11 +21,12 @@ use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
-    ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
-    WorkspaceSymbolParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MessageType, OneOf, Position, SaveOptions, ServerCapabilities, SymbolInformation,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -223,8 +224,16 @@ impl LanguageServer for Backend {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                            include_text: Some(false),
+                        })),
+                        will_save: None,
+                        will_save_wait_until: None,
+                    },
                 )),
                 // Goto def
                 definition_provider: Some(OneOf::Left(true)),
@@ -344,10 +353,31 @@ impl LanguageServer for Backend {
                     *rope = Rope::from_str(&change.text)
                 }
             }
-            let text = rope.to_string();
+            // let text = rope.to_string();
 
             drop(map);
-            self.on_change(uri, text).await;
+            // self.on_change(uri, text).await;
+        }
+    }
+
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        let uri = params.text_document.uri;
+        if let Ok(path) = uri.to_file_path() {
+            if let Ok(text) = tokio::fs::read_to_string(path).await {
+                // 3. Optional: Sync your memory rope with what's on disk
+                // This fixes 'hover' if did_change somehow got desynced
+                {
+                    let mut map = self.document_map.write().await;
+                    map.insert(uri.clone(), Rope::from_str(&text));
+                }
+
+                // 4. Run Analysis
+                self.on_change(uri, text).await;
+            } else {
+                self.client
+                    .log_message(MessageType::ERROR, "Failed to read file from disk")
+                    .await;
+            }
         }
     }
 
