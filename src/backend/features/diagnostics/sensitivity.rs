@@ -578,10 +578,10 @@ fn extract_signals_read(
     global_map: &AnalysisMap,
     current_uri: &Url,
 ) {
+    println!("start_node_kind: {:?}", start_node.kind());
     match start_node.kind() {
         // Nodes where all identifiers are reads
-        "waveform"
-        | "conditional_or_unaffected_expression"
+        "conditional_or_unaffected_expression"
         | "case_expression"
         | "relational_expression"
         | "when_element"
@@ -646,6 +646,10 @@ fn extract_signals_read(
 
         // Name nodes (signal references) - check if read or write
         "name" => {
+            println!(
+                "start_node_range: {:?}",
+                text[start_node.byte_range()].to_string()
+            );
             if find_child(start_node, "attribute").is_none() {
                 for child in start_node.children(&mut start_node.walk()) {
                     // If the name contains an attribute node, we should skip
@@ -1653,5 +1657,38 @@ end architecture;
 "#;
         let diags = check_sensitivity(code);
         assert_eq!(diags.len(), 1, "inp should be in sensitivity list");
+    }
+
+    #[test]
+    fn test_signal_attribute_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    signal inp: std_logic_vector(31 downto 0);
+begin
+    p_the_process: process is 
+    begin
+        inp <= result'length;
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 0, "No signal should be in sensitivity list");
+    }
+    #[test]
+    fn test_signal_attribute_in_function_call_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    signal inp: std_logic_vector(31 downto 0);
+begin
+    p_the_process: process is 
+    begin
+        inp <= std_inc(result'length);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 0, "No signal should be in sensitivity list");
     }
 }
