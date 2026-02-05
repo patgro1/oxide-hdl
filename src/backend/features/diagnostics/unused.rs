@@ -605,4 +605,50 @@ end architecture;
         assert_eq!(flagged.len(), 2, "Should flag both template and copy");
     }
 
+    #[test]
+    fn test_constant_in_function_in_block_should_not_be_unused() {
+        // Signals used only in type declarations ('range, 'length) should still be flagged
+        // as unused - unlike constants which ARE valid in type expressions
+        let code = r#"
+            architecture rtl of test is
+begin
+    b_mm_split: block is
+        constant CLK_ID_SYS      : natural := 0;
+        constant CLK_ID_MM_SLOW  : natural := 1;
+        constant CLK_ID_MM       : natural := 2;
+        constant CONS0 : natural := CLK_ID_SYS;
+        constant CONS1: natural := CLK_ID_MM_SLOW;
+        constant CONS2: natural := CLK_ID_MM;
+        function set_param_out(length : natural) return a_type is
+            variable ret : a_type(length-1 downto 0);
+        begin
+            for i in 0 to length-1 loop
+                if i = 1 then
+                    ret(i) := CONS1;
+                else
+                    ret(i) := CONS2;
+                end if;
+            end loop;
+            return ret;
+        end function;
+    end block;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+
+        // WIDTH is used (constants in types = OK), template and copy are unused
+        assert_eq!(diags.len(), 1, "Should flag CONS0");
+
+        let flagged: Vec<&str> = diags
+            .iter()
+            .filter_map(|d| {
+                if d.message.contains("CONS0") {
+                    Some("CONS0")
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(flagged.len(), 1, "Should flag CONS0");
+    }
 }

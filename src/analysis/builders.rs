@@ -356,7 +356,12 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                 text,
                 RegionType::Concurrent,
                 &mut tree.local_usage,
-            )
+            );
+            // Special case here for subprogram_declaration (implementation)
+            for subprogram_node in collect_children(head_node, "subprogram_definition") {
+                tree.children
+                    .push(build_subprogram_scope_tree(subprogram_node, text));
+            }
         }
         if let Some(block_node) = find_child(body_node, "generate_block") {
             for child in block_node.children(&mut block_node.walk()) {
@@ -444,6 +449,11 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                 RegionType::Concurrent,
                 &mut tree.local_usage,
             );
+            // Special case here for subprogram_declaration (implementation)
+            for subprogram_node in collect_children(head_node, "subprogram_definition") {
+                tree.children
+                    .push(build_subprogram_scope_tree(subprogram_node, text));
+            }
         }
         if let Some(block_node) = find_child(body_node, "generate_block") {
             for child in block_node.children(&mut block_node.walk()) {
@@ -515,6 +525,11 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        // Special case here for subprogram_declaration (implementation)
+        for subprogram_node in collect_children(head_node, "subprogram_definition") {
+            tree.children
+                .push(build_subprogram_scope_tree(subprogram_node, text));
+        }
     }
 
     // Process concurrent_block
@@ -985,7 +1000,7 @@ pub fn build_subprogram_scope_tree(subprogram_node: Node, text: &str) -> ScopeTr
             break;
         }
     }
-
+    tree.rebuild_index();
     tree
 }
 

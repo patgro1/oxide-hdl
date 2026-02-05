@@ -624,6 +624,7 @@ fn extract_signals_read(
             }
         }
         "conditional_expression"
+        | "conditional_waveform"
         | "simple_expression"
         | "term"
         | "factor"
@@ -1685,6 +1686,24 @@ begin
     p_the_process: process is 
     begin
         inp <= std_inc(result'length);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 0, "No signal should be in sensitivity list");
+    }
+
+    #[test]
+    fn test_signal_in_when_clause() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    signal inp: std_logic_vector(31 downto 0);
+    signal toto: std_logic;
+begin
+    p_the_process: process(toto, inp) is 
+    begin
+        result <= inp when toto = '1' else (others => '0');
     end process;
 end architecture;
 "#;
