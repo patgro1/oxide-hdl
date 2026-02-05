@@ -593,6 +593,7 @@ fn extract_signals_read(
         // Assignment statements - need to distinguish LHS from RHS
         "simple_waveform_assignment"
         | "conditional_waveform_assignment"
+        | "conditional_signal_assignment"
         | "simple_variable_assignment" => {
             for child in start_node.children(&mut start_node.walk()) {
                 if child.kind() == "name" {
