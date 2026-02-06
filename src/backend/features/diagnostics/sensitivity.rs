@@ -578,7 +578,6 @@ fn extract_signals_read(
     global_map: &AnalysisMap,
     current_uri: &Url,
 ) {
-    println!("start_node_kind: {:?}", start_node.kind());
     match start_node.kind() {
         // Nodes where all identifiers are reads
         "conditional_or_unaffected_expression"
@@ -647,10 +646,6 @@ fn extract_signals_read(
 
         // Name nodes (signal references) - check if read or write
         "name" => {
-            println!(
-                "start_node_range: {:?}",
-                text[start_node.byte_range()].to_string()
-            );
             if find_child(start_node, "attribute").is_none() {
                 for child in start_node.children(&mut start_node.walk()) {
                     // If the name contains an attribute node, we should skip
