@@ -209,11 +209,14 @@ pub fn collect_identifiers_recursive(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "identifier" {
-            references.insert(Usage {
-                name: text[child.byte_range()].to_string(),
-                context,
-                range: node_to_range(child),
-            });
+            let id_text = text[child.byte_range()].to_string();
+            if !id_text.is_empty() {
+                references.insert(Usage {
+                    name: id_text.clone(),
+                    context,
+                    range: node_to_range(child),
+                });
+            }
         } else {
             collect_identifiers_recursive(child, text, context, references);
         }

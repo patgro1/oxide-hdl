@@ -1705,4 +1705,37 @@ end architecture;
         let diags = check_sensitivity(code);
         assert_eq!(diags.len(), 0, "No signal should be in sensitivity list");
     }
+    #[test]
+    fn test_array_access_should_be_flagged() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    signal inp: std_logic_vector(31 downto 0);
+    signal toto: std_logic;
+begin
+    p_the_process: process is 
+    begin
+        result <= inp(0);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 1, "inp(0) should be flagged");
+    }
+    #[test]
+    fn test_empty_parenthesis_should_be_ok() {
+        let code = r#"
+architecture rtl of test is
+    signal result : std_logic_vector(31 downto 0);
+    signal inp: std_logic_vector(31 downto 0);
+    signal toto: std_logic;
+begin
+    p_the_process: process() is 
+    begin
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(diags.len(), 0, "nothing should be flagged");
+    }
 }
