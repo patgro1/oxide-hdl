@@ -3,7 +3,7 @@ use tower_lsp::lsp_types::{
 };
 use tree_sitter::{Node, Point};
 
-use crate::analysis::{DeclType, Declaration, OxideSymbolKind, Symbol};
+use crate::analysis::{DeclType, Declaration};
 use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
 
@@ -947,111 +947,104 @@ pub fn complete_scope(
     let mut items = Vec::new();
 
     if let Some(current_analysis) = analysis_map.get(current_uri) {
-        // Handle Map LHS Lookups (requires searching all files)
+        let local_scope_tree = current_analysis.find_scope_tree_at(&position);
+
         match context {
             CompletionContext::PortMapLhs(target_name)
             | CompletionContext::GenericMapLhs(target_name) => {
                 let is_generic = matches!(context, CompletionContext::GenericMapLhs(_));
+                let target_lower = target_name.to_lowercase();
+
+                //  First we look in the global lookup
                 for analysis in analysis_map.values() {
-                    if let Some(target_sym) = analysis
-                        .symbols
-                        .values()
-                        .find(|s| s.name.eq_ignore_ascii_case(target_name))
-                    {
-                        if is_generic {
-                            collect_generics(target_sym, &mut items);
-                        } else {
-                            collect_ports(target_sym, &mut items);
+                    if let Some(entity_tree) = analysis.entity_scope_trees.get(&target_lower) {
+                        for decl in &entity_tree.declarations {
+                            let valid = if is_generic {
+                                matches!(decl.decl_type, DeclType::Generic)
+                            } else {
+                                matches!(decl.decl_type, DeclType::Port(_))
+                            };
+
+                            if valid {
+                                items.push(declaration_to_completion(decl));
+                            }
                         }
                     }
                 }
+
+                // We need to check local scope because of direct instantiation
+                if let Some(tree) = local_scope_tree {
+                    let innermost = tree.find_innermost_scope(&position);
+                    // Resolve implicit context (Entity or Package head)
+                    let header = tree
+                        .entity
+                        .as_ref()
+                        .and_then(|n| current_analysis.entity_scope_trees.get(n))
+                        .or_else(|| {
+                            tree.package
+                                .as_ref()
+                                .and_then(|n| current_analysis.package_scope_trees.get(n))
+                        });
+
+                    if let Some(decls) = tree.collect_visible_declarations(&innermost.range, header)
+                    {
+                        // Find the COMPONENT declaration with the target name
+                        if let Some(comp_decl) = decls.iter().find(|d| {
+                            d.name.eq_ignore_ascii_case(target_name)
+                                && matches!(d.decl_type, DeclType::Component)
+                        }) {
+                            // Extract ports/generics from the component's parameters
+                            if let Some(params) = &comp_decl.parameters {
+                                for param in params {
+                                    let valid = if is_generic {
+                                        matches!(param.decl_type, DeclType::Generic)
+                                    } else {
+                                        matches!(param.decl_type, DeclType::Port(_))
+                                    };
+
+                                    if valid {
+                                        items.push(declaration_to_completion(param));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 return items;
             }
-            _ => {}
-        }
 
-        // // Handle general scope lookups (only searches current file)
-        // for sym in current_analysis.symbols.values() {
-        //     collect_symbols(sym, context, position, &mut items);
-        // }
-        if let Some(scope_tree) = current_analysis.find_scope_tree_at(&position) {
-            let innermost_scope = scope_tree.find_innermost_scope(&position);
-            let header = scope_tree
-                .entity
-                .as_ref()
-                .and_then(|name| current_analysis.entity_scope_trees.get(name))
-                .or_else(|| {
-                    scope_tree
-                        .package
+            // General Scope Completion (RHS, Process, Architecture body)
+            _ => {
+                if let Some(tree) = local_scope_tree {
+                    let innermost = tree.find_innermost_scope(&position);
+                    let header = tree
+                        .entity
                         .as_ref()
-                        .and_then(|name| current_analysis.package_scope_trees.get(name))
-                });
-            let declarations =
-                scope_tree.collect_visible_declarations(&innermost_scope.range, header);
-            if let Some(declarations) = declarations {
-                for decl in declarations {
-                    items.push(declaration_to_completion(&decl));
+                        .and_then(|n| current_analysis.entity_scope_trees.get(n))
+                        .or_else(|| {
+                            tree.package
+                                .as_ref()
+                                .and_then(|n| current_analysis.package_scope_trees.get(n))
+                        });
+
+                    if let Some(declarations) =
+                        tree.collect_visible_declarations(&innermost.range, header)
+                    {
+                        for decl in declarations {
+                            items.push(declaration_to_completion(&decl));
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Remove duplicates
+    // Deduplication
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items.dedup_by(|a, b| a.label == b.label);
 
     items
-}
-
-/// Recursively extracts ports from a symbol for LHS completion.
-fn collect_ports(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
-    if symbol.kind == OxideSymbolKind::Port
-        && let Some(item) = symbol_to_completion(symbol)
-    {
-        items.push(item);
-    }
-    for child in &symbol.children {
-        collect_ports(child, items);
-    }
-}
-
-/// Recursively extracts generics from a symbol for LHS completion.
-fn collect_generics(symbol: &Symbol, items: &mut Vec<CompletionItem>) {
-    if symbol.kind == OxideSymbolKind::Generic
-        && let Some(item) = symbol_to_completion(symbol)
-    {
-        items.push(item);
-    }
-    for child in &symbol.children {
-        collect_generics(child, items);
-    }
-}
-
-/// Converts a Symbol to a CompletionItem.
-fn symbol_to_completion(symbol: &Symbol) -> Option<CompletionItem> {
-    let kind = match symbol.kind {
-        OxideSymbolKind::Entity => CompletionItemKind::INTERFACE,
-        OxideSymbolKind::Architecture => return None,
-        OxideSymbolKind::Port => CompletionItemKind::FIELD,
-        OxideSymbolKind::Signal => CompletionItemKind::VARIABLE,
-        OxideSymbolKind::Constant => CompletionItemKind::CONSTANT,
-        OxideSymbolKind::Struct => CompletionItemKind::STRUCT,
-        OxideSymbolKind::Function => CompletionItemKind::FUNCTION,
-        OxideSymbolKind::Process => return None,
-        OxideSymbolKind::Component => CompletionItemKind::CLASS,
-        _ => CompletionItemKind::TEXT,
-    };
-
-    Some(CompletionItem {
-        label: symbol.name.clone(),
-        kind: Some(kind),
-        detail: symbol.detail.clone(),
-        documentation: Some(Documentation::MarkupContent(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: format!("**{}** ({})", symbol.name, symbol.kind),
-        })),
-        ..CompletionItem::default()
-    })
 }
 
 fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
