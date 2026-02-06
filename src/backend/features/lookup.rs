@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use std::collections::HashSet;
 
 use tower_lsp::lsp_types::{Position, Range, Url};
 
@@ -15,7 +12,7 @@ use crate::{
 pub enum ResolvedItem {
     /// A precise declaration (Signal, Port, Var)
     Declaration(Declaration),
-    /// A generic sybol (entity, package or regex match)
+    /// A generic symbol (entity, package or regex match)
     Symbol(Symbol),
 }
 
@@ -37,6 +34,7 @@ impl ResolvedItem {
     }
 
     /// Returns the name of the resolved item.
+    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         match self {
             ResolvedItem::Declaration(d) => &d.name,

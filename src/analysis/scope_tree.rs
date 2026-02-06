@@ -55,21 +55,20 @@ pub struct ScopeTree {
     pub instantiations: Vec<Instance>,
 }
 
-/// Enum precising the type of scope we are in.
+/// Enum specifying the type of region we are in.
 ///
-/// Two kind of scopes exists: SEQUENTIAL and CONCURRENT
-/// Arch, Generate, Blocks are concurrent blocks because they implement concurrent logic
-/// Packages, Process are Sequential
+/// Two kinds of regions exist: SEQUENTIAL and CONCURRENT.
+/// Architectures, generates, and blocks are concurrent regions because they implement concurrent logic.
+/// Processes are sequential regions.
 ///
-/// This distinction is used to split the kind of declaration we can find in a specific
-/// scope.
-// #[derive(Clone, Debug, Copy)]
+/// This distinction is used to determine which kinds of declarations can be found in a specific
+/// region.
 pub enum RegionType {
     /// Architecture, Generate, Blocks
     Concurrent,
     /// Process, Function, Procedure
     Sequential,
-    // Package body deserve a special case
+    /// Package body deserves a special case
     Implementation,
 }
 
@@ -184,14 +183,16 @@ impl ScopeTree {
             .collect();
     }
 
-    /// Recursively collect all visible declarations from the current range
+    /// Recursively collect all visible declarations from the current range.
     ///
     /// # Arguments
-    /// `target` - Range we want to get visible declarations from
-    /// `header` - Header attached to the current scope tree
+    ///
+    /// * `target` - Range we want to get visible declarations from
+    /// * `header` - Header scope tree (entity or package) attached to the current scope
     ///
     /// # Returns
-    /// Vector of all visible declarations for the range
+    ///
+    /// Option containing a vector of all visible declarations for the range
     pub fn collect_visible_declarations(
         &self,
         target: &Range,
@@ -223,13 +224,15 @@ impl ScopeTree {
         None
     }
 
-    /// Simple declaration lookup in the scope tree
+    /// Simple declaration lookup in the scope tree.
     ///
     /// # Arguments
-    /// `name`: Name of the declaration we are trying to find
     ///
-    /// # Return
-    /// Option on the found declaration index
+    /// * `name` - Name of the declaration we are trying to find
+    ///
+    /// # Returns
+    ///
+    /// Option containing a reference to the found declaration
     pub fn get_declaration(&self, name: &str) -> Option<&Declaration> {
         let decl_idx = self.decl_index.get(&name.to_lowercase())?;
         self.declarations.get(*decl_idx)
@@ -259,7 +262,7 @@ impl ScopeTree {
         self
     }
 
-    /// Helper the check if a given position is contained by the scope tree
+    /// Helper to check if a given position is contained by the scope tree
     ///
     /// # Arguments
     /// `pos` - Position we are comparing
@@ -279,7 +282,8 @@ impl ScopeTree {
     /// `pos` - Position we are trying to find scopes for
     ///
     /// # Returns
-    /// A vector containing references of all the ScopeTree containing the positon
+    ///
+    /// A vector containing references of all the ScopeTree containing the position
     pub fn collect_scope_chain(&self, pos: &Position) -> Vec<&ScopeTree> {
         debug_assert!(
             self.scope_tree_contains_pos(pos),

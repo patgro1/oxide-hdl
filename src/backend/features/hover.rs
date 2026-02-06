@@ -117,7 +117,7 @@ pub fn format_basic(sym: &Symbol) -> String {
 /// A `String` containing the Markdown formatted VHDL interface.
 pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> String {
     let mut md = String::new();
-    // Title: "inst_ent (Instaance of entity)"
+    // Title: "inst_ent (Instance of entity)"
     md.push_str(&format!(
         "**{}** (Instance of `{}`)\n\n",
         instance_name, definition.name
@@ -220,7 +220,8 @@ pub fn format_function_hover(sym: &Symbol) -> String {
 ///
 /// * `target` - The identifier string to look up (e.g. "clk", "uart_tx").
 /// * `current_uri` - The URI of the file where the cursor is located.
-/// * `map` - The global `AnalysisMap` containing all indexed files.
+/// * `analysis_map` - The global `AnalysisMap` containing all indexed files.
+/// * `pos` - The cursor position for scope resolution.
 ///
 /// # Returns
 ///

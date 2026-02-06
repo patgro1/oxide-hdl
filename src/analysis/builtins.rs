@@ -5,8 +5,6 @@ use std::{
 
 use include_dir::{Dir, include_dir};
 
-use crate::backend::AnalysisMap;
-
 /// Embedded VHDL standard library files (IEEE, STD, etc.) compiled into the binary.
 static VHDL_LIBRARIES: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources/libraries");
 
@@ -46,37 +44,27 @@ impl BuiltinManager {
     /// startups faster. This should be called once at LSP initialization.
     pub fn initialize(&self) {
         // We just dump the libraries in the cache directory
-        self.extract_embedded_files(&VHDL_LIBRARIES, &self.cache_root);
-    }
-
-    /// Recursively extracts files from an embedded directory to the filesystem.
-    ///
-    /// # Arguments
-    /// * `dir` - The embedded directory to extract from.
-    /// * `sys_path` - The filesystem path to extract to.
-    fn extract_embedded_files(&self, dir: &Dir, sys_path: &Path) {
-        for file in dir.files() {
-            let file_path = sys_path.join(file.path());
-
-            if !file_path.exists() {
-                if let Some(parent) = file_path.parent() {
-                    fs::create_dir(parent).ok();
-                }
-                fs::write(&file_path, file.contents()).ok();
-            }
-        }
-        for subdir in dir.dirs() {
-            self.extract_embedded_files(subdir, sys_path);
-        }
+        extract_embedded_files(&VHDL_LIBRARIES, &self.cache_root);
     }
 }
 
-/// Returns the path to the standard library cache directory.
+/// Recursively extracts files from an embedded directory to the filesystem.
 ///
-/// This is a convenience function for code that needs to access cached
-/// library files without going through the BuiltinManager.
-pub fn get_cache_path() -> std::path::PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push("oxide_lsp_cache");
-    path
+/// # Arguments
+/// * `dir` - The embedded directory to extract from.
+/// * `sys_path` - The filesystem path to extract to.
+fn extract_embedded_files(dir: &Dir, sys_path: &Path) {
+    for file in dir.files() {
+        let file_path = sys_path.join(file.path());
+
+        if !file_path.exists() {
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir(parent).ok();
+            }
+            fs::write(&file_path, file.contents()).ok();
+        }
+    }
+    for subdir in dir.dirs() {
+        extract_embedded_files(subdir, sys_path);
+    }
 }

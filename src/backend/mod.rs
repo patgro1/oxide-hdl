@@ -1,6 +1,9 @@
+//! Backend module for the Oxide HDL Language Server.
+//!
+//! This module contains the core LSP implementation, including:
 //! * [`features`]: All functions related to feature support (completion, hover etc)
-//! * [`syntax`]: Everything needed to parsed files
-//! * [`workspace`]: Function related to the workspace
+//! * [`syntax`]: Everything needed to parse files
+//! * [`workspace`]: Functions related to the workspace
 pub mod features;
 pub mod syntax;
 pub mod workspace;
@@ -174,10 +177,10 @@ impl Backend {
 
             for clause in &analysis.use_clauses {
                 // CALL THE INTERCEPTOR!
-                if let Some(dep_uri) = lookup::resolve_import_uri(&clause.library, &clause.name) {
-                    if !map.contains_key(&dep_uri) {
-                        missing_deps.push(dep_uri);
-                    }
+                if let Some(dep_uri) = lookup::resolve_import_uri(&clause.library, &clause.name)
+                    && !map.contains_key(&dep_uri)
+                {
+                    missing_deps.push(dep_uri);
                 }
             }
             missing_deps
@@ -192,18 +195,18 @@ impl Backend {
                 )
                 .await;
 
-            if let Ok(path) = dep_uri.to_file_path() {
-                if let Ok(text) = tokio::fs::read_to_string(path).await {
-                    workspace::parse_and_update_document(
-                        &self.client,
-                        self.analysis_map.clone(),
-                        self.parser.clone(),
-                        &dep_uri,
-                        text,
-                        false,
-                    )
-                    .await;
-                }
+            if let Ok(path) = dep_uri.to_file_path()
+                && let Ok(text) = tokio::fs::read_to_string(path).await
+            {
+                workspace::parse_and_update_document(
+                    &self.client,
+                    self.analysis_map.clone(),
+                    self.parser.clone(),
+                    &dep_uri,
+                    text,
+                    false,
+                )
+                .await;
             }
         }
     }

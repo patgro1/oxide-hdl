@@ -79,11 +79,10 @@ pub fn collect_document_symbol(analysis: &Analysis) -> Vec<DocumentSymbol> {
     // Now we need to sort then by start value to make sure the ordering is respected in the
     // document
     scope_trees.sort_by_key(|a| a.range.start);
-    let doc_sym = scope_trees
+    scope_trees
         .iter()
         .map(|scope_tree| collect_scope_tree_symbols(scope_tree))
-        .collect();
-    doc_sym
+        .collect()
 }
 
 /// Recursively build the document symbols for a scope tree

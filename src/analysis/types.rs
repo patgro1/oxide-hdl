@@ -1,7 +1,7 @@
 //! Core types for VHDL analysis and scope management.
 //!
 //! This module defines the fundamental data structures used throughout
-//! the analysis pipeline, including declarations, scope trees, and usage tracking.use std::fmt;
+//! the analysis pipeline, including declarations, scope trees, and usage tracking.
 
 use std::fmt;
 use tower_lsp::lsp_types::{Range, SymbolKind};
@@ -40,7 +40,7 @@ pub enum OxideSymbolKind {
     Function,
     /// An internal Signal or Variable.
     Signal,
-    /// Variable withing a process
+    /// Variable within a process
     Variable,
     /// Fallback for generic classes.
     Class,
@@ -93,17 +93,7 @@ impl From<OxideSymbolKind> for SymbolKind {
     }
 }
 
-/// Declaration Reference
-///
-/// Represent the scope tree resolution of a particular declaration
-#[derive(Debug, Clone)]
-pub struct DeclarationRef {
-    /// Indexed reference of the scope tree of the declaration
-    scope_tree_idx: usize,
-    /// Declaration index within the scope tree
-    declaration_idx: usize,
-}
-// Represents a single symbol in the VHDL source code.
+/// Represents a single symbol in the VHDL source code.
 ///
 /// Symbols are hierarchical. For example, an `Architecture` symbol will contain
 /// `Signal` and `Process` symbols in its `children` vector.
@@ -119,48 +109,6 @@ pub struct Symbol {
     pub range: Range,
     /// Nested symbols defined within this symbol's scope.
     pub children: Vec<Symbol>,
-}
-
-impl Symbol {
-    /// Recursively searches this symbol's children for a specific name.
-    ///
-    /// This method performs a case-insensitive search.
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - The name of the symbol to find (must be lowercase).
-    ///
-    /// # Returns
-    ///
-    /// * `Some(&Symbol)` - A reference to the found symbol.
-    /// * `None` - If the symbol was not found in the children.
-    pub fn find_recursive<'a>(&'a self, target: &str) -> Option<&'a Symbol> {
-        for child in &self.children {
-            if child.name.to_lowercase() == target {
-                return Some(child);
-            }
-            if let Some(found) = child.find_recursive(target) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    /// Alias for `find_recursive` to match the API used in features.
-    /// Recursively searches this symbol's children for a specific name.
-    pub fn find_child<'a>(&'a self, target: &str) -> Option<&'a Symbol> {
-        self.find_recursive(target)
-    }
-
-    /// Recursively dumps the symbol hierarchy to a string for debugging purposes.
-    #[allow(dead_code)]
-    pub fn dump_symbol_recursive(&self, depth: usize, output: &mut String) {
-        let indent = "  ".repeat(depth);
-        output.push_str(&format!("{}{:?} {}\n", indent, self.kind, self.name));
-        for child in self.children.clone() {
-            child.dump_symbol_recursive(depth + 1, output);
-        }
-    }
 }
 
 /// Represents the way the analysis was made
@@ -466,6 +414,7 @@ pub struct Instance {
 /// Structure representing a use clause for package extractions
 #[derive(Debug, Clone)]
 pub struct UseClause {
+    #[allow(dead_code)]
     /// Import location
     pub range: Range,
     /// Library containing the package

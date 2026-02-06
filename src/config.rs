@@ -26,7 +26,7 @@ impl Default for DiagnosticTrigger {
 #[derive(Deserialize, Debug, Clone)]
 pub struct OxideConfig {
     /// List of glob patterns to ignore during indexing.
-    /// Default: `["**/build/**", "**/sim/**", "**/synth/**", "**/target/**", "**/.git/**"]`, ".git"]
+    /// Default: `["**/build/**", "**/sim/**", "**/target/**", "**/.git/**", "**/work/**"]`
     #[serde(default = "default_ignores")]
     pub ignore: Vec<String>,
 
@@ -35,8 +35,8 @@ pub struct OxideConfig {
     #[serde(default = "default_extensions")]
     pub extensions: Vec<String>,
 
-    /// Trigger Diagnosic
-    /// Default: on_save
+    /// Trigger for running diagnostics.
+    /// Default: `on_save`
     #[serde(default)]
     pub diagnostics: DiagnosticTrigger,
 }
@@ -58,12 +58,12 @@ fn default_extensions() -> Vec<String> {
 impl OxideConfig {
     /// Loads configuration from an `oxide.toml` file in the given root directory.
     ///
-    /// If the file does not exist or contains invalid TOML, it falls back to the
-    /// default configuration safe defaults.
+    /// If the file does not exist or contains invalid TOML, it falls back to
+    /// default configuration with safe defaults.
     ///
     /// # Arguments
     ///
-    /// * `root_path` - The root directory of the workspace (where `oxide.toml` looks for).
+    /// * `root_path` - The root directory of the workspace (where to look for `oxide.toml`).
     ///
     /// # Returns
     ///

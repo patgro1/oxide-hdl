@@ -100,7 +100,7 @@ pub fn unnecessary_sensitivity(name: &str, range: &Range) -> Diagnostic {
 ///
 /// * `node` - The Tree-sitter node where the error occurred
 /// * `message` - The type of diagnostic message to generate
-/// * `insertAtTheEnd` - If true, the message diagnostic is inserted at the end of the node
+/// * `insert_at_the_end` - If true, the message diagnostic is inserted at the end of the node
 /// * `text` - The full source text (needed to trim whitespace)
 ///
 /// # Returns

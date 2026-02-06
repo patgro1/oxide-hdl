@@ -646,7 +646,7 @@ pub fn build_package_body_scope_tree(package_node: Node, text: &str) -> ScopeTre
 ///
 /// # Returns
 ///
-/// Vector of Declaration objects, one for each identifier in the declaration
+/// Vector of tuples containing (name, range) for each identifier in the declaration
 fn extract_signal_names(signal_node: Node, text: &str) -> Vec<(String, Range)> {
     let mut signals: Vec<(String, Range)> = Vec::new();
 
@@ -660,17 +660,16 @@ fn extract_signal_names(signal_node: Node, text: &str) -> Vec<(String, Range)> {
     signals
 }
 
-/// Extract identifiers from declartion
+/// Collect identifier usages from the right side of a declaration.
 ///
-/// Will extract every identifier on the right side of a declaration
+/// Extracts every identifier on the right side of a declaration (type references,
+/// default values, etc.) and adds them to the provided references set.
 ///
 /// # Arguments
 ///
-/// `node` - Root node to search from
-/// `text` - Full source text
-///
-/// # Returns
-/// A vector of tuple of all identifiers with their corresponding range
+/// * `node` - Root node to search from
+/// * `text` - Full source text
+/// * `references` - Mutable set to collect identifier usages into
 fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSet<Usage>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -683,7 +682,7 @@ fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSe
 
 /// Extract the type information from a generic or a port clause
 ///
-/// Will extract every availble information on the signa/constant/port/generic type
+/// Will extract every available information on the signal/constant/port/generic type
 ///
 /// Will start by looking for a simple_mode_indication before the subtype, will fallback
 /// to a subtype directly if we cant find it.
@@ -823,12 +822,14 @@ fn extract_doc_comment(decl_node: Node, text: &str) -> Option<String> {
 /// Create a declaration from a specific node
 ///
 /// # Arguments
-/// `node`: Declaration node
-/// `text`: Fill source text
-/// `decl_type`: Type of the declartation
+///
+/// * `node` - Declaration node
+/// * `text` - Full source text
+/// * `decl_type` - Type of the declaration
 ///
 /// # Returns
-/// Vector of declaration based on the node
+///
+/// Vector of declarations based on the node
 fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) -> Vec<Declaration> {
     let doc_comment = extract_doc_comment(node, text);
     let default_value = extract_default_value(node, text);
@@ -854,7 +855,7 @@ fn create_declarations_from_node(node: Node, text: &str, decl_type: DeclType) ->
 /// `text` - Fill source text
 ///
 /// # Returns
-/// A struct reprensenting the instance
+/// A struct representing the instance
 fn create_instance_from_node(node: Node, text: &str) -> Instance {
     let mut label = "".to_string();
     let mut selection_range = node_to_range(node);
@@ -888,15 +889,17 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
     }
 }
 
-/// Create a declaration from a subprogram node, can be a procedure or a function
+/// Create a declaration from a subprogram node (procedure or function).
 ///
 /// # Arguments
-/// `node` - Subprogram node
-/// `text` - Fill source text
-/// `type` - Type of subprogram node
+///
+/// * `node` - Subprogram specification node
+/// * `text` - Full source text
+/// * `decl_type` - Type of subprogram (Function or Procedure)
 ///
 /// # Returns
-/// A Declaration for the node
+///
+/// A Declaration for the subprogram
 fn create_subprogram_declaration_from_node(
     node: Node,
     text: &str,
@@ -947,15 +950,16 @@ fn create_subprogram_declaration_from_node(
     }
 }
 
-/// Create a scope tree for subprogram (can be function or procedure)
+/// Create a scope tree for a subprogram (function or procedure).
 ///
-/// # Argument
+/// # Arguments
 ///
-/// `node` - Subprogram definition node
-/// `text` - Full source text
+/// * `subprogram_node` - Subprogram definition node
+/// * `text` - Full source text
 ///
 /// # Returns
-/// Scopetree for the subprogram
+///
+/// Scope tree for the subprogram
 pub fn build_subprogram_scope_tree(subprogram_node: Node, text: &str) -> ScopeTree {
     // We need to check if we have a procedure or a function here.
     let mut scope_kind = ScopeKind::Function;
@@ -1004,14 +1008,16 @@ pub fn build_subprogram_scope_tree(subprogram_node: Node, text: &str) -> ScopeTr
     tree
 }
 
-/// Create a declaration from a type node, can be a procedure or a function
+/// Create a declaration from a type declaration node.
 ///
 /// # Arguments
-/// `node` - Type delcaration node
-/// `text` - Fill source text
+///
+/// * `node` - Type declaration node
+/// * `text` - Full source text
 ///
 /// # Returns
-/// A Declaration for the node
+///
+/// A Declaration for the type
 fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
     let doc_comment = extract_doc_comment(node, text);
     let mut selection_range = node_to_range(node);
@@ -1032,14 +1038,16 @@ fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
     }
 }
 
-/// Create a declaration from a subprograme node, can be a procedure or a function
+/// Create a declaration from a subtype declaration node.
 ///
 /// # Arguments
-/// `node` - Type delcaration node
-/// `text` - Fill source text
+///
+/// * `node` - Subtype declaration node
+/// * `text` - Full source text
 ///
 /// # Returns
-/// A Declaration for the node
+///
+/// A Declaration for the subtype
 fn create_subtype_declaration_from_node(node: Node, text: &str) -> Declaration {
     let doc_comment = extract_doc_comment(node, text);
     let mut selection_range = node_to_range(node);
@@ -1060,14 +1068,16 @@ fn create_subtype_declaration_from_node(node: Node, text: &str) -> Declaration {
     }
 }
 
-/// Create a declaration from an alias
+/// Create a declaration from an alias declaration node.
 ///
 /// # Arguments
-/// `node` - Alias delcaration node
-/// `text` - Fill source text
+///
+/// * `node` - Alias declaration node
+/// * `text` - Full source text
 ///
 /// # Returns
-/// A Declaration for the node
+///
+/// A Declaration for the alias
 fn create_alias_declaration_from_node(node: Node, text: &str) -> Declaration {
     let doc_comment = extract_doc_comment(node, text);
     let mut selection_range = node_to_range(node);
@@ -1133,20 +1143,22 @@ fn create_component_declaration_from_node(node: Node, text: &str) -> Declaration
     }
 }
 
-/// Extract all the declarations from a node according to its region type and usages
+/// Extract all the declarations from a node according to its region type.
 ///
-/// Concurrent region can contain signals, components, types, subtypes, functions, procedures,
-/// constants
-/// Sequential region can contain variable, constants, functions, procedures, types, subtypes
-/// Usages is used to find all identifier that are used on the right hand side of the declaration
+/// Concurrent regions can contain signals, components, types, subtypes, functions, procedures,
+/// and constants.
+/// Sequential regions can contain variables, constants, functions, procedures, types, and subtypes.
+/// The references set collects all identifiers used on the right hand side of declarations.
 ///
 /// # Arguments
-/// `node` - Node to extract declaration from
-/// `text` - Full source text
-/// `region_type` - Region type for the given node
-/// `references` - HashSet containing all the used references for the declarations
+///
+/// * `node` - Node to extract declarations from
+/// * `text` - Full source text
+/// * `region_type` - Region type for the given node
+/// * `references` - Mutable HashSet to collect used references from declarations
 ///
 /// # Returns
+///
 /// A vector containing all the declarations extracted
 fn extract_declaration_from_node(
     node: Node,
@@ -1236,16 +1248,18 @@ fn extract_declaration_from_node(
     declarations
 }
 
-/// Extract parameters from the specification
+/// Extract parameters from a subprogram specification.
 ///
-/// Expects the node to be function_specification or procedure_specification
+/// Expects the node to be a function_specification or procedure_specification.
 ///
 /// # Arguments
-/// `node` - The specification node
-/// `text` - The full source text
+///
+/// * `node` - The specification node
+/// * `text` - The full source text
 ///
 /// # Returns
-/// A vector with all the parameters
+///
+/// A vector of Declaration objects representing all parameters
 fn extract_parameters_from_subprogram(node: Node, text: &str) -> Vec<Declaration> {
     // Declaration {
     //     name: "data",

@@ -138,7 +138,7 @@ pub async fn index_workspace(
     client
         .log_message(
             MessageType::WARNING,
-            format!("Inxedx workspace in {:?}", duration),
+            format!("Indexed workspace in {:?}", duration),
         )
         .await;
 }

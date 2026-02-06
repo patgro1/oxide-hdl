@@ -1,7 +1,18 @@
+//! Logging utilities for Oxide HDL.
+//!
+//! Provides crash logging functionality for debugging LSP issues.
+
 use std::fs::OpenOptions;
 use std::io::Write;
 
-// We need a unique, persistent file for the LSP crash logs
+/// Logs a crash message to a persistent file for debugging.
+///
+/// Writes timestamped messages to `/tmp/oxide_hdl_crash.log` for post-mortem
+/// analysis of LSP crashes or unexpected errors.
+///
+/// # Arguments
+///
+/// * `msg` - The message to log.
 #[allow(dead_code)]
 pub fn log_crash(msg: &str) {
     let path = "/tmp/oxide_hdl_crash.log";

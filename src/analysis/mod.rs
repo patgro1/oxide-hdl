@@ -40,10 +40,6 @@ pub struct Analysis {
     /// preserves the original display name.
     pub symbols: HashMap<String, Symbol>,
 
-    /// Using lowercase keys ensures case-insensitive lookup
-    /// Contains the location within the scope trees of all symbols
-    pub symbols_index: HashMap<String, DeclarationRef>,
-
     /// List of all the use clause found in the file
     pub use_clauses: Vec<UseClause>,
 
@@ -72,40 +68,12 @@ impl Analysis {
         };
         Self {
             symbols: HashMap::new(),
-            symbols_index: HashMap::new(),
             parse_level: ParseLevel::Shallow,
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
             package_scope_trees: HashMap::new(),
             use_clauses: vec![implicit_standard],
         }
-    }
-
-    /// Recursively searches for a symbol by name anywhere in the file's hierarchy.
-    ///
-    /// This method checks the top-level symbols first, and then recursively searches
-    /// the children of all top-level symbols. This allows finding nested signals
-    /// inside Architectures or variables inside Processes.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name of the symbol to find (case-insensitive).
-    ///
-    /// # Returns
-    ///
-    /// * `Some(&Symbol)` - A reference to the found symbol.
-    /// * `None` - If the symbol was not found.
-    pub fn find_symbol(&self, name: &str) -> Option<&Symbol> {
-        let target = name.to_lowercase();
-        if let Some(s) = self.symbols.get(&target) {
-            return Some(s);
-        }
-        for s in self.symbols.values() {
-            if let Some(found) = s.find_recursive(&target) {
-                return Some(found);
-            }
-        }
-        None
     }
 
     /// Gives the list of visible declaration from a node.

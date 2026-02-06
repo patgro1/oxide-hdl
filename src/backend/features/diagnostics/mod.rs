@@ -172,7 +172,7 @@ pub fn collect_all_diagnostics(
                         scope_tree,
                         analysis,
                         &mut collectors,
-                        &global_map,
+                        global_map,
                         current_uri,
                     );
                     arch_index += 1;
@@ -183,7 +183,7 @@ pub fn collect_all_diagnostics(
                         None,
                         analysis,
                         &mut collectors,
-                        &global_map,
+                        global_map,
                         current_uri,
                     );
                 }
@@ -195,7 +195,7 @@ pub fn collect_all_diagnostics(
                 None,
                 analysis,
                 &mut collectors,
-                &global_map,
+                global_map,
                 current_uri,
             );
         }
@@ -230,8 +230,8 @@ fn walk_node(
         scope_tree,
         analysis,
         collectors,
-        &global_map,
-        &current_uri,
+        global_map,
+        current_uri,
     );
 
     let mut cursor = node.walk();
@@ -242,7 +242,7 @@ fn walk_node(
             scope_tree,
             analysis,
             collectors,
-            &global_map,
+            global_map,
             current_uri,
         );
     }
@@ -309,8 +309,8 @@ fn check_node(
                 scope_tree,
                 analysis,
                 collectors,
-                &global_map,
-                &current_uri,
+                global_map,
+                current_uri,
             );
         }
         "interface_declaration" => {
