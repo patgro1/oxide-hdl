@@ -53,6 +53,208 @@ enum ProcessType {
     Combinatorial,
 }
 
+struct SignalExtractionContext<'a> {
+    text: &'a str,
+    global_map: &'a AnalysisMap,
+    current_uri: &'a Url,
+    // You can also put the mutable result set here if you want
+    read_signals: &'a mut HashSet<Usage>,
+}
+
+impl<'a> SignalExtractionContext<'a> {
+    fn extract(&mut self, start_node: Node, is_lhs: bool) {
+        match start_node.kind() {
+            // Nodes where all identifiers are reads
+            "conditional_or_unaffected_expression"
+            | "case_expression"
+            | "relational_expression"
+            | "when_element"
+            | "when_expression"
+            | "initialiser" => collect_identifiers_recursive(
+                start_node,
+                self.text,
+                UsageContext::Behavioral,
+                self.read_signals,
+            ),
+
+            // Assignment statements - need to distinguish LHS from RHS
+            "simple_waveform_assignment"
+            | "conditional_waveform_assignment"
+            | "conditional_signal_assignment"
+            | "simple_variable_assignment" => {
+                for child in start_node.children(&mut start_node.walk()) {
+                    if child.kind() == "name" {
+                        // First 'name' is LHS (write target)
+                        self.extract(child, true);
+                    } else {
+                        // Everything else is RHS (read)
+                        self.extract(child, false);
+                    }
+                }
+            }
+            "conditional_expression"
+            | "conditional_waveform"
+            | "simple_expression"
+            | "term"
+            | "factor"
+            | "primary"
+            | "parenthesis_group" => {
+                for child in start_node.children(&mut start_node.walk()) {
+                    // Propagate 'is_lhs' down!
+                    self.extract(child, is_lhs);
+                }
+            }
+
+            // Name nodes (signal references) - check if read or write
+            "name" => {
+                if find_child(start_node, "attribute").is_none() {
+                    for child in start_node.children(&mut start_node.walk()) {
+                        // If the name contains an attribute node, we should skip
+                        if child.kind() == "parenthesis_group" {
+                            // Array indices are always reads, even on LHS
+                            self.extract(child, false);
+                        } else if child.kind() == "identifier" && !is_lhs {
+                            // Identifier on RHS is a read
+                            self.read_signals.insert(Usage {
+                                name: self.text[child.byte_range()].to_string(),
+                                context: UsageContext::Behavioral,
+                                range: node_to_range(child),
+                            });
+                        }
+                    }
+                }
+            }
+            "procedure_call_statement" => {
+                let name_node = find_child(start_node, "name");
+
+                if let Some(name_node) = name_node {
+                    let mut proc_name = None;
+                    let mut args_node = None;
+                    for child in name_node.children(&mut name_node.walk()) {
+                        match child.kind() {
+                            "identifier" | "selected_name" => {
+                                proc_name = Some(self.text[child.byte_range()].to_string());
+                            }
+                            "parenthesis_group" => {
+                                args_node = Some(child);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let pos: Position = Position {
+                        line: start_node.range().start_point.row as u32,
+                        character: start_node.range().start_point.column as u32,
+                    };
+
+                    if let Some(name) = proc_name
+                        && let Some(declaration) = lookup_procedure_declaration(
+                            &name,
+                            self.current_uri,
+                            self.global_map,
+                            &pos,
+                        )
+                    {
+                        match declaration.decl_type {
+                            DeclType::Function => {
+                                // Function only uses input as parameter
+                                if let Some(args) = args_node {
+                                    self.extract(args, false);
+                                }
+                            }
+                            DeclType::Procedure => {
+                                // Check parameter per parameter what is input, what is inout and what
+                                // is out.
+                                if let Some(args) = args_node {
+                                    self.analyze_procedure_arguments(args, &declaration);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Default: recurse into children
+            _ => {
+                for child in start_node.children(&mut start_node.walk()) {
+                    self.extract(child, false);
+                }
+            }
+        }
+    }
+    /// Analyzes arguments of a procedure call to determine if they are Reads or Writes.
+    ///
+    /// Maps the "Actual" arguments (in the call) to the "Formal" parameters (in the definition)
+    /// to check their direction (IN vs OUT).
+    fn analyze_procedure_arguments(
+        &mut self,
+        parenthesis_group: Node,
+        decl: &Declaration,
+        // Context needed for recursion
+    ) {
+        let mut cursor = parenthesis_group.walk();
+        let list_node = parenthesis_group
+            .children(&mut cursor)
+            .find(|c| c.kind() == "association_or_range_list")
+            .unwrap_or(parenthesis_group);
+
+        let mut param_cursor = 0;
+
+        for child in list_node.children(&mut list_node.walk()) {
+            if child.kind() == "association_element" {
+                let mut target_param = None;
+                let mut actual_node = None;
+
+                let children: Vec<Node> = child
+                    .children(&mut child.walk())
+                    .filter(|c| !c.kind().contains("comment"))
+                    .collect();
+                if children.len() >= 2 {
+                    // Named association list
+                    let formal_node = children[0];
+                    let formal_name = self.text[formal_node.byte_range()].to_string();
+                    if let Some(params) = &decl.parameters {
+                        target_param = params
+                            .iter()
+                            .find(|p| p.name.eq_ignore_ascii_case(&formal_name));
+                    }
+                    actual_node = children.last().cloned();
+                } else if children.len() == 1 {
+                    // Positional assoc
+                    actual_node = Some(children[0]);
+                    if let Some(params) = &decl.parameters
+                        && param_cursor < params.len()
+                    {
+                        target_param = Some(&params[param_cursor]);
+                        param_cursor += 1;
+                    }
+                }
+
+                // Resolution
+                if let Some(param) = target_param {
+                    let is_write_only = match &param.decl_type {
+                        DeclType::Parameter(direction, _) => {
+                            let dir_str = direction.to_string().to_lowercase();
+                            dir_str == "out"
+                        }
+                        _ => false,
+                    };
+
+                    if let Some(actual) = actual_node {
+                        self.extract(actual, is_write_only);
+                    }
+                } else {
+                    // Fallback, we assume inputs
+                    if let Some(actual) = actual_node {
+                        self.extract(actual, false);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Validates the sensitivity list of a VHDL process statement.
 ///
 /// Performs comprehensive checking for both missing and unnecessary signals in
@@ -127,16 +329,15 @@ pub fn check_process_sensitivity(
 
         // Extract signals based on process type
         match process_type {
-            ProcessType::Combinatorial => extract_signals_read(
-                sequential_block,
-                text,
-                &mut read_signals,
-                false,
-                Some(scope_tree),
-                analysis,
-                global_map,
-                current_uri,
-            ),
+            ProcessType::Combinatorial => {
+                let mut ctx = SignalExtractionContext {
+                    text,
+                    read_signals: &mut read_signals,
+                    global_map,
+                    current_uri,
+                };
+                ctx.extract(sequential_block, false)
+            }
             ProcessType::Synchronous {
                 clock_signals: ref clocks,
             } => read_signals.extend(clocks.clone()),
@@ -539,314 +740,6 @@ fn extract_sensitivity_list(process_node: Node, text: &str) -> HashSet<Usage> {
     }
 
     sensitivity_signals
-}
-
-/// Recursively extracts all signals that are read in a process body.
-///
-/// Traverses the AST to find all signal/variable references that represent
-/// read operations (not writes). Handles VHDL assignment statements to
-/// distinguish between left-hand side (write) and right-hand side (read).
-///
-/// # Arguments
-///
-/// * `start_node` - Node to start searching from (typically `sequential_block`)
-/// * `text` - Full source text
-/// * `read_signals` - HashSet to accumulate found signal usages into
-/// * `is_lhs` - Whether we're currently on the left-hand side of an assignment
-///
-/// # Read Detection Rules
-///
-/// - **Always read**: Waveforms, expressions, conditions, case expressions
-/// - **Context-dependent**: Names (read unless on LHS of assignment)
-/// - **Indexing**: Always read (even on LHS, e.g., `array(index) <= value`)
-/// - **Function/Procedure output must be discarded as read signals
-///
-/// # Examples
-///
-/// ```vhdl
-/// result <= a and b;     -- Reads: a, b (not result)
-/// array(idx) <= val;     -- Reads: idx, val (not array)
-/// if sel = '1' then      -- Reads: sel
-/// ```
-fn extract_signals_read(
-    start_node: Node,
-    text: &str,
-    read_signals: &mut HashSet<Usage>,
-    is_lhs: bool,
-    scope_tree: Option<&ScopeTree>,
-    analysis: &Analysis,
-    global_map: &AnalysisMap,
-    current_uri: &Url,
-) {
-    match start_node.kind() {
-        // Nodes where all identifiers are reads
-        "conditional_or_unaffected_expression"
-        | "case_expression"
-        | "relational_expression"
-        | "when_element"
-        | "when_expression"
-        | "initialiser" => {
-            collect_identifiers_recursive(start_node, text, UsageContext::Behavioral, read_signals)
-        }
-
-        // Assignment statements - need to distinguish LHS from RHS
-        "simple_waveform_assignment"
-        | "conditional_waveform_assignment"
-        | "conditional_signal_assignment"
-        | "simple_variable_assignment" => {
-            for child in start_node.children(&mut start_node.walk()) {
-                if child.kind() == "name" {
-                    // First 'name' is LHS (write target)
-                    extract_signals_read(
-                        child,
-                        text,
-                        read_signals,
-                        true,
-                        scope_tree,
-                        analysis,
-                        global_map,
-                        current_uri,
-                    );
-                } else {
-                    // Everything else is RHS (read)
-                    extract_signals_read(
-                        child,
-                        text,
-                        read_signals,
-                        false,
-                        scope_tree,
-                        analysis,
-                        global_map,
-                        current_uri,
-                    );
-                }
-            }
-        }
-        "conditional_expression"
-        | "conditional_waveform"
-        | "simple_expression"
-        | "term"
-        | "factor"
-        | "primary"
-        | "parenthesis_group" => {
-            for child in start_node.children(&mut start_node.walk()) {
-                // Propagate 'is_lhs' down!
-                extract_signals_read(
-                    child,
-                    text,
-                    read_signals,
-                    is_lhs,
-                    scope_tree,
-                    analysis,
-                    global_map,
-                    current_uri,
-                );
-            }
-        }
-
-        // Name nodes (signal references) - check if read or write
-        "name" => {
-            if find_child(start_node, "attribute").is_none() {
-                for child in start_node.children(&mut start_node.walk()) {
-                    // If the name contains an attribute node, we should skip
-                    if child.kind() == "parenthesis_group" {
-                        // Array indices are always reads, even on LHS
-                        extract_signals_read(
-                            child,
-                            text,
-                            read_signals,
-                            false,
-                            scope_tree,
-                            analysis,
-                            global_map,
-                            current_uri,
-                        );
-                    } else if child.kind() == "identifier" && !is_lhs {
-                        // Identifier on RHS is a read
-                        read_signals.insert(Usage {
-                            name: text[child.byte_range()].to_string(),
-                            context: UsageContext::Behavioral,
-                            range: node_to_range(child),
-                        });
-                    }
-                }
-            }
-        }
-        "procedure_call_statement" => {
-            let name_node = find_child(start_node, "name");
-
-            if let Some(name_node) = name_node {
-                let mut proc_name = None;
-                let mut args_node = None;
-                for child in name_node.children(&mut name_node.walk()) {
-                    match child.kind() {
-                        "identifier" | "selected_name" => {
-                            proc_name = Some(text[child.byte_range()].to_string());
-                        }
-                        "parenthesis_group" => {
-                            args_node = Some(child);
-                        }
-                        _ => {}
-                    }
-                }
-
-                let pos: Position = Position {
-                    line: start_node.range().start_point.row as u32,
-                    character: start_node.range().start_point.column as u32,
-                };
-
-                if let Some(name) = proc_name
-                    && let Some(declaration) =
-                        lookup_procedure_declaration(&name, current_uri, global_map, &pos)
-                {
-                    match declaration.decl_type {
-                        DeclType::Function => {
-                            // Function only uses input as parameter
-                            if let Some(args) = args_node {
-                                extract_signals_read(
-                                    args,
-                                    text,
-                                    read_signals,
-                                    false,
-                                    scope_tree,
-                                    analysis,
-                                    global_map,
-                                    current_uri,
-                                );
-                            }
-                        }
-                        DeclType::Procedure => {
-                            // Check parameter per parameter what is input, what is inout and what
-                            // is out.
-                            if let Some(args) = args_node {
-                                analyze_procedure_arguments(
-                                    args,
-                                    &declaration,
-                                    text,
-                                    read_signals,
-                                    scope_tree,
-                                    analysis,
-                                    global_map,
-                                    current_uri,
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        // Default: recurse into children
-        _ => {
-            for child in start_node.children(&mut start_node.walk()) {
-                extract_signals_read(
-                    child,
-                    text,
-                    read_signals,
-                    false,
-                    scope_tree,
-                    analysis,
-                    global_map,
-                    current_uri,
-                );
-            }
-        }
-    }
-}
-
-/// Analyzes arguments of a procedure call to determine if they are Reads or Writes.
-///
-/// Maps the "Actual" arguments (in the call) to the "Formal" parameters (in the definition)
-/// to check their direction (IN vs OUT).
-fn analyze_procedure_arguments(
-    parenthesis_group: Node,
-    decl: &Declaration,
-    text: &str,
-    read_signals: &mut HashSet<Usage>,
-    // Context needed for recursion
-    scope_tree: Option<&ScopeTree>,
-    analysis: &Analysis,
-    global_map: &AnalysisMap,
-    current_uri: &Url,
-) {
-    let mut cursor = parenthesis_group.walk();
-    let list_node = parenthesis_group
-        .children(&mut cursor)
-        .find(|c| c.kind() == "association_or_range_list")
-        .unwrap_or(parenthesis_group);
-
-    let mut param_cursor = 0;
-
-    for child in list_node.children(&mut list_node.walk()) {
-        if child.kind() == "association_element" {
-            let mut target_param = None;
-            let mut actual_node = None;
-
-            let children: Vec<Node> = child
-                .children(&mut child.walk())
-                .filter(|c| !c.kind().contains("comment"))
-                .collect();
-            if children.len() >= 2 {
-                // Named association list
-                let formal_node = children[0];
-                let formal_name = text[formal_node.byte_range()].to_string();
-                if let Some(params) = &decl.parameters {
-                    target_param = params
-                        .iter()
-                        .find(|p| p.name.eq_ignore_ascii_case(&formal_name));
-                }
-                actual_node = children.last().cloned();
-            } else if children.len() == 1 {
-                // Positional assoc
-                actual_node = Some(children[0]);
-                if let Some(params) = &decl.parameters
-                    && param_cursor < params.len()
-                {
-                    target_param = Some(&params[param_cursor]);
-                    param_cursor += 1;
-                }
-            }
-
-            // Resolution
-            if let Some(param) = target_param {
-                let is_write_only = match &param.decl_type {
-                    DeclType::Parameter(direction, _) => {
-                        let dir_str = direction.to_string().to_lowercase();
-                        dir_str == "out"
-                    }
-                    _ => false,
-                };
-
-                if let Some(actual) = actual_node {
-                    extract_signals_read(
-                        actual,
-                        text,
-                        read_signals,
-                        is_write_only,
-                        scope_tree,
-                        analysis,
-                        global_map,
-                        current_uri,
-                    );
-                }
-            } else {
-                // Fallback, we assume inputs
-                if let Some(actual) = actual_node {
-                    extract_signals_read(
-                        actual,
-                        text,
-                        read_signals,
-                        false,
-                        scope_tree,
-                        analysis,
-                        global_map,
-                        current_uri,
-                    );
-                }
-            }
-        }
-    }
 }
 
 /// Placeholder for future synchronous process validation.
