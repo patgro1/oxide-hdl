@@ -2,6 +2,22 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 use std::path::Path;
 
+/// Diagnostic trigger type
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticTrigger {
+    /// Trigger diagnostic only when the file is saved
+    OnSave,
+    /// Trigger diagnostic for each change
+    OnChange,
+}
+
+impl Default for DiagnosticTrigger {
+    fn default() -> Self {
+        Self::OnSave
+    }
+}
+
 /// Configuration for the Oxide HDL Language Server.
 ///
 /// This struct dictates which files should be indexed and which should be ignored
@@ -18,6 +34,11 @@ pub struct OxideConfig {
     /// Default: `["vhd", "vhdl"]`
     #[serde(default = "default_extensions")]
     pub extensions: Vec<String>,
+
+    /// Trigger Diagnosic
+    /// Default: on_save
+    #[serde(default)]
+    pub diagnostics: DiagnosticTrigger,
 }
 
 fn default_ignores() -> Vec<String> {
@@ -69,6 +90,7 @@ impl OxideConfig {
         OxideConfig {
             ignore: default_ignores(),
             extensions: default_extensions(),
+            diagnostics: DiagnosticTrigger::default(),
         }
     }
 

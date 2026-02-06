@@ -188,12 +188,17 @@ async fn insert_batch(
 /// * `parser` - The shared, mutex-protected Tree-sitter parser instance.
 /// * `uri` - The URI of the file being parsed.
 /// * `text` - The full content of the file as an owned String.
+/// * `get_diagnostics` - If true, collect diagnostics
+///
+/// # Returns
+/// A Vector containing all collected diagnostics.
 pub async fn parse_and_update_document(
     client: &Client,
     analysis_map: Arc<RwLock<AnalysisMap>>,
     parser: Arc<Mutex<crate::backend::Parser>>,
     uri: &Url,
     text: String,
+    get_diagnostics: bool,
 ) -> Vec<Diagnostic> {
     let uri = uri.clone();
     let text_for_diag = text.clone();
@@ -272,45 +277,49 @@ pub async fn parse_and_update_document(
 
     // Phase 3: Run diagnostics (now with access to imported packages)
     let diagnostics = {
-        let analysis_for_diag = analysis.clone();
-        let map_ref = analysis_map.clone();
-        let uri = uri.clone();
-        tokio::task::spawn_blocking(move || {
-            let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
-            let thread_result = builder
-                .spawn(move || {
-                    let map = map_ref.blocking_read();
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let tree = {
-                            let mut parser = parser_for_diag.blocking_lock();
-                            let language = unsafe { crate::tree_sitter_vhdl() };
-                            let _ = parser.set_language(&language);
-                            parser.parse(&text_for_diag, None)
-                        };
-                        match tree {
-                            Some(t) => {
-                                let root = t.root_node();
-                                crate::backend::features::diagnostics::collect_all_diagnostics(
-                                    root,
-                                    &analysis_for_diag,
-                                    &text_for_diag,
-                                    &map,
-                                    &uri,
-                                )
+        if get_diagnostics {
+            let analysis_for_diag = analysis.clone();
+            let map_ref = analysis_map.clone();
+            let uri = uri.clone();
+            tokio::task::spawn_blocking(move || {
+                let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
+                let thread_result = builder
+                    .spawn(move || {
+                        let map = map_ref.blocking_read();
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let tree = {
+                                let mut parser = parser_for_diag.blocking_lock();
+                                let language = unsafe { crate::tree_sitter_vhdl() };
+                                let _ = parser.set_language(&language);
+                                parser.parse(&text_for_diag, None)
+                            };
+                            match tree {
+                                Some(t) => {
+                                    let root = t.root_node();
+                                    crate::backend::features::diagnostics::collect_all_diagnostics(
+                                        root,
+                                        &analysis_for_diag,
+                                        &text_for_diag,
+                                        &map,
+                                        &uri,
+                                    )
+                                }
+                                None => Vec::new(),
                             }
-                            None => Vec::new(),
-                        }
-                    }))
-                })
-                .unwrap()
-                .join();
-            match thread_result {
-                Ok(Ok(diags)) => diags,
-                _ => Vec::new(),
-            }
-        })
-        .await
-        .unwrap()
+                        }))
+                    })
+                    .unwrap()
+                    .join();
+                match thread_result {
+                    Ok(Ok(diags)) => diags,
+                    _ => Vec::new(),
+                }
+            })
+            .await
+            .unwrap()
+        } else {
+            vec![]
+        }
     };
 
     // Phase 4: Store analysis in map

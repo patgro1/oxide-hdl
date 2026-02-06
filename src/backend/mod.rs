@@ -6,7 +6,7 @@ pub mod syntax;
 pub mod workspace;
 
 use crate::backend::features::lookup;
-use crate::config::OxideConfig;
+use crate::config::{DiagnosticTrigger, OxideConfig};
 use features::hover;
 use syntax::utils::get_word_at_pos;
 use tokio::time::Instant;
@@ -115,19 +115,23 @@ impl Backend {
     /// # Arguments
     /// * `uri` - The URI of the document being updated.
     /// * `text` - The full text content of the document.
-    async fn on_change(&self, uri: Url, text: String) {
+    /// * `publish_diagnostics` - If true, will send the collected diagnostics
+    async fn on_change(&self, uri: Url, text: String, publish_diagnostics: bool) {
         let diagnostics = workspace::parse_and_update_document(
             &self.client,
             self.analysis_map.clone(),
             self.parser.clone(),
             &uri,
             text,
+            publish_diagnostics,
         )
         .await;
         self.ensure_dependencies_loaded(&uri).await;
-        self.client
-            .publish_diagnostics(uri, diagnostics, None)
-            .await;
+        if publish_diagnostics {
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+        }
     }
 
     /// Helper to construct a consistent `Hover` response object.
@@ -196,6 +200,7 @@ impl Backend {
                         self.parser.clone(),
                         &dep_uri,
                         text,
+                        false,
                     )
                     .await;
                 }
@@ -318,7 +323,7 @@ impl LanguageServer for Backend {
             let mut map = self.document_map.write().await;
             map.insert(uri.clone(), rope.clone());
         }
-        self.on_change(uri.clone(), text).await;
+        self.on_change(uri.clone(), text, true).await;
         let duration = start_time.elapsed();
         self.client
             .log_message(
@@ -353,10 +358,14 @@ impl LanguageServer for Backend {
                     *rope = Rope::from_str(&change.text)
                 }
             }
-            // let text = rope.to_string();
-
+            let text = rope.to_string();
             drop(map);
-            // self.on_change(uri, text).await;
+            let config_guard = self.config.read().await;
+            let should_publish = config_guard
+                .as_ref()
+                .map(|c| c.diagnostics == DiagnosticTrigger::OnChange)
+                .unwrap_or(false);
+            self.on_change(uri, text, should_publish).await;
         }
     }
 
@@ -370,9 +379,8 @@ impl LanguageServer for Backend {
                     let mut map = self.document_map.write().await;
                     map.insert(uri.clone(), Rope::from_str(&text));
                 }
-
                 // 4. Run Analysis
-                self.on_change(uri, text).await;
+                self.on_change(uri, text, true).await;
             } else {
                 self.client
                     .log_message(MessageType::ERROR, "Failed to read file from disk")
