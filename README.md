@@ -41,6 +41,19 @@ vim.lsp.start_client({
 })
 ```
 
+**Emacs**:
+```lisp
+(use-package eglot
+    :demand t
+    :config
+    ;; Add custom VHDL language server (with path validation)
+    (let ((vhdl-lsp-path "~/Workspace/oxide-hdl/target/release/oxide-hdl"))
+      (when (file-executable-p vhdl-lsp-path)
+        (add-to-list 'eglot-server-programs
+                     `(vhdl-ts-mode . (,vhdl-lsp-path "--stdio")))
+        (message "VHDL language server configured: %s" vhdl-lsp-path))))
+```
+
 **VS Code**: Use a generic LSP extension and point it to the oxide-hdl binary.
 
 Other editors should work with standard LSP client configurations.
