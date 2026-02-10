@@ -233,6 +233,13 @@ fn resolve_imports_for_symbol(
                             item: ResolvedItem::Symbol(child.clone()),
                             source_uri: uri.clone(),
                         });
+                    } else if let Some(sym) = global_analysis.symbols.get(&t.to_lowercase()) {
+                        // Shallow fallback: scan_fast stores types as separate top-level
+                        // symbols (not as children of the package). Check them directly.
+                        output.push(LookupResult {
+                            item: ResolvedItem::Symbol(sym.clone()),
+                            source_uri: uri.clone(),
+                        });
                     }
                 };
                 if clause.all_import {

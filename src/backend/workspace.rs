@@ -330,8 +330,9 @@ pub async fn parse_and_update_document(
 
 /// Finds the file URI containing a package declaration by name.
 ///
-/// Searches through the shallow-indexed symbols to locate which file defines the given
-/// package. Used by JIT parsing to find package files that need to be deep-parsed.
+/// Searches both shallow-indexed `symbols` and deep-parsed `package_scope_trees`
+/// to locate which file defines the given package. This ensures packages can be
+/// found regardless of their current parse level.
 ///
 /// # Arguments
 /// * `name` - The package name to search for (case-insensitive).
@@ -345,6 +346,9 @@ fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
         if let Some(symbol) = analysis.symbols.get(&name_lc)
             && symbol.kind == OxideSymbolKind::Package
         {
+            return Some(uri.clone());
+        }
+        if analysis.package_scope_trees.contains_key(&name_lc) {
             return Some(uri.clone());
         }
     }

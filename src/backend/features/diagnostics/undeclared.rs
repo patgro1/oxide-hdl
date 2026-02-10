@@ -69,6 +69,9 @@ pub fn check_undeclared_identifiers(
             if is_port_map_formal(node) {
                 continue;
             }
+            if is_aggregate_choice(node) {
+                continue;
+            }
         }
 
         let is_found = *lookup_cache.entry(usage.name.clone()).or_insert_with(|| {
@@ -140,6 +143,30 @@ fn is_port_map_formal(node: Node) -> bool {
     false
 }
 
+/// Returns `true` if the identifier is a field name (choice) in a record aggregate.
+///
+/// In `(field_a => 42, field_b => true)`, the field names `field_a` and `field_b`
+/// are choices in `element_association` nodes. They refer to record fields, not
+/// local declarations. Only the choice (first child) is skipped — the value
+/// (second child) is still checked for undeclared references.
+fn is_aggregate_choice(node: Node) -> bool {
+    let mut current = node;
+    for _ in 0..5 {
+        if let Some(parent) = current.parent() {
+            if parent.kind() == "element_association" {
+                if let Some(first) = parent.named_child(0) {
+                    return node.start_byte() >= first.start_byte()
+                        && node.end_byte() <= first.end_byte();
+                }
+            }
+            current = parent;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 /// Returns `true` if the identifier is a name being *declared* (not a type reference).
 ///
 /// Walks up to 5 parent nodes checking whether any ancestor is a node that
@@ -185,7 +212,6 @@ mod tests {
     /// and returns the resulting diagnostics from `collectors.undefined`.
     fn check_undeclared(code: &str) -> Vec<Diagnostic> {
         let tree = parse_text(code);
-        println!("ast: {:?}", tree.root_node().to_sexp());
         let root = tree.root_node();
         let dummy_uri = Url::parse("file:///test.vhd").unwrap();
 
@@ -1217,6 +1243,150 @@ end architecture;
     // =========================================================================
 
     #[test]
+    fn test_protected_type_in_arch_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    type t_mutex is protected
+        procedure lock;
+        procedure unlock;
+    end protected t_mutex;
+
+    type t_mutex is protected body
+        variable locked : boolean := false;
+        procedure lock is
+        begin
+            locked := true;
+        end procedure;
+        procedure unlock is
+        begin
+            locked := false;
+        end procedure;
+    end protected body t_mutex;
+
+    shared variable mtx : t_mutex;
+begin
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("t_mutex"))
+            .collect();
+        assert!(
+            type_diags.is_empty(),
+            "Protected type should not be flagged as undefined. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_protected_type_from_package_not_flagged() {
+        // Protected type declared in a package, used in architecture via shared variable
+        let code = r#"
+package my_pkg is
+    type t_counter is protected
+        procedure increment;
+        function get_value return integer;
+    end protected t_counter;
+end package;
+
+package body my_pkg is
+    type t_counter is protected body
+        variable count : integer := 0;
+        procedure increment is
+        begin
+            count := count + 1;
+        end procedure;
+        function get_value return integer is
+        begin
+            return count;
+        end function;
+    end protected body t_counter;
+end package body;
+"#;
+        let diags = check_undeclared(code);
+        let type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("t_counter"))
+            .collect();
+        assert!(
+            type_diags.is_empty(),
+            "Protected type from package should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_protected_type_cross_file_not_flagged() {
+        // Simulates two files: package in one, architecture in another
+        let pkg_code = r#"
+package my_pkg is
+    type t_counter is protected
+        procedure increment;
+        function get_value return integer;
+    end protected t_counter;
+end package;
+"#;
+        let arch_code = r#"
+library ieee;
+use work.my_pkg.all;
+
+architecture rtl of test is
+    shared variable counter : t_counter;
+begin
+end architecture;
+"#;
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            arch_code,
+            arch_root,
+        );
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
+        let mut lookup_cache = HashMap::new();
+
+        let ctx = super::ValidationContext {
+            root: arch_root,
+            global_map: &analysis_map,
+            current_uri: &arch_uri,
+        };
+
+        for scope_tree in &arch_analysis.scope_trees {
+            super::check_undeclared_identifiers(
+                &ctx,
+                scope_tree,
+                &mut collectors,
+                &mut lookup_cache,
+            );
+        }
+
+        let diags = collectors.undefined;
+        let type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("t_counter"))
+            .collect();
+        assert!(
+            type_diags.is_empty(),
+            "Protected type imported from another file should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
     fn test_shared_variable_not_flagged() {
         let code = r#"
 architecture rtl of test is
@@ -1236,6 +1406,300 @@ end architecture;
         assert!(
             sv_diags.is_empty(),
             "Shared variable should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    /// Test that uses the full production diagnostic pipeline (collect_all_diagnostics)
+    /// for cross-file protected type resolution, matching the real LSP path.
+    #[test]
+    fn test_protected_type_cross_file_production_pipeline() {
+        let pkg_code = r#"
+package my_pkg is
+    type t_counter is protected
+        procedure increment;
+        function get_value return integer;
+    end protected t_counter;
+end package;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+
+entity test is
+end entity;
+
+architecture rtl of test is
+    shared variable counter : t_counter;
+begin
+end architecture;
+"#;
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            arch_code,
+            arch_root,
+        );
+
+        // Verify the package scope tree has the protected type
+        assert!(
+            pkg_analysis.package_scope_trees.contains_key("my_pkg"),
+            "Package scope tree should exist. Keys: {:?}",
+            pkg_analysis.package_scope_trees.keys().collect::<Vec<_>>()
+        );
+        let pkg_scope = pkg_analysis.package_scope_trees.get("my_pkg").unwrap();
+        let has_t_counter = pkg_scope
+            .declarations
+            .iter()
+            .any(|d| d.name.eq_ignore_ascii_case("t_counter"));
+        assert!(
+            has_t_counter,
+            "Package scope should contain t_counter. Declarations: {:?}",
+            pkg_scope
+                .declarations
+                .iter()
+                .map(|d| &d.name)
+                .collect::<Vec<_>>()
+        );
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        // Use the FULL production pipeline
+        let diags = crate::backend::features::diagnostics::collect_all_diagnostics(
+            arch_root,
+            &arch_analysis,
+            arch_code,
+            &analysis_map,
+            &arch_uri,
+        );
+
+        let type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("t_counter"))
+            .collect();
+        assert!(
+            type_diags.is_empty(),
+            "Protected type from package should not be flagged via production pipeline. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Test with the EXACT production package content (forward declarations,
+    /// access types, records, protected type with many methods, standalone procedure).
+    #[test]
+    fn test_complex_protected_type_cross_file_not_flagged() {
+        let pkg_code = r#"
+package sim_fifo_pkg is
+
+    type sim_fifo_pkt;
+    type sim_fifo_pkt_ptr is access sim_fifo_pkt;
+
+    type sim_fifo_pkt is
+    record
+        data: integer;
+        error : boolean;
+        nxt : sim_fifo_pkt_ptr;
+    end record;
+
+    type sim_fifo_desc is
+    record
+        fifo_cnt      : natural;
+        fifo_ptr      : sim_fifo_pkt_ptr;
+        fifo_byte     : natural;
+    end record;
+
+    type sim_fifo_desc_array is array(natural range<>) of sim_fifo_desc;
+    type sim_fifo_desc_array_ptr is access sim_fifo_desc_array;
+
+    type sim_fifo is protected
+        procedure realloc(len : natural);
+        procedure flush(verbose: boolean := false);
+        procedure push_id(id: natural; data : integer ; error : boolean := false);
+        procedure push_id(id: natural; file_path : string);
+        impure function get_pop_len_id (id: natural) return natural;
+        impure function pop_id (id: natural) return integer;
+        impure function peek_id (id: natural) return integer;
+        impure function peek_error_state_id (id: natural) return boolean;
+        impure function fifo_depth_id (id: natural) return natural;
+        impure function fifo_amount_byte_id (id: natural) return natural;
+        procedure push(data : integer; error : boolean := false);
+        procedure push(file_path : string);
+        procedure push(file_path : string; file_id_path : string);
+        impure function get_pop_len return natural;
+        impure function pop return integer;
+        impure function peek return integer;
+        impure function fifo_depth return natural;
+        impure function fifo_length return natural;
+        procedure print_id(id: natural ; print_error : boolean := false);
+        procedure print(print_error : boolean := false);
+        impure function merge_id (id: natural) return integer;
+        impure function merge_error_state_id (id: natural) return boolean;
+        impure function merge return integer;
+    end protected;
+
+    procedure duplicate_sim_fifo(variable sim_fifo_source    : inout sim_fifo;
+                                 variable sim_fifo_dest      : inout sim_fifo);
+
+end package;
+"#;
+        // NOTE: Uses the exact typo from broken.vhd: "end architecutre;"
+        let arch_code = r#"
+use work.sim_fifo_pkg.all;
+
+entity test is
+    generic (
+        WIDTH : integer := 8;
+        DEPTH : positive := 1024
+    );
+end entity;
+
+architecture rtl of test is
+    shared variable sim_fifo_a: sim_fifo;
+begin
+end architecutre;
+"#;
+        let pkg_uri = Url::parse("file:///my_pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///broken.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            arch_code,
+            arch_root,
+        );
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        let diags = crate::backend::features::diagnostics::collect_all_diagnostics(
+            arch_root,
+            &arch_analysis,
+            arch_code,
+            &analysis_map,
+            &arch_uri,
+        );
+
+        let type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("undefined type 'sim_fifo'"))
+            .collect();
+        assert!(
+            type_diags.is_empty(),
+            "Protected type sim_fifo from package should not be flagged. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Test: what happens when the package is only SHALLOW-indexed (not deep-parsed)?
+    /// This simulates the case where workspace indexing ran but JIT parsing didn't happen.
+    #[test]
+    fn test_shallow_indexed_package_resolution() {
+        let pkg_code = r#"
+package sim_fifo_pkg is
+    type sim_fifo is protected
+        procedure increment;
+    end protected;
+end package;
+"#;
+        let arch_code = r#"
+use work.sim_fifo_pkg.all;
+
+entity test is
+end entity;
+
+architecture rtl of test is
+    shared variable my_var: sim_fifo;
+begin
+end architecture;
+"#;
+        let pkg_uri = Url::parse("file:///my_pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///broken.vhd").unwrap();
+
+        // Shallow-index the package (mimicking scan_fast + index_workspace)
+        let shallow_symbols = crate::backend::syntax::scanner::scan_fast(pkg_code);
+        let mut shallow_analysis = crate::analysis::Analysis::new();
+        shallow_analysis.parse_level = crate::analysis::ParseLevel::Shallow;
+        for s in shallow_symbols {
+            shallow_analysis.symbols.insert(s.name.clone().to_lowercase(), s);
+        }
+
+        // Deep-parse the current file
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            arch_code,
+            arch_root,
+        );
+
+        // Put both in the map (package is shallow, current file is deep)
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), shallow_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        let diags = crate::backend::features::diagnostics::collect_all_diagnostics(
+            arch_root,
+            &arch_analysis,
+            arch_code,
+            &analysis_map,
+            &arch_uri,
+        );
+
+        // Check: sim_fifo should ideally NOT be flagged.
+        // If it IS flagged, the shallow fallback path is broken.
+        let type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("undefined type"))
+            .collect();
+
+        assert!(
+            type_diags.is_empty(),
+            "Types from shallow-indexed packages should resolve via fallback. Got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_record_aggregate_constant_fields_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    type my_rec is record
+        field_a : integer;
+        field_b : boolean;
+    end record;
+    constant MY_CONST : my_rec := (field_a => 42, field_b => true);
+    signal s : integer;
+begin
+    s <= MY_CONST.field_a;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let field_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.message.to_lowercase().contains("field_a")
+                    || d.message.to_lowercase().contains("field_b")
+            })
+            .collect();
+        assert!(
+            field_diags.is_empty(),
+            "Record aggregate field names should not be flagged. Got: {:?}",
             diag_messages(&diags)
         );
     }

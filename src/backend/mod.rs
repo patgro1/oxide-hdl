@@ -18,7 +18,7 @@ use crate::analysis::{Analysis, BuiltinManager, OxideSymbolKind, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{Mutex, RwLock, watch};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 
@@ -52,7 +52,8 @@ pub struct Backend {
     parser: Arc<Mutex<Parser>>,
     analysis_map: Arc<RwLock<AnalysisMap>>,
     root_uri: Arc<RwLock<Option<Url>>>,
-    indexing_complete: Arc<RwLock<Option<oneshot::Receiver<()>>>>,
+    indexing_tx: Arc<watch::Sender<bool>>,
+    indexing_rx: watch::Receiver<bool>,
 }
 
 /// Recursively dumps a symbol hierarchy to a string for debugging purposes.
@@ -82,6 +83,7 @@ impl Backend {
     pub fn new(client: Client, parser: Parser) -> Self {
         let builtins = BuiltinManager::new();
         builtins.initialize();
+        let (indexing_tx, indexing_rx) = watch::channel(true);
         Backend {
             client,
             config: Arc::new(RwLock::new(None)),
@@ -89,8 +91,8 @@ impl Backend {
             analysis_map: Arc::new(RwLock::new(HashMap::new())),
             parser: Arc::new(Mutex::new(parser)),
             root_uri: Arc::new(RwLock::new(None)),
-            indexing_complete: Arc::new(RwLock::new(None)),
-            // shallow_query: Arc::new(shallow_query),
+            indexing_tx: Arc::new(indexing_tx),
+            indexing_rx,
         }
     }
 
@@ -272,8 +274,7 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        let (tx, rx) = oneshot::channel();
-        *self.indexing_complete.write().await = Some(rx);
+        let _ = self.indexing_tx.send(false);
         self.client
             .log_message(MessageType::INFO, "Oxide HDL initialized!")
             .await;
@@ -303,17 +304,26 @@ impl LanguageServer for Backend {
                 let mut w = self.config.write().await;
                 *w = Some(config.clone());
             }
+            let tx = self.indexing_tx.clone();
             tokio::spawn(async move {
                 workspace::index_workspace(client, map, uri, config).await;
-                let _ = tx.send(());
+                let _ = tx.send(true);
             });
+        } else {
+            // No workspace to index, mark as done
+            let _ = self.indexing_tx.send(true);
         }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let start_time = Instant::now();
-        if let Some(rx) = self.indexing_complete.write().await.take() {
-            let _ = rx.await;
+        {
+            let mut rx = self.indexing_rx.clone();
+            while !*rx.borrow_and_update() {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
         }
         let uri = params.text_document.uri;
         let text = params.text_document.text;
