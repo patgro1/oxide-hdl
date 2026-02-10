@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 use crate::{
-    analysis::{Analysis, DeclType, Declaration, OxideSymbolKind, ScopeTree, Symbol},
+    analysis::{Analysis, DeclType, Declaration, OxideSymbolKind, ScopeTree, Symbol, TypeInfo},
     backend::AnalysisMap,
 };
 
@@ -78,9 +78,21 @@ pub fn lookup_symbol(
     let target_lc = target.to_lowercase();
     if let Some(analysis) = analysis_map.get(current_uri) {
         // 1. Local lookup
-        if let Some(scope) = analysis.find_scope_tree_at(pos) {
-            let entity_scope = analysis.entity_scope_trees.values().next();
-            if let Some(locals) = scope.collect_visible_declarations(&scope.range, entity_scope) {
+        if let Some(root_scope) = analysis.find_scope_tree_at(pos) {
+            let innermost = root_scope.find_innermost_scope(pos);
+            let header_scope = root_scope
+                .entity
+                .as_ref()
+                .and_then(|name| analysis.entity_scope_trees.get(&name.to_lowercase()))
+                .or_else(|| {
+                    root_scope
+                        .package
+                        .as_ref()
+                        .and_then(|name| analysis.package_scope_trees.get(&name.to_lowercase()))
+                });
+            if let Some(locals) =
+                root_scope.collect_visible_declarations(&innermost.range, header_scope)
+            {
                 for decl in locals {
                     if decl.name.to_lowercase() == target_lc {
                         results.push(LookupResult {
@@ -90,8 +102,34 @@ pub fn lookup_symbol(
                     }
                 }
             }
+            let chain = root_scope.collect_scope_chain(pos);
+            for s in chain.iter().rev() {
+                if let Some(inst) = s
+                    .instantiations
+                    .iter()
+                    .find(|i| i.label.eq_ignore_ascii_case(&target_lc))
+                {
+                    results.push(LookupResult {
+                        item: ResolvedItem::Declaration(Declaration {
+                            name: inst.label.clone(),
+                            decl_type: DeclType::Component,
+                            range: inst.range,
+                            selection_range: inst.selection_range,
+                            type_info: TypeInfo {
+                                base_type: inst.component.clone(),
+                                constraints: None,
+                                is_array: false,
+                            },
+                            default_value: None,
+                            doc_comment: None,
+                            parameters: None,
+                        }),
+                        source_uri: current_uri.clone(),
+                    });
+                    break;
+                }
+            }
         }
-        // If we find anything, cut short the search and return
         if !results.is_empty() {
             return results;
         }
@@ -393,4 +431,77 @@ fn deduplicate_results(results: Vec<LookupResult>) -> Vec<LookupResult> {
         }
     }
     unique
+}
+
+/// Resolves a chain of identifiers (e.g., `["my_rec", "sub", "field"]`) to its definition.
+///
+/// Starting from the first identifier, each subsequent part is resolved by looking up the
+/// type of the current declaration and finding matching fields in its `parameters` list.
+/// This handles nested record field access (e.g., `my_rec.sub.field`).
+///
+/// For hover: pass the full chain up to (and including) the hovered identifier.
+/// For completion: pass the prefix chain (the part before the dot).
+///
+/// # Arguments
+/// * `chain` - Ordered list of identifiers to traverse (e.g., `["rec", "field"]`).
+/// * `current_uri` - The URI of the file containing the cursor.
+/// * `analysis_map` - The global analysis map for cross-file lookups.
+/// * `pos` - The cursor position for scope resolution.
+///
+/// # Returns
+/// A vector of matching `LookupResult`s for the final identifier in the chain.
+pub fn resolve_path_chain(
+    chain: &[String],
+    current_uri: &Url,
+    analysis_map: &AnalysisMap,
+    pos: &Position,
+) -> Vec<LookupResult> {
+    if chain.is_empty() {
+        return vec![];
+    }
+    let root_name = &chain[0];
+    let mut current_results = lookup_symbol(root_name, current_uri, analysis_map, pos);
+
+    for (_, part) in chain.iter().enumerate().skip(1) {
+        let mut next_results = Vec::new();
+        for res in current_results {
+            match &res.item {
+                // If it is a declation, we need to check its type for the fields
+                ResolvedItem::Declaration(decl) => {
+                    let type_name = &decl.type_info.base_type;
+                    let type_defs = lookup_symbol(type_name, current_uri, analysis_map, pos);
+                    for type_res in type_defs {
+                        if let ResolvedItem::Declaration(type_decl) = type_res.item
+                            && let Some(fields) = &type_decl.parameters
+                            && let Some(field) =
+                                fields.iter().find(|f| f.name.eq_ignore_ascii_case(part))
+                        {
+                            next_results.push(LookupResult {
+                                item: ResolvedItem::Declaration(field.clone()),
+                                source_uri: type_res.source_uri.clone(),
+                            });
+                        }
+                    }
+                }
+                ResolvedItem::Symbol(sym) => {
+                    if let Some(child) = sym
+                        .children
+                        .iter()
+                        .find(|c| c.name.eq_ignore_ascii_case(part))
+                    {
+                        next_results.push(LookupResult {
+                            item: ResolvedItem::Symbol(child.clone()),
+                            source_uri: res.source_uri.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        current_results = next_results;
+        if current_results.is_empty() {
+            break;
+        }
+    }
+
+    current_results
 }

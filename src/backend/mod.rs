@@ -453,7 +453,7 @@ impl LanguageServer for Backend {
     ///
     /// # Logic
     /// 1. Identifies the word under the cursor.
-    /// 2. Resolves candidates using `features::hover::resolve_rich_hover`.
+    /// 2. Resolves candidates using `features::hover::resolve_hover`.
     /// 3. **JIT Parsing:** If a candidate points to a file that is only "Shallowly" indexed
     ///    (Regex scan), it triggers `workspace::ensure_fully_parsed` to parse it immediately.
     /// 4. Re-fetches the rich data and formats it using `features::hover` formatters.
@@ -468,53 +468,54 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let rope = {
+        let (text, _) = {
             let map = self.document_map.read().await;
             match map.get(&uri) {
-                Some(r) => r.clone(),
+                Some(r) => (r.to_string(), r.clone()),
                 None => return Ok(None),
             }
         };
 
-        if let Some(word) = get_word_at_pos(&rope, position) {
-            let target = word.to_lowercase();
+        let tree = {
+            let mut parser = self.parser.lock().await;
+            let lang = unsafe { crate::tree_sitter_vhdl() };
+            let _ = parser.set_language(&lang);
+            parser.parse(&text, None).unwrap()
+        };
+        let root_node = tree.root_node();
 
-            let (candidates, needs_jit) = {
-                let map = self.analysis_map.read().await;
-                let results = hover::resolve_rich_hover(&target, &uri, &map, position);
-                let mut to_upgrade = Vec::new();
-                for res in &results {
-                    if let Some(def_uri) = &res.definition_uri
-                        && let Some(analysis) = map.get(def_uri)
-                        && analysis.parse_level == crate::analysis::ParseLevel::Shallow
-                    {
-                        to_upgrade.push(def_uri.clone());
-                    }
+        let (mut candidates, needs_jit) = {
+            let map = self.analysis_map.read().await;
+            // let results = hover::resolve_rich_hover(&target, &uri, &map, position);
+            let results = hover::resolve_hover(&map, &uri, &text, root_node, position);
+            let mut to_upgrade = Vec::new();
+            for res in &results {
+                if let Some(def_uri) = &res.definition_uri
+                    && let Some(analysis) = map.get(def_uri)
+                    && analysis.parse_level == crate::analysis::ParseLevel::Shallow
+                {
+                    to_upgrade.push(def_uri.clone());
                 }
-                (results, to_upgrade)
-            };
-
-            if !needs_jit.is_empty() {
-                for def_uri in needs_jit {
-                    workspace::ensure_fully_parsed(
-                        &self.client,
-                        &self.analysis_map,
-                        &self.parser,
-                        &def_uri,
-                    )
-                    .await;
-                }
-                let map = self.analysis_map.read().await;
-                let refined_results = hover::resolve_rich_hover(&target, &uri, &map, position);
-
-                if let Some(match_res) = refined_results.first() {
-                    let markdown = hover::format_hover_result(match_res);
-                    return Ok(Some(self.markup(markdown)));
-                }
-            } else if let Some(match_res) = candidates.first() {
-                let markdown = hover::format_hover_result(match_res);
-                return Ok(Some(self.markup(markdown)));
             }
+            (results, to_upgrade)
+        };
+
+        if !needs_jit.is_empty() {
+            for def_uri in needs_jit {
+                workspace::ensure_fully_parsed(
+                    &self.client,
+                    &self.analysis_map,
+                    &self.parser,
+                    &def_uri,
+                )
+                .await;
+            }
+            let map = self.analysis_map.read().await;
+            candidates = hover::resolve_hover(&map, &uri, &text, root_node, position);
+        }
+        if let Some(match_res) = candidates.first() {
+            let markdown = hover::format_hover_result(match_res);
+            return Ok(Some(self.markup(markdown)));
         }
         Ok(None)
     }
@@ -580,12 +581,12 @@ impl LanguageServer for Backend {
             }
         };
 
+        let text = rope.to_string();
         let context = {
             let mut parser = self.parser.lock().await;
             let lang = unsafe { crate::tree_sitter_vhdl() };
             let _ = parser.set_language(&lang);
 
-            let text = rope.to_string();
             let tree = parser.parse(&text, None).unwrap();
 
             features::completion::get_completion_context(&text, tree.root_node(), position)
@@ -626,7 +627,7 @@ impl LanguageServer for Backend {
             }
         }
         let map = self.analysis_map.read().await;
-        let items = features::completion::complete_scope(&map, &uri, &context, position);
+        let items = features::completion::complete_scope(&map, &uri, &context, position, &text);
         return Ok(Some(CompletionResponse::Array(items)));
     }
 

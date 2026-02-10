@@ -6,6 +6,7 @@ use tree_sitter::{Node, Point};
 use crate::analysis::{DeclType, Declaration};
 use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
+use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain};
 
 // =============================================================================
 // Node Kind Constants
@@ -935,6 +936,7 @@ fn is_dot_access_context(node: &Node, text: &str, pos: Position) -> bool {
 /// * `current_uri` - The URI of the file being completed.
 /// * `context` - The determined `CompletionContext`.
 /// * `position` - The cursor position.
+/// * `text` - The full source text of the current document (used for dot-access chain extraction).
 ///
 /// # Returns
 /// Vector of completion items appropriate for the context.
@@ -943,6 +945,7 @@ pub fn complete_scope(
     current_uri: &Url,
     context: &CompletionContext,
     position: Position,
+    text: &str,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
@@ -1013,6 +1016,27 @@ pub fn complete_scope(
 
                 return items;
             }
+            CompletionContext::DotAccess => {
+                if let Some(chain) = extract_dot_chain(text, position) {
+                    let results = resolve_path_chain(&chain, current_uri, analysis_map, &position);
+                    for res in results {
+                        if let ResolvedItem::Declaration(decl) = res.item {
+                            let type_name = &decl.type_info.base_type;
+                            let type_defs =
+                                lookup_symbol(type_name, current_uri, analysis_map, &position);
+                            for type_res in type_defs {
+                                if let ResolvedItem::Declaration(t) = type_res.item
+                                    && let Some(fields) = &t.parameters
+                                {
+                                    for f in fields {
+                                        items.push(declaration_to_completion(f));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // General Scope Completion (RHS, Process, Architecture body)
             _ => {
@@ -1047,6 +1071,50 @@ pub fn complete_scope(
     items
 }
 
+/// Extracts the dot-separated identifier chain before the cursor for record field completion.
+///
+/// Scans backwards from the cursor position to collect identifiers joined by dots.
+/// Only returns a chain if the text immediately before the cursor ends with a dot,
+/// indicating the user is requesting field completion.
+///
+/// Example: `"rec.sub.|"` → `Some(["rec", "sub"])`
+///
+/// # Arguments
+/// * `text` - The full source text of the document.
+/// * `pos` - The cursor position.
+///
+/// # Returns
+/// `Some(chain)` if a valid dot-terminated path is found, `None` otherwise.
+fn extract_dot_chain(text: &str, pos: Position) -> Option<Vec<String>> {
+    let offset = position_to_offset(text, pos);
+    let slice = &text[..offset];
+    let trimmed = slice.trim_end();
+
+    // Scan backwards for valid identifier chars and dots
+    let mut start = trimmed.len();
+    for (i, c) in trimmed.char_indices().rev() {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            start = i;
+        } else {
+            break;
+        }
+    }
+
+    let path_str = &trimmed[start..];
+
+    if path_str.ends_with('.') {
+        let parts: Vec<String> = path_str
+            .split('.')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !parts.is_empty() {
+            return Some(parts);
+        }
+    }
+    None
+}
+
 fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
     let kind = match decl.decl_type {
         DeclType::Alias => CompletionItemKind::VARIABLE,
@@ -1062,6 +1130,7 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Subtype => CompletionItemKind::STRUCT,
         DeclType::Procedure => CompletionItemKind::FUNCTION,
         DeclType::Attribute => CompletionItemKind::TYPE_PARAMETER,
+        DeclType::RecordField => CompletionItemKind::FIELD,
     };
 
     let mut details = decl.type_info.base_type.clone();

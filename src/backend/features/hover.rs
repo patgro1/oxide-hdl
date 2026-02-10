@@ -1,10 +1,11 @@
 use tower_lsp::lsp_types::{Position, Url};
+use tree_sitter::{Node, Point};
 
 use crate::{
     analysis::{DeclType, Declaration, OxideSymbolKind, Symbol, TypeInfo},
     backend::{
         AnalysisMap,
-        features::lookup::{ResolvedItem, lookup_symbol},
+        features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain},
     },
 };
 
@@ -205,6 +206,152 @@ pub fn format_function_hover(sym: &Symbol) -> String {
 
     md.push_str("\n```");
     md
+}
+
+/// Main entry point for hover resolution. Handles both dot notation and standard lookups.
+///
+/// Walks the AST upward from the cursor position looking for `selected_name` or `name`
+/// nodes with dot selections. If found, resolves the full chain (e.g., `rec.field`) via
+/// `resolve_path_chain`. Otherwise falls back to a simple identifier lookup.
+///
+/// # Arguments
+/// * `analysis_map` - The global analysis map for cross-file lookups.
+/// * `current_uri` - The URI of the file containing the cursor.
+/// * `text` - The full source text of the document.
+/// * `root_node` - The root node of the parsed syntax tree.
+/// * `pos` - The cursor position.
+///
+/// # Returns
+/// A vector of `HoverResolution` candidates for the symbol under the cursor.
+pub fn resolve_hover(
+    analysis_map: &AnalysisMap,
+    current_uri: &Url,
+    text: &str,
+    root_node: Node,
+    pos: Position,
+) -> Vec<HoverResolution> {
+    let point = Point::new(pos.line as usize, pos.character as usize);
+
+    let mut current_node = root_node.descendant_for_point_range(point, point);
+
+    while let Some(node) = current_node {
+        if (node.kind() == "selected_name" || node.kind() == "name") && has_selections(node) {
+            let chain = extract_chain_at_pos(node, text, pos);
+            if !chain.is_empty() {
+                let results = resolve_path_chain(&chain, current_uri, analysis_map, &pos);
+                return results
+                    .into_iter()
+                    .map(|res| HoverResolution {
+                        item: res.item,
+                        definition_uri: Some(res.source_uri),
+                    })
+                    .collect();
+            }
+        }
+
+        if node.kind() == "process_statement" || node.kind() == "architecture_body" {
+            break;
+        }
+        current_node = node.parent();
+    }
+
+    if let Some(token) = get_identifier_from_ast(root_node, pos, text) {
+        resolve_rich_hover(&token, current_uri, analysis_map, pos)
+    } else {
+        vec![]
+    }
+}
+
+/// Checks whether a syntax node contains dot-notation children (`selection` or `selected_name`).
+///
+/// # Arguments
+/// * `node` - The syntax node to inspect.
+///
+/// # Returns
+/// `true` if the node has at least one `selection` or `selected_name` child.
+fn has_selections(node: Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "selection" || child.kind() == "selected_name" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extracts the dot-separated identifier chain from a `selected_name` node up to the cursor.
+///
+/// Walks the direct children of the node, collecting identifiers and stopping once the
+/// cursor position is reached. This ensures that hovering over `rec.a` in `rec.a.b` only
+/// returns `["rec", "a"]`.
+///
+/// # Arguments
+/// * `node` - A `selected_name` or `name` syntax node containing selections.
+/// * `text` - The full source text.
+/// * `pos` - The cursor position (used to truncate the chain).
+///
+/// # Returns
+/// An ordered vector of identifier strings forming the chain up to the cursor.
+fn extract_chain_at_pos(node: Node, text: &str, pos: Position) -> Vec<String> {
+    let mut chain = Vec::new();
+    let point = Point::new(pos.line as usize, pos.character as usize);
+
+    let get_text = |n: Node| text[n.byte_range()].to_string();
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        // STOP if the child starts AFTER the cursor (we haven't typed that part yet)
+        if child.start_position() > point {
+            break;
+        }
+
+        match child.kind() {
+            "identifier" => chain.push(get_text(child)),
+            "selection" => {
+                // selection usually wraps { dot, identifier }
+                if let Some(id) = child.child_by_field_name("identifier").or_else(|| {
+                    child
+                        .children(&mut child.walk())
+                        .find(|c| c.kind() == "identifier")
+                }) {
+                    chain.push(get_text(id));
+                }
+            }
+            "selected_name" => {
+                // Recursive selected_names (if any) could be handled here,
+                // but the linear walk usually covers it.
+            }
+            _ => {}
+        }
+
+        // CRITICAL: If the cursor is INSIDE this child (e.g. hovering 'a' in 'rec.a.b'),
+        // we stop here. The chain is just ["rec", "a"]. We don't want 'b' yet.
+        if child.end_position() >= point {
+            break;
+        }
+    }
+    chain
+}
+
+/// Gets the simple identifier token under the cursor from the AST.
+///
+/// Used as a fallback when the cursor is not on a dot-notation expression.
+///
+/// # Arguments
+/// * `root` - The root node of the syntax tree.
+/// * `pos` - The cursor position.
+/// * `text` - The full source text.
+///
+/// # Returns
+/// `Some(identifier)` if the cursor is on an identifier node, `None` otherwise.
+fn get_identifier_from_ast(root: Node, pos: Position, text: &str) -> Option<String> {
+    let point = Point::new(pos.line as usize, pos.character as usize);
+    let node = root.descendant_for_point_range(point, point)?;
+
+    if node.kind() == "identifier" || node.kind() == "basic_identifier" {
+        return Some(text[node.byte_range()].to_string());
+    }
+    None
 }
 
 /// Resolves the symbol under the cursor to one or more candidate definitions.
