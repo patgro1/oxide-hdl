@@ -60,6 +60,9 @@ pub fn check_undeclared_identifiers(
             if node.kind() == "attribute_identifier" {
                 continue;
             }
+            if is_loop_variable(node) {
+                continue;
+            }
             if is_dot_suffix(node) {
                 continue;
             }
@@ -95,6 +98,17 @@ pub fn check_undeclared_identifiers(
         // Pass context down without exploding arguments
         check_undeclared_identifiers(ctx, child, collectors, lookup_cache);
     }
+}
+
+/// Returns `true` if the identifier is a for-loop variable declaration.
+///
+/// In `for i in 0 to 7 loop`, the `i` is an implicit constant declaration.
+/// It's the direct `identifier` child of a `parameter_specification` node.
+/// The range part (which may reference constants) should still be checked.
+fn is_loop_variable(node: Node) -> bool {
+    node.parent()
+        .map(|p| p.kind() == "parameter_specification")
+        .unwrap_or(false)
 }
 
 /// Returns `true` if the identifier is the suffix of a dot-notation access (e.g., `rec.field`).
@@ -1194,6 +1208,36 @@ end architecture;
         assert!(
             diags.is_empty(),
             "Signals from multi-identifier declaration should all be visible. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    // =========================================================================
+    // Process for-loop variable should not be flagged
+    // =========================================================================
+
+    #[test]
+    fn test_for_loop_variable_in_process_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    signal data : std_logic_vector(7 downto 0);
+begin
+    process
+    begin
+        for i in 0 to 7 loop
+            data(i) <= '0';
+        end loop;
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let loop_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains(" i"))
+            .collect();
+        assert!(
+            loop_diags.is_empty(),
+            "For-loop variable 'i' should not be flagged. Got: {:?}",
             diag_messages(&diags)
         );
     }
