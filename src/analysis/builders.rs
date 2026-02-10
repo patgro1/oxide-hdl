@@ -1102,6 +1102,40 @@ fn create_alias_declaration_from_node(node: Node, text: &str) -> Declaration {
     }
 }
 
+/// Create a declaration from an attribute declaration node.
+///
+/// # Arguments
+///
+/// * `node` - Alias declaration node
+/// * `text` - Full source text
+///
+/// # Returns
+///
+/// A Declaration for the alias
+fn create_attribute_declaration_from_node(node: Node, text: &str) -> Declaration {
+    let doc_comment = extract_doc_comment(node, text);
+    let mut selection_range = node_to_range(node);
+    let mut name = "".to_string();
+    let mut type_info = TypeInfo::new();
+    if let Some(id_node) = find_child(node, "identifier") {
+        name = text[id_node.byte_range()].to_string();
+        selection_range = node_to_range(id_node);
+    }
+    if let Some(type_node) = find_child(node, "name") {
+        type_info.base_type = text[type_node.byte_range()].to_string();
+    }
+    Declaration {
+        name,
+        decl_type: DeclType::Attribute,
+        range: node_to_range(node),
+        parameters: None,
+        selection_range,
+        type_info,
+        default_value: None,
+        doc_comment,
+    }
+}
+
 /// Create a component declaration node from a component_declaration
 ///
 /// # Arguments
@@ -1186,6 +1220,15 @@ fn extract_declaration_from_node(
     for alias_decl in collect_descendants(node, "alias_declaration") {
         declarations.push(create_alias_declaration_from_node(alias_decl, text));
         collect_identifier_from_decl(&alias_decl, text, references);
+    }
+    for attr_decl in collect_descendants(node, "attribute_declaration") {
+        declarations.push(create_attribute_declaration_from_node(attr_decl, text));
+        collect_identifier_from_decl(&attr_decl, text, references);
+    }
+    // For attribute definition, in theory we do not create any new declaration,
+    // instead we are just looking at the identifier and mark them as used
+    for attr_def in collect_descendants(node, "attribute_specification") {
+        collect_identifiers_recursive(attr_def, text, UsageContext::TypeSpec, references);
     }
     for sub_prog in collect_descendants(node, "subprogram_declaration") {
         if let Some(function_node) = find_child(sub_prog, "function_specification") {

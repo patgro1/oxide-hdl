@@ -651,4 +651,58 @@ end architecture;
             .collect();
         assert_eq!(flagged.len(), 1, "Should flag CONS0");
     }
+
+    #[test]
+    fn test_attributes_mark_constant_as_used() {
+        // Signals used only in type declarations ('range, 'length) should still be flagged
+        // as unused - unlike constants which ARE valid in type expressions
+        let code = r#"
+            architecture rtl of test is
+begin
+    b_mm_split: block is
+        attribute titi: string;
+        constant CONS2: natural := 1;
+        signal toto: std_logic;
+        attribute titi of toto: signal is CONS2;
+    begin
+        toto <= '1';
+    end block;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+        // CONS2 is used in the attribute definition
+        assert_eq!(diags.len(), 0, "Constant is used");
+    }
+
+    #[test]
+    fn test_attributes_mark_signal_as_unsused_if_attr() {
+        // Signals used only in type declarations ('range, 'length) should still be flagged
+        // as unused - unlike constants which ARE valid in type expressions
+        let code = r#"
+            architecture rtl of test is
+begin
+    b_mm_split: block is
+        attribute titi: string;
+        signal toto: std_logic;
+        attribute titi of toto: signal is toto'length;
+    begin
+    end block;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+        // CONS2 is used in the attribute definition
+        assert_eq!(diags.len(), 1, "Constant is used");
+
+        let flagged: Vec<&str> = diags
+            .iter()
+            .filter_map(|d| {
+                if d.message.contains("toto") {
+                    Some("toto")
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(flagged.len(), 1, "Should flag toto");
+    }
 }

@@ -40,6 +40,7 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
             DeclType::Procedure => format!("Unused procedure '{}'", decl.name),
             DeclType::Type => format!("Unused type '{}'", decl.name),
             DeclType::Subtype => format!("Unused type '{}'", decl.name),
+            DeclType::Attribute => format!("Unused attribute '{}'", decl.name),
         },
         ..Default::default()
     }

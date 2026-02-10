@@ -1061,6 +1061,7 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Type => CompletionItemKind::STRUCT,
         DeclType::Subtype => CompletionItemKind::STRUCT,
         DeclType::Procedure => CompletionItemKind::FUNCTION,
+        DeclType::Attribute => CompletionItemKind::TYPE_PARAMETER,
     };
 
     let mut details = decl.type_info.base_type.clone();

@@ -298,6 +298,8 @@ fn format_data_declaration(decl: &Declaration) -> String {
         DeclType::Constant => format!("constant {} : {}{};", decl.name, type_str, default_part),
 
         DeclType::Type => format!("type {} is {};", decl.name, type_str), // "is" for types
+        //
+        DeclType::Attribute => format!("attribute {} is {};", decl.name, type_str), // "is" for types
 
         DeclType::Subtype => format!("subtype {} is {};", decl.name, type_str),
 

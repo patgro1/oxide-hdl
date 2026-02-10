@@ -137,6 +137,8 @@ pub enum DeclType {
     Parameter(PortDirection, Option<ParameterClass>),
     /// Constant declaration (value cannot change)
     Constant,
+    /// Attributes
+    Attribute,
     /// Signal declaration (architecture/generate/block level)
     Signal,
     /// Variable declaration (process/function/procedure level)
@@ -168,6 +170,7 @@ impl fmt::Display for DeclType {
             DeclType::Function => "function",
             DeclType::Procedure => "procedure",
             DeclType::Alias => "alias",
+            DeclType::Attribute => "attribute",
         };
         write!(f, "{}", s)
     }
@@ -188,6 +191,7 @@ impl From<DeclType> for SymbolKind {
             DeclType::Function => SymbolKind::FUNCTION,
             DeclType::Procedure => SymbolKind::FUNCTION,
             DeclType::Alias => SymbolKind::VARIABLE,
+            DeclType::Attribute => SymbolKind::PROPERTY,
         }
     }
 }
@@ -207,6 +211,7 @@ impl From<DeclType> for OxideSymbolKind {
             DeclType::Function => OxideSymbolKind::Function,
             DeclType::Procedure => OxideSymbolKind::Function,
             DeclType::Alias => OxideSymbolKind::Variable,
+            DeclType::Attribute => OxideSymbolKind::Generic,
         }
     }
 }

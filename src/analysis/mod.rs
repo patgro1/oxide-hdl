@@ -176,7 +176,7 @@ pub fn collect_identifiers_recursive(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "identifier" {
+        if child.kind() == "identifier" || child.kind() == "attribute_identifier" {
             let id_text = text[child.byte_range()].to_string();
             if !id_text.is_empty() {
                 references.insert(Usage {
