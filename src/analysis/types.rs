@@ -155,6 +155,8 @@ pub enum DeclType {
     Procedure,
     /// Alias
     Alias,
+    /// Enumeration literal (e.g., `IDLE` from `type t_state is (IDLE, RUN, STOP)`)
+    EnumLiteral,
 }
 
 impl fmt::Display for DeclType {
@@ -174,6 +176,7 @@ impl fmt::Display for DeclType {
             DeclType::Alias => "alias",
             DeclType::Attribute => "attribute",
             DeclType::RecordField => "field",
+            DeclType::EnumLiteral => "enum",
         };
         write!(f, "{}", s)
     }
@@ -196,6 +199,7 @@ impl From<DeclType> for SymbolKind {
             DeclType::Alias => SymbolKind::VARIABLE,
             DeclType::Attribute => SymbolKind::PROPERTY,
             DeclType::RecordField => SymbolKind::FIELD,
+            DeclType::EnumLiteral => SymbolKind::ENUM_MEMBER,
         }
     }
 }
@@ -217,6 +221,7 @@ impl From<DeclType> for OxideSymbolKind {
             DeclType::Alias => OxideSymbolKind::Variable,
             DeclType::Attribute => OxideSymbolKind::Generic,
             DeclType::RecordField => OxideSymbolKind::Port,
+            DeclType::EnumLiteral => OxideSymbolKind::Port,
         }
     }
 }

@@ -1131,6 +1131,7 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Procedure => CompletionItemKind::FUNCTION,
         DeclType::Attribute => CompletionItemKind::TYPE_PARAMETER,
         DeclType::RecordField => CompletionItemKind::FIELD,
+        DeclType::EnumLiteral => CompletionItemKind::ENUM_MEMBER,
     };
 
     let mut details = decl.type_info.base_type.clone();

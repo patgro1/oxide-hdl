@@ -930,11 +930,23 @@ end package;
         .package_scope_trees
         .get("my_pkg")
         .expect("Package not found");
-    assert_eq!(pkg.declarations.len(), 1);
+    // 1 type + 3 enum literals (IDLE, RUN, STOP) flattened into scope
+    assert_eq!(pkg.declarations.len(), 4);
 
-    let type_decl = &pkg.declarations[0];
-    assert_eq!(type_decl.name, "t_state");
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_state")
+        .expect("Type not found");
     assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let enum_names: Vec<&str> = pkg
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::EnumLiteral))
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(enum_names, vec!["IDLE", "RUN", "STOP"]);
 }
 
 #[test]
@@ -999,7 +1011,8 @@ end package;
         .package_scope_trees
         .get("my_pkg")
         .expect("Package not found");
-    assert_eq!(pkg.declarations.len(), 4);
+    // 4 original (type + constant + function + procedure) + 3 enum literals (IDLE, RUN, STOP)
+    assert_eq!(pkg.declarations.len(), 7);
 }
 
 #[test]
@@ -1112,10 +1125,14 @@ end package body;
     let analysis = extract_document_symbols(code, root);
 
     let pkg_body = &analysis.scope_trees[0];
-    assert_eq!(pkg_body.declarations.len(), 1);
+    // 1 type + 3 enum literals (INIT, WORK, DONE) flattened into scope
+    assert_eq!(pkg_body.declarations.len(), 4);
 
-    let type_decl = &pkg_body.declarations[0];
-    assert_eq!(type_decl.name, "t_internal_state");
+    let type_decl = pkg_body
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_internal_state")
+        .expect("Type not found");
     assert!(matches!(type_decl.decl_type, DeclType::Type));
 }
 
@@ -1217,8 +1234,8 @@ end package body;
 
     let pkg_body = &analysis.scope_trees[0];
 
-    // Top-level declarations: constant + type
-    assert_eq!(pkg_body.declarations.len(), 4);
+    // Top-level declarations: constant + type + 3 enum literals (A, B, C) + function + procedure
+    assert_eq!(pkg_body.declarations.len(), 7);
 
     // Child scopes: function + procedure
     assert_eq!(pkg_body.children.len(), 2);
@@ -1536,7 +1553,7 @@ end package;
 }
 
 #[test]
-fn test_non_record_type_has_no_fields() {
+fn test_enum_type_has_literal_parameters() {
     let code = r#"
 package my_pkg is
     type t_state is (IDLE, RUN, STOP);
@@ -1558,6 +1575,32 @@ end package;
         .expect("Type not found");
     assert!(matches!(type_decl.decl_type, DeclType::Type));
 
-    // Non-record types should not have parameters
+    // Enum types should have their literals as parameters
+    let params = type_decl.parameters.as_ref().expect("Enum should have parameters");
+    assert_eq!(params.len(), 3);
+    assert!(params.iter().all(|p| matches!(p.decl_type, DeclType::EnumLiteral)));
+    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["IDLE", "RUN", "STOP"]);
+}
+
+#[test]
+fn test_non_enum_non_record_type_has_no_parameters() {
+    let code = r#"
+architecture rtl of test is
+    type t_byte is range 0 to 255;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let scope = &analysis.scope_trees[0];
+    let type_decl = scope
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_byte")
+        .expect("Type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
     assert!(type_decl.parameters.is_none());
 }
