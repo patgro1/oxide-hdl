@@ -213,7 +213,8 @@ pub fn check_label_has_valid_parent(node: Node, collectors: &mut DiagnosticColle
             | "block_statement"
             | "loop_statement"
             | "component_instantiation_statement"
-            | "for_generate_statement" => {}
+            | "for_generate_statement"
+            | "concurrent_procedure_call_statement" => {}
             _ => collectors.syntax.push(messages::syntax_error(
                 node,
                 DiagnosticMessage::InvalidLabelStatement,

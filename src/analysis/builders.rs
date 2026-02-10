@@ -1432,6 +1432,15 @@ fn extract_declaration_from_node(
                 ));
                 collect_identifier_from_decl(&signal_decl, text, references);
             }
+            // Shared variables can appear in concurrent regions (architecture, block, generate)
+            for var_decl in collect_descendants(node, "variable_declaration") {
+                declarations.extend(create_declarations_from_node(
+                    var_decl,
+                    text,
+                    DeclType::Variable,
+                ));
+                collect_identifier_from_decl(&var_decl, text, references);
+            }
         }
         RegionType::Sequential => {
             for var_decl in collect_descendants(node, "variable_declaration") {

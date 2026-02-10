@@ -1217,6 +1217,30 @@ end architecture;
     // =========================================================================
 
     #[test]
+    fn test_shared_variable_not_flagged() {
+        let code = r#"
+architecture rtl of test is
+    shared variable sv : integer := 0;
+begin
+    process
+    begin
+        sv := sv + 1;
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let sv_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains(" sv"))
+            .collect();
+        assert!(
+            sv_diags.is_empty(),
+            "Shared variable should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
     fn test_for_loop_variable_in_process_not_flagged() {
         let code = r#"
 architecture rtl of test is
