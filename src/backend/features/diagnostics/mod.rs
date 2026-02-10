@@ -2,18 +2,27 @@
 //!
 //! This module provides the infrastructure for detecting and reporting various types
 //! of errors in VHDL code, including syntax errors, missing semicolons, unmatched
-//! parentheses, and semantic issues like missing types or port directions.
+//! parentheses, undeclared identifiers, and semantic issues like missing types or
+//! port directions.
+//!
+//! * [`messages`]: Diagnostic message factory
+//! * [`sensitivity`]: Sensitivity list validation
+//! * [`syntax`]: Syntax error detection
+//! * [`undeclared`]: Undeclared identifier detection
+//! * [`unused`]: Unused signal/variable detection
 
 pub mod messages;
 pub mod sensitivity;
 pub mod syntax;
+pub mod undeclared;
 pub mod unused;
 
 use crate::{
     analysis::{Analysis, ScopeTree},
     backend::AnalysisMap,
 };
-use tower_lsp::lsp_types::{Diagnostic, Url};
+use std::{cmp::Ordering, collections::HashMap};
+use tower_lsp::lsp_types::{Diagnostic, Range, Url};
 use tree_sitter::Node;
 
 /// The kind identifier for ERROR nodes in the Tree-sitter AST.
@@ -119,6 +128,15 @@ impl DiagnosticCollectors {
         all.extend(self.undefined);
         all.extend(self.sensitivity);
 
+        all.sort_by(|a, b| match compare_range(&a.range, &b.range) {
+            Ordering::Equal => a.message.cmp(&b.message),
+            other => other,
+        });
+
+        all.dedup_by(|a, b| {
+            a.range == b.range && a.message == b.message && a.severity == b.severity
+        });
+
         all
     }
 }
@@ -176,6 +194,20 @@ pub fn collect_all_diagnostics(
                         current_uri,
                     );
                     arch_index += 1;
+                } else if child.kind() == "entity_declaration" {
+                    let entity_scope = child
+                        .child_by_field_name("entity")
+                        .map(|n| &text[n.byte_range()])
+                        .and_then(|name| analysis.entity_scope_trees.get(name));
+                    walk_node(
+                        child,
+                        text,
+                        entity_scope,
+                        analysis,
+                        &mut collectors,
+                        global_map,
+                        current_uri,
+                    );
                 } else {
                     walk_node(
                         child,
@@ -291,6 +323,37 @@ fn check_node(
         "architecture_definition" => {
             if let Some(scope_tree) = scope_tree {
                 unused::check_unused_signals(scope_tree, collectors);
+                let mut lookup_cache: HashMap<String, bool> = HashMap::new();
+                // Create the context bundle
+                let ctx = undeclared::ValidationContext {
+                    root: node, // The architecture node acts as the "root" for this scope's search
+                    global_map,
+                    current_uri,
+                };
+
+                // Call with just 4 arguments
+                undeclared::check_undeclared_identifiers(
+                    &ctx,
+                    scope_tree,
+                    collectors,
+                    &mut lookup_cache,
+                );
+            }
+        }
+        "entity_declaration" => {
+            if let Some(scope_tree) = scope_tree {
+                let mut lookup_cache: HashMap<String, bool> = HashMap::new();
+                let ctx = undeclared::ValidationContext {
+                    root: node,
+                    global_map,
+                    current_uri,
+                };
+                undeclared::check_undeclared_identifiers(
+                    &ctx,
+                    scope_tree,
+                    collectors,
+                    &mut lookup_cache,
+                );
             }
         }
         "signal_declaration" => {
@@ -342,5 +405,19 @@ fn check_node(
             syntax::check_association_list_parens(node, text, collectors);
         }
         _ => {}
+    }
+}
+
+/// Helper function to compare two ranges for sorting.
+fn compare_range(a: &Range, b: &Range) -> Ordering {
+    match a.start.line.cmp(&b.start.line) {
+        Ordering::Equal => match a.start.character.cmp(&b.start.character) {
+            Ordering::Equal => match a.end.line.cmp(&b.end.line) {
+                Ordering::Equal => a.end.character.cmp(&b.end.character),
+                other => other,
+            },
+            other => other,
+        },
+        other => other,
     }
 }

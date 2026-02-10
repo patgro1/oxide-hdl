@@ -275,60 +275,57 @@ pub async fn parse_and_update_document(
     //     }
     // }
 
-    // Phase 3: Run diagnostics (now with access to imported packages)
-    let diagnostics = {
-        if get_diagnostics {
-            let analysis_for_diag = analysis.clone();
-            let map_ref = analysis_map.clone();
-            let uri = uri.clone();
-            tokio::task::spawn_blocking(move || {
-                let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
-                let thread_result = builder
-                    .spawn(move || {
-                        let map = map_ref.blocking_read();
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let tree = {
-                                let mut parser = parser_for_diag.blocking_lock();
-                                let language = unsafe { crate::tree_sitter_vhdl() };
-                                let _ = parser.set_language(&language);
-                                parser.parse(&text_for_diag, None)
-                            };
-                            match tree {
-                                Some(t) => {
-                                    let root = t.root_node();
-                                    crate::backend::features::diagnostics::collect_all_diagnostics(
-                                        root,
-                                        &analysis_for_diag,
-                                        &text_for_diag,
-                                        &map,
-                                        &uri,
-                                    )
-                                }
-                                None => Vec::new(),
-                            }
-                        }))
-                    })
-                    .unwrap()
-                    .join();
-                match thread_result {
-                    Ok(Ok(diags)) => diags,
-                    _ => Vec::new(),
-                }
-            })
-            .await
-            .unwrap()
-        } else {
-            vec![]
-        }
-    };
-
-    // Phase 4: Store analysis in map
+    // Phase 3: Store analysis in map
     {
         let mut map = analysis_map.write().await;
-        map.insert(uri.clone(), analysis);
+        map.insert(uri.clone(), analysis.clone());
     }
 
-    diagnostics
+    // Phase 4: Run diagnostics (now with access to imported packages)
+
+    if get_diagnostics {
+        let analysis_for_diag = analysis;
+        let map_ref = analysis_map.clone();
+        let uri = uri.clone();
+        tokio::task::spawn_blocking(move || {
+            let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
+            let thread_result = builder
+                .spawn(move || {
+                    let map = map_ref.blocking_read();
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let tree = {
+                            let mut parser = parser_for_diag.blocking_lock();
+                            let language = unsafe { crate::tree_sitter_vhdl() };
+                            let _ = parser.set_language(&language);
+                            parser.parse(&text_for_diag, None)
+                        };
+                        match tree {
+                            Some(t) => {
+                                let root = t.root_node();
+                                crate::backend::features::diagnostics::collect_all_diagnostics(
+                                    root,
+                                    &analysis_for_diag,
+                                    &text_for_diag,
+                                    &map,
+                                    &uri,
+                                )
+                            }
+                            None => Vec::new(),
+                        }
+                    }))
+                })
+                .unwrap()
+                .join();
+            match thread_result {
+                Ok(Ok(diags)) => diags,
+                _ => Vec::new(),
+            }
+        })
+        .await
+        .unwrap()
+    } else {
+        vec![]
+    }
 }
 
 /// Finds the file URI containing a package declaration by name.

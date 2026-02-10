@@ -42,6 +42,7 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
             DeclType::Subtype => format!("Unused type '{}'", decl.name),
             DeclType::Attribute => format!("Unused attribute '{}'", decl.name),
             DeclType::RecordField => format!("Unused field '{}'", decl.name),
+            DeclType::EnumLiteral => format!("Unused enum literal '{}'", decl.name),
         },
         ..Default::default()
     }
@@ -89,6 +90,48 @@ pub fn unnecessary_sensitivity(name: &str, range: &Range) -> Diagnostic {
         message: format!("Signal '{}' is not needed in sensitivity list", name),
         source: Some("oxide-hdl-sensitivity".to_string()),
         tags: vec![DiagnosticTag::UNNECESSARY].into(),
+        ..Default::default()
+    }
+}
+
+/// Create a diagnostic for a identifier that was undeclared.
+///
+/// Severity: ERROR (it won't synthesize/compile)
+///
+/// # Arguments
+/// * `name` - Name of the undeclared identifier
+/// * `range` - Location of the usage
+///
+/// # Returns
+///
+/// Diagnostic pointing to the specific signal that was not declared
+pub fn undeclared_identifier(name: &str, range: &Range) -> Diagnostic {
+    Diagnostic {
+        range: *range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        message: format!("Use for undeclared identifier {}", name),
+        source: Some("oxide-hdl-undeclared".to_string()),
+        ..Default::default()
+    }
+}
+
+/// Create a diagnostic for a type or component that is not defined
+///
+/// Severity: ERROR (it won't synthesize/compile)
+///
+/// # Arguments
+/// * `name` - Name of the undeclared identifier
+/// * `range` - Location of the usage
+///
+/// # Returns
+///
+/// Diagnostic pointing to the specific signal that was not declared
+pub fn undefined_type(name: &str, range: &Range) -> Diagnostic {
+    Diagnostic {
+        range: *range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        message: format!("Use for undefined type {}", name),
+        source: Some("oxide-hdl-undeclared".to_string()),
         ..Default::default()
     }
 }
