@@ -793,6 +793,16 @@ fn extract_doc_comment(decl_node: Node, text: &str) -> Option<String> {
                 let child = children[i];
                 if child.kind() == "line_comment" {
                     let comment_line = child.start_position().row;
+                    // Making sure that a comment following a statement is not seen as doc comment
+                    // for the next statement.
+                    if i > 0 {
+                        let prev_sibling = children[i - 1];
+                        if prev_sibling.end_position().row == comment_line
+                            && prev_sibling.kind() != "line_comment"
+                        {
+                            break;
+                        }
+                    }
                     if comment_line == expected_line {
                         if let Some(comment_content) = find_child(child, "comment_content") {
                             let comment_text =
