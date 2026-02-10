@@ -147,6 +147,8 @@ pub enum DeclType {
     Type,
     /// Subtype declaration
     Subtype,
+    /// Record fields
+    RecordField,
     /// Function subprogram
     Function,
     /// Procedure subprogram
@@ -171,6 +173,7 @@ impl fmt::Display for DeclType {
             DeclType::Procedure => "procedure",
             DeclType::Alias => "alias",
             DeclType::Attribute => "attribute",
+            DeclType::RecordField => "field",
         };
         write!(f, "{}", s)
     }
@@ -192,6 +195,7 @@ impl From<DeclType> for SymbolKind {
             DeclType::Procedure => SymbolKind::FUNCTION,
             DeclType::Alias => SymbolKind::VARIABLE,
             DeclType::Attribute => SymbolKind::PROPERTY,
+            DeclType::RecordField => SymbolKind::FIELD,
         }
     }
 }
@@ -212,6 +216,7 @@ impl From<DeclType> for OxideSymbolKind {
             DeclType::Procedure => OxideSymbolKind::Function,
             DeclType::Alias => OxideSymbolKind::Variable,
             DeclType::Attribute => OxideSymbolKind::Generic,
+            DeclType::RecordField => OxideSymbolKind::Port,
         }
     }
 }

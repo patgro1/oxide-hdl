@@ -1026,6 +1026,10 @@ fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
         name = text[id_node.byte_range()].to_string();
         selection_range = node_to_range(id_node);
     }
+    let mut parameters = None;
+    if let Some(record_def) = find_child(node, "record_type_definition") {
+        parameters = Some(extract_record_fields_declarations(&record_def, text));
+    }
     Declaration {
         name,
         decl_type: DeclType::Type,
@@ -1034,7 +1038,7 @@ fn create_type_declaration_from_node(node: Node, text: &str) -> Declaration {
         type_info: extract_type_info(&node, text),
         default_value: None,
         doc_comment,
-        parameters: None,
+        parameters,
     }
 }
 
@@ -1100,6 +1104,42 @@ fn create_alias_declaration_from_node(node: Node, text: &str) -> Declaration {
         default_value: None,
         doc_comment,
     }
+}
+
+/// Extract parameters from a record definition node.
+///
+/// Each `element_declaration` inside the record may declare one or more identifiers
+/// sharing the same type (e.g., `field_a, field_b : std_logic`). Each identifier is
+/// expanded into its own `Declaration` with `DeclType::RecordField`.
+///
+/// # Arguments
+/// * `node` - Record type definition node (`record_type_definition`)
+/// * `text` - Full source text
+///
+/// # Returns
+///
+/// A vector of all the Declarations for the record fields
+fn extract_record_fields_declarations(node: &Node, text: &str) -> Vec<Declaration> {
+    let mut fields = Vec::new();
+    for element in collect_children(*node, "element_declaration") {
+        let doc_comment = extract_doc_comment(element, text);
+        let identifiers = extract_signal_names(element, text);
+        let type_info = extract_type_info(&element, text);
+        for (identifier, range) in identifiers {
+            fields.push(Declaration {
+                name: identifier,
+                decl_type: DeclType::RecordField,
+                range: node_to_range(element),
+                selection_range: range,
+                type_info: type_info.clone(),
+                parameters: None,
+                default_value: None,
+                doc_comment: doc_comment.clone(),
+            })
+        }
+    }
+
+    fields
 }
 
 /// Create a declaration from an attribute declaration node.

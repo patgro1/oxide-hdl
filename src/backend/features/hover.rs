@@ -303,6 +303,8 @@ fn format_data_declaration(decl: &Declaration) -> String {
 
         DeclType::Subtype => format!("subtype {} is {};", decl.name, type_str),
 
+        DeclType::RecordField => format!("field {} is {};", decl.name, type_str),
+
         DeclType::Parameter(dir, _) => {
             format!("{} : {} {}{}", decl.name, dir, type_str, default_part)
         } // Inside parameter list

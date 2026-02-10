@@ -41,6 +41,7 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
             DeclType::Type => format!("Unused type '{}'", decl.name),
             DeclType::Subtype => format!("Unused type '{}'", decl.name),
             DeclType::Attribute => format!("Unused attribute '{}'", decl.name),
+            DeclType::RecordField => format!("Unused field '{}'", decl.name),
         },
         ..Default::default()
     }

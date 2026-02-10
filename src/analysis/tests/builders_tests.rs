@@ -1260,3 +1260,304 @@ end package body;
     assert!(names.contains(&"func_b"));
     assert!(names.contains(&"func_c"));
 }
+
+// =========================================================================
+// Record type extraction tests
+// =========================================================================
+
+#[test]
+fn test_record_type_simple() {
+    let code = r#"
+package my_pkg is
+    type t_record is record
+        field_a : std_logic;
+        field_b : integer;
+    end record;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
+
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_record")
+        .expect("Record type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let fields = type_decl
+        .parameters
+        .as_ref()
+        .expect("Record should have fields in parameters");
+    assert_eq!(fields.len(), 2);
+
+    assert_eq!(fields[0].name, "field_a");
+    assert!(matches!(fields[0].decl_type, DeclType::RecordField));
+    assert_eq!(fields[0].type_info.base_type, "std_logic");
+
+    assert_eq!(fields[1].name, "field_b");
+    assert!(matches!(fields[1].decl_type, DeclType::RecordField));
+    assert_eq!(fields[1].type_info.base_type, "integer");
+}
+
+#[test]
+fn test_record_type_constrained_fields() {
+    let code = r#"
+package my_pkg is
+    type t_data is record
+        addr : std_logic_vector(15 downto 0);
+        data : std_logic_vector(31 downto 0);
+        valid : std_logic;
+    end record;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
+
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_data")
+        .expect("Record type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let fields = type_decl
+        .parameters
+        .as_ref()
+        .expect("Record should have fields in parameters");
+    assert_eq!(fields.len(), 3);
+
+    assert_eq!(fields[0].name, "addr");
+    assert!(matches!(fields[0].decl_type, DeclType::RecordField));
+    assert_eq!(fields[0].type_info.base_type, "std_logic_vector");
+    assert_eq!(
+        fields[0].type_info.constraints,
+        Some("(15 downto 0)".to_string())
+    );
+
+    assert_eq!(fields[1].name, "data");
+    assert!(matches!(fields[1].decl_type, DeclType::RecordField));
+    assert_eq!(fields[1].type_info.base_type, "std_logic_vector");
+    assert_eq!(
+        fields[1].type_info.constraints,
+        Some("(31 downto 0)".to_string())
+    );
+
+    assert_eq!(fields[2].name, "valid");
+    assert!(matches!(fields[2].decl_type, DeclType::RecordField));
+    assert_eq!(fields[2].type_info.base_type, "std_logic");
+    assert_eq!(fields[2].type_info.constraints, None);
+}
+
+#[test]
+fn test_record_type_in_architecture() {
+    let code = r#"
+architecture rtl of test is
+    type t_ctrl is record
+        enable : std_logic;
+        mode   : integer;
+    end record;
+    signal ctrl : t_ctrl;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let arch = &analysis.scope_trees[0];
+
+    let type_decl = arch
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_ctrl")
+        .expect("Record type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let fields = type_decl
+        .parameters
+        .as_ref()
+        .expect("Record should have fields in parameters");
+    assert_eq!(fields.len(), 2);
+
+    assert_eq!(fields[0].name, "enable");
+    assert!(matches!(fields[0].decl_type, DeclType::RecordField));
+    assert_eq!(fields[0].type_info.base_type, "std_logic");
+
+    assert_eq!(fields[1].name, "mode");
+    assert!(matches!(fields[1].decl_type, DeclType::RecordField));
+    assert_eq!(fields[1].type_info.base_type, "integer");
+}
+
+#[test]
+fn test_record_type_single_field() {
+    let code = r#"
+package my_pkg is
+    type t_wrapper is record
+        value : std_logic;
+    end record;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+    println!("analysis: {:?}", analysis);
+
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
+
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_wrapper")
+        .expect("Record type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let fields = type_decl
+        .parameters
+        .as_ref()
+        .expect("Record should have fields in parameters");
+    assert_eq!(fields.len(), 1);
+
+    assert_eq!(fields[0].name, "value");
+    assert!(matches!(fields[0].decl_type, DeclType::RecordField));
+    assert_eq!(fields[0].type_info.base_type, "std_logic");
+}
+
+#[test]
+fn test_record_type_many_fields() {
+    let code = r#"
+package my_pkg is
+    type t_axi is record
+        awaddr  : std_logic_vector(31 downto 0);
+        awvalid : std_logic;
+        awready : std_logic;
+        wdata   : std_logic_vector(31 downto 0);
+        wvalid  : std_logic;
+    end record;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
+
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_axi")
+        .expect("Record type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let fields = type_decl
+        .parameters
+        .as_ref()
+        .expect("Record should have fields in parameters");
+    assert_eq!(fields.len(), 5);
+
+    let field_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        field_names,
+        vec!["awaddr", "awvalid", "awready", "wdata", "wvalid"]
+    );
+
+    // All fields should be RecordField type
+    for field in fields {
+        assert!(matches!(field.decl_type, DeclType::RecordField));
+    }
+}
+
+#[test]
+fn test_record_type_multi_identifier_fields() {
+    let code = r#"
+package my_pkg is
+    type t_pair is record
+        field_a, field_b : std_logic;
+        data : std_logic_vector(7 downto 0);
+    end record;
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
+
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_pair")
+        .expect("Record type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    let fields = type_decl
+        .parameters
+        .as_ref()
+        .expect("Record should have fields in parameters");
+    // field_a and field_b should be expanded into separate declarations
+    assert_eq!(fields.len(), 3);
+
+    assert_eq!(fields[0].name, "field_a");
+    assert!(matches!(fields[0].decl_type, DeclType::RecordField));
+    assert_eq!(fields[0].type_info.base_type, "std_logic");
+
+    assert_eq!(fields[1].name, "field_b");
+    assert!(matches!(fields[1].decl_type, DeclType::RecordField));
+    assert_eq!(fields[1].type_info.base_type, "std_logic");
+
+    assert_eq!(fields[2].name, "data");
+    assert!(matches!(fields[2].decl_type, DeclType::RecordField));
+    assert_eq!(fields[2].type_info.base_type, "std_logic_vector");
+    assert_eq!(
+        fields[2].type_info.constraints,
+        Some("(7 downto 0)".to_string())
+    );
+}
+
+#[test]
+fn test_non_record_type_has_no_fields() {
+    let code = r#"
+package my_pkg is
+    type t_state is (IDLE, RUN, STOP);
+end package;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let pkg = analysis
+        .package_scope_trees
+        .get("my_pkg")
+        .expect("Package not found");
+
+    let type_decl = pkg
+        .declarations
+        .iter()
+        .find(|d| d.name == "t_state")
+        .expect("Type not found");
+    assert!(matches!(type_decl.decl_type, DeclType::Type));
+
+    // Non-record types should not have parameters
+    assert!(type_decl.parameters.is_none());
+}

@@ -153,6 +153,7 @@ impl ScopeTree {
             DeclType::Parameter(_, _)
             | DeclType::Port(_)
             | DeclType::Signal
+            | DeclType::RecordField
             | DeclType::Variable => self.local_usage.iter().any(|u| {
                 u.name.to_lowercase() == decl_name_lower && u.context == UsageContext::Behavioral
             }),
