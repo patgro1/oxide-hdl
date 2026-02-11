@@ -289,6 +289,87 @@ fn is_sequential_scope(kind: &str) -> bool {
     matches!(kind, PROCESS_STATEMENT | SUBPROGRAM_BODY)
 }
 
+/// Detects if the cursor is positioned after a label in the syntax tree.
+///
+/// Labels in VHDL can be used for various concurrent statements in architecture bodies:
+/// - Component instantiations: `inst1: my_comp ...`
+/// - Process statements: `proc1: process ...`
+/// - Generate statements: `gen1: for ... generate` or `gen1: if ... generate`
+/// - Block statements: `block1: block ...`
+///
+/// This function checks the tree-sitter AST for patterns indicating the user has typed
+/// a label followed by a colon, and the cursor is positioned where they would start
+/// typing the statement type or component name.
+///
+/// Returns `true` for patterns like:
+/// - `inst1: |` → Tree shows: `(ERROR (label_declaration (label)))`
+/// - `my_label: avl|` → Tree shows: `(concurrent_procedure_call_statement ...)`
+///
+/// Returns `false` when:
+/// - No label pattern is detected
+/// - Cursor is inside a well-formed statement body
+///
+/// # Arguments
+/// * `_text` - Full source code text (unused, reserved for future text-based validation)
+/// * `position` - LSP cursor position
+/// * `tree_root` - Tree-sitter root node
+///
+/// # Returns
+/// `true` if cursor is positioned after a label where snippets should be offered
+pub fn is_after_label(_text: &str, position: Position, tree_root: Node) -> bool {
+    let cursor_line = position.line as usize;
+
+    // Strategy: Recursively search tree for ERROR nodes on same line with label_declaration
+    // This works because incomplete syntax (inst1: |) creates ERROR nodes, while
+    // well-formed statements (inst1: comp port map...) don't have ERROR nodes
+    find_error_with_label_on_line(tree_root, cursor_line)
+}
+
+/// Recursively searches for ERROR nodes on a specific line containing label_declaration.
+///
+/// This helper enables detection of incomplete labeled statements where the user
+/// has typed a label but hasn't completed the statement yet.
+///
+/// # Arguments
+/// * `node` - Current node to check (starts from root, recurses through children)
+/// * `target_line` - Line number where cursor is positioned
+///
+/// # Returns
+/// `true` if an ERROR node with label_declaration is found on target line
+fn find_error_with_label_on_line(node: Node, target_line: usize) -> bool {
+    if (node.kind() == "ERROR" || node.kind() == "concurrent_procedure_call_statement")
+        && (node.start_position().row == target_line || node.end_position().row == target_line)
+    {
+        return has_label_declaration(node);
+    }
+    for child in node.children(&mut node.walk()) {
+        // println!("child.kind(): {:?}", child.kind());
+        if find_error_with_label_on_line(child, target_line) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Checks if a node contains a label_declaration child.
+///
+/// Used to verify that an ERROR or concurrent_procedure_call_statement node
+/// actually represents a labeled statement pattern.
+///
+/// # Arguments
+/// * `node` - The node to check for label_declaration children
+///
+/// # Returns
+/// `true` if node has a label_declaration child
+fn has_label_declaration(node: Node) -> bool {
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == "label_declaration" {
+            return true;
+        }
+    }
+    false
+}
+
 // =============================================================================
 // Component Name Extraction
 // =============================================================================
@@ -1457,6 +1538,495 @@ u1: entity work.my_broken_comp
                 );
             "#,
             CompletionContext::PortMapRhs,
+        );
+    }
+    #[test]
+    fn explore_instantiation_context() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+          architecture rtl of test is
+          begin
+              inst1: |
+          end rtl;
+      "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        let ctx = get_completion_context(&code, tree.root_node(), pos);
+        println!("Context detected: {:?}", ctx);
+
+        // Also print the tree structure
+        let node = tree.root_node();
+        println!("Tree: {}", node.to_sexp());
+    }
+    #[test]
+    fn explore_instantiation_with_partial_name() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+          architecture rtl of test is
+          begin
+              inst1: avl|
+          end rtl;
+      "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        let ctx = get_completion_context(&code, tree.root_node(), pos);
+        println!("Context detected: {:?}", ctx);
+        println!("Tree: {}", tree.root_node().to_sexp());
+    }
+    #[test]
+    fn explore_labeled_process() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+          architecture rtl of test is
+          begin
+              proc1: |
+          end rtl;
+      "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        println!("=== LABELED PROCESS ===");
+        println!(
+            "Context: {:?}",
+            get_completion_context(&code, tree.root_node(), pos)
+        );
+        println!("Tree: {}", tree.root_node().to_sexp());
+    }
+
+    #[test]
+    fn explore_labeled_generate_for() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+      architecture rtl of test is
+      begin
+          proc1: process|
+      end rtl;
+  "#;
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        println!("=== LABELED GENERATE ===");
+        println!(
+            "Context: {:?}",
+            get_completion_context(&code, tree.root_node(), pos)
+        );
+        println!("Tree: {}", tree.root_node().to_sexp());
+    }
+    #[test]
+    fn explore_after_process_keyword() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+          architecture rtl of test is
+          begin
+              g_gen: process|
+          end rtl;
+      "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        println!("=== AFTER PROCESS KEYWORD ===");
+        println!(
+            "Context: {:?}",
+            get_completion_context(&code, tree.root_node(), pos)
+        );
+        println!("Tree: {}", tree.root_node().to_sexp());
+    }
+    #[test]
+    fn explore_inside_process_statement() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+          architecture rtl of test is
+          begin
+              g_gen: process(clk)
+              begin
+                  |
+              end process;
+          end rtl;
+      "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        println!("=== INSIDE PROCESS BODY ===");
+        println!(
+            "Context: {:?}",
+            get_completion_context(&code, tree.root_node(), pos)
+        );
+    }
+
+    // =============================================================================
+    // Tests for is_after_label()
+    // =============================================================================
+
+    #[test]
+    fn test_is_after_label_empty() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                inst1: |
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            is_after_label(&code, pos, tree.root_node()),
+            "Should detect label pattern: 'inst1: |'"
+        );
+    }
+
+    #[test]
+    fn test_is_after_label_partial_identifier() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                inst1: avl|
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            is_after_label(&code, pos, tree.root_node()),
+            "Should detect label pattern: 'inst1: avl|'"
+        );
+    }
+
+    #[test]
+    fn test_is_after_label_process_keyword() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                proc1: process|
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        // This is a tricky case - "process" without parens looks like an identifier
+        // We should still return true here and let snippets be offered
+        assert!(
+            is_after_label(&code, pos, tree.root_node()),
+            "Should detect label pattern even with 'process' keyword"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_inside_process() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                proc1: process(clk)
+                begin
+                    |
+                end process;
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern inside process body"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_random_architecture() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+                signal s : bit;
+            begin
+                s <= '1';
+                |
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern in random architecture position"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_inside_port_map() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                inst1: my_comp
+                    port map (
+                        clk => |
+                    );
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern when inside port map"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_no_label() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                my_signal <= |'1';
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern when no label exists"
+        );
+    }
+
+    // =============================================================================
+    // Edge Case Tests for is_after_label()
+    // =============================================================================
+
+    #[test]
+    fn test_not_after_label_inside_generate() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                gen1: for i in 0 to 3 generate
+                    |
+                end generate;
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern inside well-formed generate statement"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_inside_block() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                blk1: block
+                begin
+                    |
+                end block;
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern inside well-formed block statement"
+        );
+    }
+
+    #[test]
+    fn test_not_after_complete_instantiation() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                inst1: my_comp port map (clk => clk);
+                |
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern after a completed instantiation"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_if_generate_complete() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                gen_if: if condition generate
+                    |
+                end generate;
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern inside well-formed if-generate"
+        );
+    }
+
+    #[test]
+    fn test_is_after_label_multiple_on_same_line() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            architecture rtl of test is
+            begin
+                inst1: comp1; inst2: |
+            end rtl;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        // Second label on same line should still trigger
+        assert!(
+            is_after_label(&code, pos, tree.root_node()),
+            "Should detect label pattern for second label on same line"
+        );
+    }
+
+    #[test]
+    fn test_not_after_label_in_entity() {
+        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
+
+        let code_with_cursor = r#"
+            entity test is
+                generic (WIDTH : integer := 8);
+                port (clk : in std_logic);
+                |
+            end entity;
+        "#;
+
+        let (code, pos) = extract_cursor(code_with_cursor);
+        let mut parser = Parser::new();
+        let lang = unsafe { crate::tree_sitter_vhdl() };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        drop(_guard);
+
+        assert!(
+            !is_after_label(&code, pos, tree.root_node()),
+            "Should NOT detect label pattern in entity context"
         );
     }
 }
