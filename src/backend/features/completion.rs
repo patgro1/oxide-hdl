@@ -1,5 +1,6 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
+    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, MarkupContent, MarkupKind,
+    Position, Url,
 };
 use tree_sitter::{Node, Point};
 
@@ -1007,6 +1008,187 @@ fn is_dot_access_context(node: &Node, text: &str, pos: Position) -> bool {
 }
 
 // =============================================================================
+// VHDL Construct Snippet Builders
+// =============================================================================
+
+/// Creates a snippet completion item for a combinatorial process statement.
+///
+/// Expands to a combinatorial process template:
+/// ```vhdl
+/// process(${1:all}) is
+/// begin
+///     $0
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "process"
+pub fn create_process_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process".to_string(),
+        detail: Some("Combinatiorial process".to_string()),
+        insert_text: Some("process(${1:all}) is\nbegin\n\t$0\nend process;".to_string()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a synchronous clocked process.
+///
+/// Expands to a synchronous process template with rising edge detection:
+/// ```vhdl
+/// process(${1:clk}) is
+/// begin
+///     if rising_edge(${1:clk}) then
+///         $0
+///     end if;
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "sync"
+pub fn create_sync_process_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process-sync".to_string(),
+        detail: Some("Synchronous process".to_string()),
+        insert_text: Some("process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a synchronous process with synchronous reset.
+///
+/// Uses the pattern where main logic comes first, then reset overrides:
+/// ```vhdl
+/// process(${1:clk}) is
+/// begin
+///     if rising_edge(${1:clk}) then
+///         $0
+///         if ${2:rst} = '1' then
+///             ${3:-- reset values}
+///         end if;
+///     end if;
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "sync_rst"
+pub fn create_sync_rst_process_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process-sync-rst".to_string(),
+        detail: Some("Synchronous process with reset".to_string()),
+        insert_text: Some("process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\t\tif ${2:rst} = '1' then\n\t\t\t${3:-- reset_value}\n\t\tend if;\n\tend if;\nend process;".to_string()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a process with asynchronous reset.
+///
+/// Expands to an async reset process template:
+/// ```vhdl
+/// process(${1:clk}, ${2:rst}) is
+/// begin
+///     if ${2:rst} = '1' then
+///         ${3:-- reset values}
+///     elsif rising_edge(${1:clk}) then
+///         $0
+///     end if;
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "async_rst"
+pub fn create_async_rst_process_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process-async-rst".to_string(),
+        detail: Some("Asynchronous reset process".to_string()),
+        insert_text: Some("process(${1:clk}, ${2:rst_n}) is\nbegin\n\tif ${2:rst_n} = '0' then\n\t\t${3:-- reset values}\n\telsif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a for-generate statement.
+///
+/// Expands to a for-generate loop template:
+/// ```vhdl
+/// for ${1:i} in ${2:0} to ${3:N-1} generate
+///     $0
+/// end generate;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "for"
+pub fn create_for_generate_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "for-generate".to_string(),
+        detail: Some("Generate For Loop".to_string()),
+        insert_text: Some(
+            "for ${1:i} in ${2:0} to ${3:N-1} generate\n\t${4:-- local parameters}\nbegin\n\t$0\nend generate;".to_string(),
+        ),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for an if-generate statement.
+///
+/// Expands to an if-generate template:
+/// ```vhdl
+/// if ${1:condition} generate
+///     $0
+/// end generate;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "if"
+pub fn create_if_generate_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "if-generate".to_string(),
+        detail: Some("Generate if".to_string()),
+        insert_text: Some(
+            "if ${1:condition} generate\n\t${2:-- local parameters}\nbegin\n\t$0\nend generate;"
+                .to_string(),
+        ),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a block statement.
+///
+/// Expands to a block template:
+/// ```vhdl
+/// block
+/// begin
+///     $0
+/// end block;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "block"
+pub fn create_block_snippet() -> CompletionItem {
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "block".to_string(),
+        detail: Some("block".to_string()),
+        insert_text: Some(
+            "block \n\t${1:-- local parameters}\nbegin\n\t$0\nend generate;".to_string(),
+        ),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+// =============================================================================
 // Completion Item Generation
 // =============================================================================
 
@@ -1688,6 +1870,175 @@ u1: entity work.my_broken_comp
             "Context: {:?}",
             get_completion_context(&code, tree.root_node(), pos)
         );
+    }
+
+    // =============================================================================
+    // Tests for VHDL Construct Snippets
+    // =============================================================================
+
+    #[test]
+    fn test_process_snippet_structure() {
+        let snippet = create_process_snippet();
+
+        assert_eq!(snippet.label, "process", "Label should be 'process'");
+        assert_eq!(
+            snippet.kind,
+            Some(CompletionItemKind::SNIPPET),
+            "Kind should be SNIPPET"
+        );
+        assert_eq!(
+            snippet.insert_text_format,
+            Some(InsertTextFormat::SNIPPET),
+            "Format should be SNIPPET"
+        );
+        assert!(
+            snippet.insert_text.is_some(),
+            "insert_text should be populated"
+        );
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("process"), "Should contain 'process' keyword");
+        assert!(text.contains("${1:"), "Should have placeholder 1");
+        assert!(text.contains("$0"), "Should have final tab stop");
+        assert!(
+            !text.contains("rising_edge"),
+            "Combinatorial process should not have rising_edge"
+        );
+    }
+
+    #[test]
+    fn test_sync_process_snippet_structure() {
+        let snippet = create_sync_process_snippet();
+
+        assert_eq!(
+            snippet.label, "process-sync",
+            "Label should be 'process-sync'"
+        );
+        assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("process"), "Should contain 'process' keyword");
+        assert!(
+            text.contains("rising_edge"),
+            "Should have rising_edge for clocked process"
+        );
+        assert!(text.contains("${1:clk}"), "Should have clk placeholder");
+        assert!(text.contains("$0"), "Should have final tab stop");
+        assert!(
+            !text.contains("rst"),
+            "Should not have reset in sync-only process"
+        );
+    }
+
+    #[test]
+    fn test_sync_rst_process_snippet_structure() {
+        let snippet = create_sync_rst_process_snippet();
+
+        assert_eq!(
+            snippet.label, "process-sync-rst",
+            "Label should be 'process-sync-rst'"
+        );
+        assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("process"), "Should contain 'process' keyword");
+        assert!(text.contains("rising_edge"), "Should have rising_edge");
+        assert!(text.contains("${1:clk}"), "Should have clk placeholder");
+        assert!(text.contains("${2:rst}"), "Should have rst placeholder");
+
+        // Check that $0 comes BEFORE the reset check (user's preferred style)
+        let main_pos = text.find("$0").expect("Should have $0");
+        let rst_check_pos = text.find("if ${2:rst}").expect("Should have reset check");
+        assert!(
+            main_pos < rst_check_pos,
+            "Main logic ($0) should come before reset check"
+        );
+    }
+
+    #[test]
+    fn test_async_rst_process_snippet_structure() {
+        let snippet = create_async_rst_process_snippet();
+
+        assert_eq!(
+            snippet.label, "process-async-rst",
+            "Label should be 'process-async-rst'"
+        );
+        assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("process"), "Should contain 'process' keyword");
+        assert!(text.contains("${2:rst_n}"), "Should have rst_n placeholder");
+        assert!(text.contains("elsif"), "Should have elsif for async reset");
+        assert!(text.contains("rising_edge"), "Should have rising_edge");
+        assert!(
+            text.contains("= '0'"),
+            "Should use active-low reset (best practice)"
+        );
+
+        // Check that reset check comes BEFORE rising_edge (async pattern)
+        let rst_pos = text
+            .find("if ${2:rst_n} = '0'")
+            .expect("Should have reset check");
+        let edge_pos = text
+            .find("elsif rising_edge")
+            .expect("Should have elsif rising_edge");
+        assert!(
+            rst_pos < edge_pos,
+            "Reset check should come before elsif rising_edge in async pattern"
+        );
+    }
+
+    #[test]
+    fn test_for_generate_snippet_structure() {
+        let snippet = create_for_generate_snippet();
+
+        assert_eq!(snippet.label, "for-generate", "Label should be 'for'");
+        assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("for"), "Should contain 'for' keyword");
+        assert!(
+            text.contains("generate"),
+            "Should contain 'generate' keyword"
+        );
+        assert!(text.contains("${1:"), "Should have placeholder 1");
+        assert!(text.contains("$0"), "Should have final tab stop");
+    }
+
+    #[test]
+    fn test_if_generate_snippet_structure() {
+        let snippet = create_if_generate_snippet();
+
+        assert_eq!(snippet.label, "if-generate", "Label should be 'if'");
+        assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("if"), "Should contain 'if' keyword");
+        assert!(
+            text.contains("generate"),
+            "Should contain 'generate' keyword"
+        );
+        assert!(text.contains("${1:"), "Should have condition placeholder");
+        assert!(text.contains("$0"), "Should have final tab stop");
+    }
+
+    #[test]
+    fn test_block_snippet_structure() {
+        let snippet = create_block_snippet();
+
+        assert_eq!(snippet.label, "block", "Label should be 'block'");
+        assert_eq!(snippet.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(snippet.insert_text_format, Some(InsertTextFormat::SNIPPET));
+
+        let text = snippet.insert_text.unwrap();
+        assert!(text.contains("block"), "Should contain 'block' keyword");
+        assert!(text.contains("begin"), "Should contain 'begin' keyword");
+        assert!(text.contains("$0"), "Should have final tab stop");
     }
 
     // =============================================================================
