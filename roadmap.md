@@ -46,9 +46,9 @@
 ### v0.6: Productivity & Smart Snippets
 **Goal:** Make writing VHDL faster by automating the tedious parts using the Scope Tree.
 
-- [ ] **Smart Auto-Fill Snippets** ✨
-  - [ ] **Component Instantiation:** Selecting a component in completion triggers a snippet that types out `port map ( clk => $1, rst => $2 ... );`
-  - [ ] **Procedure/Function Calls:** Auto-fill parameter lists for subprograms.
+- [X] **Smart Auto-Fill Snippets** ✨
+  - [X] **Component Instantiation:** Selecting a component in completion triggers a snippet that types out `port map ( clk => $1, rst => $2 ... );`
+  - [X] **Procedure/Function Calls:** Auto-fill parameter lists for subprograms.
 - [ ] **Rename Symbol**
   - [ ] Rename identifier under cursor
   - [ ] Update definition and all usages across the file
