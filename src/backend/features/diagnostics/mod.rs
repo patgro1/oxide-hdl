@@ -21,6 +21,7 @@ use crate::{
     analysis::{Analysis, ScopeTree},
     backend::AnalysisMap,
 };
+use regex::Regex;
 use std::{cmp::Ordering, collections::HashMap};
 use tower_lsp::lsp_types::{Diagnostic, Range, Url};
 use tree_sitter::Node;
@@ -170,6 +171,7 @@ pub fn collect_all_diagnostics(
     text: &str,
     global_map: &AnalysisMap,
     current_uri: &Url,
+    config: &crate::config::OxideConfig,
 ) -> Vec<Diagnostic> {
     let mut collectors = DiagnosticCollectors::new();
 
@@ -178,6 +180,8 @@ pub fn collect_all_diagnostics(
     }
     let mut cursor = root.walk();
     let mut arch_index = 0;
+
+    let ignored_patterns = config.ignored_identifiers_regex();
 
     for node in root.children(&mut cursor) {
         if node.kind() == "design_unit" {
@@ -192,6 +196,7 @@ pub fn collect_all_diagnostics(
                         &mut collectors,
                         global_map,
                         current_uri,
+                        &ignored_patterns,
                     );
                     arch_index += 1;
                 } else if child.kind() == "entity_declaration" {
@@ -207,6 +212,7 @@ pub fn collect_all_diagnostics(
                         &mut collectors,
                         global_map,
                         current_uri,
+                        &ignored_patterns,
                     );
                 } else {
                     walk_node(
@@ -217,6 +223,7 @@ pub fn collect_all_diagnostics(
                         &mut collectors,
                         global_map,
                         current_uri,
+                        &ignored_patterns,
                     );
                 }
             }
@@ -229,6 +236,7 @@ pub fn collect_all_diagnostics(
                 &mut collectors,
                 global_map,
                 current_uri,
+                &ignored_patterns,
             );
         }
     }
@@ -255,6 +263,7 @@ fn walk_node(
     collectors: &mut DiagnosticCollectors,
     global_map: &AnalysisMap,
     current_uri: &Url,
+    ignored_patterns: &[Regex],
 ) {
     check_node(
         node,
@@ -264,6 +273,7 @@ fn walk_node(
         collectors,
         global_map,
         current_uri,
+        ignored_patterns,
     );
 
     let mut cursor = node.walk();
@@ -276,6 +286,7 @@ fn walk_node(
             collectors,
             global_map,
             current_uri,
+            ignored_patterns,
         );
     }
 }
@@ -311,6 +322,7 @@ fn check_node(
     collectors: &mut DiagnosticCollectors,
     global_map: &AnalysisMap,
     current_uri: &Url,
+    ignored_patterns: &[Regex],
 ) {
     if node.kind() == ERROR_NODE_KIND {
         syntax::check_syntax_error(node, collectors);
@@ -329,6 +341,7 @@ fn check_node(
                     root: node, // The architecture node acts as the "root" for this scope's search
                     global_map,
                     current_uri,
+                    ignored_patterns,
                 };
 
                 // Call with just 4 arguments
@@ -347,6 +360,7 @@ fn check_node(
                     root: node,
                     global_map,
                     current_uri,
+                    ignored_patterns,
                 };
                 undeclared::check_undeclared_identifiers(
                     &ctx,

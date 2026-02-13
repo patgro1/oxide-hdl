@@ -2,6 +2,7 @@ use crate::analysis::{ScopeTree, UsageContext};
 use crate::backend::AnalysisMap;
 use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
 use crate::backend::features::lookup::lookup_symbol;
+use regex::Regex;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::Url;
 use tree_sitter::Node;
@@ -17,6 +18,8 @@ pub struct ValidationContext<'a> {
     pub global_map: &'a AnalysisMap,
     /// URI of the file being validated.
     pub current_uri: &'a Url,
+    /// Regex patterns for identifiers that should be ignored
+    pub ignored_patterns: &'a [Regex],
 }
 
 /// Checks all identifier usages in a scope tree for undeclared references.
@@ -41,6 +44,11 @@ pub fn check_undeclared_identifiers(
     lookup_cache: &mut HashMap<String, bool>,
 ) {
     for usage in &scope_tree.local_usage {
+        // If the identifier matches an ignore pattern, skip it
+        if ctx.ignored_patterns.iter().any(|r| r.is_match(&usage.name)) {
+            continue;
+        }
+
         // 1. Get the AST node using context root
         let node_opt = ctx.root.descendant_for_point_range(
             tree_sitter::Point {
@@ -204,7 +212,7 @@ fn is_declaration_context(node: Node) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::test_utils::parse_text;
+    use crate::{backend::test_utils::parse_text, config::OxideConfig};
     use std::collections::HashMap;
     use tower_lsp::lsp_types::{Diagnostic, Url};
 
@@ -227,6 +235,7 @@ mod tests {
             root,
             global_map: &analysis_map,
             current_uri: &dummy_uri,
+            ignored_patterns: &[],
         };
 
         for scope_tree in &analysis.scope_trees {
@@ -1120,7 +1129,9 @@ end architecture;
 "#;
         let diags = check_undeclared(code);
         assert!(
-            diags.iter().any(|d| d.message.to_lowercase().contains("std_logic_vectr")),
+            diags
+                .iter()
+                .any(|d| d.message.to_lowercase().contains("std_logic_vectr")),
             "Typo in type name should be flagged. Got: {:?}",
             diag_messages(&diags)
         );
@@ -1156,7 +1167,9 @@ end architecture;
 "#;
         let diags = check_undeclared(code);
         assert!(
-            diags.iter().any(|d| d.message.to_lowercase().contains("integr")),
+            diags
+                .iter()
+                .any(|d| d.message.to_lowercase().contains("integr")),
             "Typo in constant type should be flagged. Got: {:?}",
             diag_messages(&diags)
         );
@@ -1178,7 +1191,9 @@ end entity;
 "#;
         let diags = check_undeclared(code);
         assert!(
-            diags.iter().any(|d| d.message.to_lowercase().contains("std_logic_vectr")),
+            diags
+                .iter()
+                .any(|d| d.message.to_lowercase().contains("std_logic_vectr")),
             "Typo in entity port type should be flagged. Got: {:?}",
             diag_messages(&diags)
         );
@@ -1214,7 +1229,9 @@ end entity;
 "#;
         let diags = check_undeclared(code);
         assert!(
-            diags.iter().any(|d| d.message.to_lowercase().contains("integr")),
+            diags
+                .iter()
+                .any(|d| d.message.to_lowercase().contains("integr")),
             "Typo in entity generic type should be flagged. Got: {:?}",
             diag_messages(&diags)
         );
@@ -1347,10 +1364,8 @@ end architecture;
 
         let arch_tree = parse_text(arch_code);
         let arch_root = arch_tree.root_node();
-        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
-            arch_code,
-            arch_root,
-        );
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
 
         let mut analysis_map = crate::backend::AnalysisMap::new();
         analysis_map.insert(pkg_uri.clone(), pkg_analysis);
@@ -1363,6 +1378,7 @@ end architecture;
             root: arch_root,
             global_map: &analysis_map,
             current_uri: &arch_uri,
+            ignored_patterns: &[],
         };
 
         for scope_tree in &arch_analysis.scope_trees {
@@ -1444,10 +1460,8 @@ end architecture;
 
         let arch_tree = parse_text(arch_code);
         let arch_root = arch_tree.root_node();
-        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
-            arch_code,
-            arch_root,
-        );
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
 
         // Verify the package scope tree has the protected type
         assert!(
@@ -1481,6 +1495,7 @@ end architecture;
             arch_code,
             &analysis_map,
             &arch_uri,
+            &OxideConfig::default(),
         );
 
         let type_diags: Vec<_> = diags
@@ -1579,10 +1594,8 @@ end architecutre;
 
         let arch_tree = parse_text(arch_code);
         let arch_root = arch_tree.root_node();
-        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
-            arch_code,
-            arch_root,
-        );
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
 
         let mut analysis_map = crate::backend::AnalysisMap::new();
         analysis_map.insert(pkg_uri.clone(), pkg_analysis);
@@ -1594,11 +1607,16 @@ end architecutre;
             arch_code,
             &analysis_map,
             &arch_uri,
+            &OxideConfig::default(),
         );
 
         let type_diags: Vec<_> = diags
             .iter()
-            .filter(|d| d.message.to_lowercase().contains("undefined type 'sim_fifo'"))
+            .filter(|d| {
+                d.message
+                    .to_lowercase()
+                    .contains("undefined type 'sim_fifo'")
+            })
             .collect();
         assert!(
             type_diags.is_empty(),
@@ -1637,16 +1655,16 @@ end architecture;
         let mut shallow_analysis = crate::analysis::Analysis::new();
         shallow_analysis.parse_level = crate::analysis::ParseLevel::Shallow;
         for s in shallow_symbols {
-            shallow_analysis.symbols.insert(s.name.clone().to_lowercase(), s);
+            shallow_analysis
+                .symbols
+                .insert(s.name.clone().to_lowercase(), s);
         }
 
         // Deep-parse the current file
         let arch_tree = parse_text(arch_code);
         let arch_root = arch_tree.root_node();
-        let arch_analysis = crate::backend::syntax::parser::extract_document_symbols(
-            arch_code,
-            arch_root,
-        );
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
 
         // Put both in the map (package is shallow, current file is deep)
         let mut analysis_map = crate::backend::AnalysisMap::new();
@@ -1659,6 +1677,7 @@ end architecture;
             arch_code,
             &analysis_map,
             &arch_uri,
+            &OxideConfig::default(),
         );
 
         // Check: sim_fifo should ideally NOT be flagged.

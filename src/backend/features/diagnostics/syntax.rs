@@ -377,6 +377,7 @@ mod tests {
     use super::*;
     use crate::backend::features::diagnostics::DiagnosticMessage;
     use crate::backend::test_utils::parse_text;
+    use crate::config::OxideConfig;
     use tower_lsp::lsp_types::Diagnostic;
     use tower_lsp::lsp_types::Url;
 
@@ -419,8 +420,14 @@ mod tests {
         let mut analysis_map = crate::backend::AnalysisMap::new();
         analysis_map.insert(dummy_uri.clone(), analysis.clone());
 
-        let all_diags =
-            super::super::collect_all_diagnostics(root, &analysis, code, &analysis_map, &dummy_uri);
+        let all_diags = super::super::collect_all_diagnostics(
+            root,
+            &analysis,
+            code,
+            &analysis_map,
+            &dummy_uri,
+            &OxideConfig::default(),
+        );
 
         // DEBUG: Print what we got
         eprintln!("\n=== Diagnostics returned: {} ===", all_diags.len());
@@ -503,7 +510,9 @@ end architecture;
             "Should detect missing closing parenthesis"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::UnmatchedParentheses.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::UnmatchedParentheses.to_string()),
             "Should contain unmatched parentheses diagnostic"
         );
     }
@@ -536,7 +545,9 @@ end architecture;
 
         assert!(!diags.is_empty(), "Should detect generate typo");
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -629,7 +640,9 @@ end architecture;
             "Should detect missing assignment operator"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -650,7 +663,9 @@ end architecture;
         let diags = check_syntax_errors(code);
         assert!(!diags.is_empty(), "Should detect wrong comparison operator");
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -765,7 +780,9 @@ end architecture;
         let diags = check_syntax_errors(code);
         assert!(!diags.is_empty(), "Should detect unclosed string");
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -787,7 +804,9 @@ end architecture;
             "Should detect unclosed character literal"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -808,7 +827,9 @@ end architecture;
         let diags = check_syntax_errors(code);
         assert!(!diags.is_empty(), "Should detect missing 'then' after if");
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -829,7 +850,9 @@ end architecture;
         let diags = check_syntax_errors(code);
         assert!(!diags.is_empty(), "Should detect missing 'loop' after for");
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -872,7 +895,9 @@ end architecture;
             "Should detect unmatched opening parenthesis"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -894,7 +919,9 @@ end architecture;
             "Should detect unmatched closing parenthesis"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -918,7 +945,9 @@ end architecture;
             "Should detect unmatched parentheses in port map"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::UnmatchedParentheses.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::UnmatchedParentheses.to_string()),
             "Should contain unmatched parentheses diagnostic"
         );
     }
@@ -946,7 +975,9 @@ end architecture;
             "Should detect unmatched parentheses in generic map"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::UnmatchedParentheses.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::UnmatchedParentheses.to_string()),
             "Should contain unmatched parentheses diagnostic"
         );
     }
@@ -965,7 +996,9 @@ end architecture;
             "Should detect identifier starting with number"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }
@@ -984,7 +1017,9 @@ end architecture;
             "Should detect identifier with invalid characters"
         );
         assert!(
-            diags.iter().any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
+            diags
+                .iter()
+                .any(|d| d.message == DiagnosticMessage::SyntaxError.to_string()),
             "Should contain syntax error diagnostic"
         );
     }

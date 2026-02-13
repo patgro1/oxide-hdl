@@ -3,7 +3,7 @@
 use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel};
 use crate::backend::AnalysisMap;
 use crate::backend::syntax::{parser, scanner};
-use crate::config::OxideConfig;
+use crate::config::{self, OxideConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -199,6 +199,7 @@ pub async fn parse_and_update_document(
     uri: &Url,
     text: String,
     get_diagnostics: bool,
+    config: OxideConfig,
 ) -> Vec<Diagnostic> {
     let uri = uri.clone();
     let text_for_diag = text.clone();
@@ -308,6 +309,7 @@ pub async fn parse_and_update_document(
                                     &text_for_diag,
                                     &map,
                                     &uri,
+                                    &config,
                                 )
                             }
                             None => Vec::new(),

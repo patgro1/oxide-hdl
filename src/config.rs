@@ -1,4 +1,5 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -39,6 +40,11 @@ pub struct OxideConfig {
     /// Default: `on_save`
     #[serde(default)]
     pub diagnostics: DiagnosticTrigger,
+
+    /// List of regex pattern for identifiers to ignore during undeclared variable checks
+    /// Example: ["^REG_.*", "^AUTO_.*", "BUILD_ID"]
+    #[serde(default)]
+    pub ignored_identifiers: Vec<String>,
 }
 
 fn default_ignores() -> Vec<String> {
@@ -91,6 +97,7 @@ impl OxideConfig {
             ignore: default_ignores(),
             extensions: default_extensions(),
             diagnostics: DiagnosticTrigger::default(),
+            ignored_identifiers: vec![],
         }
     }
 
@@ -115,5 +122,14 @@ impl OxideConfig {
             };
         }
         builder.build().expect("Failed to build glob set")
+    }
+
+    /// Compiles the ignored identifiers patterns into Regex objects.
+    /// Invalid patterns are silently skipped to preven crashing.
+    pub fn ignored_identifiers_regex(&self) -> Vec<Regex> {
+        self.ignored_identifiers
+            .iter()
+            .filter_map(|s| RegexBuilder::new(s).case_insensitive(true).build().ok())
+            .collect()
     }
 }

@@ -122,6 +122,8 @@ impl Backend {
     /// * `text` - The full text content of the document.
     /// * `publish_diagnostics` - If true, will send the collected diagnostics
     async fn on_change(&self, uri: Url, text: String, publish_diagnostics: bool) {
+        let config_guard = self.config.read().await;
+        let config = config_guard.clone().unwrap_or_else(OxideConfig::default);
         let diagnostics = workspace::parse_and_update_document(
             &self.client,
             self.analysis_map.clone(),
@@ -129,6 +131,7 @@ impl Backend {
             &uri,
             text,
             publish_diagnostics,
+            config,
         )
         .await;
         self.ensure_dependencies_loaded(&uri).await;
@@ -200,6 +203,8 @@ impl Backend {
             if let Ok(path) = dep_uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(path).await
             {
+                let config_guard = self.config.read().await;
+                let config = config_guard.clone().unwrap_or_else(OxideConfig::default);
                 workspace::parse_and_update_document(
                     &self.client,
                     self.analysis_map.clone(),
@@ -207,6 +212,7 @@ impl Backend {
                     &dep_uri,
                     text,
                     false,
+                    config,
                 )
                 .await;
             }
