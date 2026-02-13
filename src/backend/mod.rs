@@ -598,15 +598,16 @@ impl LanguageServer for Backend {
         };
 
         let text = rope.to_string();
-        let context = {
+        let tree = {
             let mut parser = self.parser.lock().await;
             let lang = unsafe { crate::tree_sitter_vhdl() };
             let _ = parser.set_language(&lang);
 
-            let tree = parser.parse(&text, None).unwrap();
-
-            features::completion::get_completion_context(&text, tree.root_node(), position)
+            parser.parse(&text, None).unwrap()
         };
+
+        let context =
+            features::completion::get_completion_context(&text, tree.root_node(), position);
 
         self.client
             .log_message(MessageType::INFO, format!("Context: {:?}", context))
@@ -643,7 +644,14 @@ impl LanguageServer for Backend {
             }
         }
         let map = self.analysis_map.read().await;
-        let items = features::completion::complete_scope(&map, &uri, &context, position, &text);
+        let items = features::completion::complete_scope(
+            &map,
+            &uri,
+            &context,
+            position,
+            &text,
+            tree.root_node(),
+        );
         return Ok(Some(CompletionResponse::Array(items)));
     }
 

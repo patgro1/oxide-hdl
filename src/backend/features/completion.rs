@@ -1209,11 +1209,24 @@ pub fn complete_scope(
     context: &CompletionContext,
     position: Position,
     text: &str,
+    tree_root: Node,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
     if let Some(current_analysis) = analysis_map.get(current_uri) {
         let local_scope_tree = current_analysis.find_scope_tree_at(&position);
+
+        if *context == CompletionContext::Architecture && is_after_label(text, position, tree_root)
+        {
+            items.push(create_process_snippet());
+            items.push(create_sync_process_snippet());
+            items.push(create_sync_rst_process_snippet());
+            items.push(create_async_rst_process_snippet());
+
+            items.push(create_for_generate_snippet());
+            items.push(create_if_generate_snippet());
+            items.push(create_block_snippet());
+        }
 
         match context {
             CompletionContext::PortMapLhs(target_name)
