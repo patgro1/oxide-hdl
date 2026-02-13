@@ -27,8 +27,8 @@ use tower_lsp::lsp_types::{
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
     DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, Position, SaveOptions, ServerCapabilities, SymbolInformation,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    MessageType, OneOf, Position, RenameOptions, SaveOptions, ServerCapabilities,
+    SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
@@ -273,6 +273,11 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 // Workspace symbol
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                // Rename with prepare support
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -653,6 +658,77 @@ impl LanguageServer for Backend {
             tree.root_node(),
         );
         return Ok(Some(CompletionResponse::Array(items)));
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: tower_lsp::lsp_types::TextDocumentPositionParams,
+    ) -> Result<Option<tower_lsp::lsp_types::PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        let text = rope.to_string();
+        let analysis_map = self.analysis_map.read().await;
+        let analysis = match analysis_map.get(&uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        // Check if symbol can be renamed
+        let range = {
+            let mut parser = self.parser.lock().await;
+            features::rename::prepare_rename(&text, &position, analysis, &mut parser).await
+        };
+
+        Ok(range.map(tower_lsp::lsp_types::PrepareRenameResponse::Range))
+    }
+
+    async fn rename(
+        &self,
+        params: tower_lsp::lsp_types::RenameParams,
+    ) -> Result<Option<tower_lsp::lsp_types::WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        let text = rope.to_string();
+        let analysis_map = self.analysis_map.read().await;
+        let analysis = match analysis_map.get(&uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        // Perform rename
+        let workspace_edit = {
+            let mut parser = self.parser.lock().await;
+            features::rename::rename_symbol(
+                &text,
+                &position,
+                &new_name,
+                analysis,
+                &uri,
+                &mut parser,
+            )
+            .await
+        };
+
+        Ok(workspace_edit)
     }
 
     async fn shutdown(&self) -> Result<()> {

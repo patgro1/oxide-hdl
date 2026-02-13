@@ -190,3 +190,46 @@ pub fn collect_identifiers_recursive(
         }
     }
 }
+
+/// Collects identifier references from port/generic map aspects.
+///
+/// In port maps like `port map (clk => my_clk, data => my_data)`:
+/// - `clk` and `data` are formal port names (not local usages)
+/// - `my_clk` and `my_data` are actual signals (local usages)
+///
+/// This function only collects the actual parts (right-hand side of =>).
+///
+/// # Arguments
+///
+/// * `map_aspect_node` - Tree-sitter node of type `port_map_aspect` or `generic_map_aspect`
+/// * `text` - Full source text
+/// * `context` - Usage context for collected identifiers
+/// * `references` - Mutable set to collect identifier names into
+pub fn collect_identifiers_from_map_aspect(
+    map_aspect_node: Node,
+    text: &str,
+    context: UsageContext,
+    references: &mut HashSet<Usage>,
+) {
+    let mut cursor = map_aspect_node.walk();
+    for child in map_aspect_node.children(&mut cursor) {
+        if child.kind() == "association_element" {
+            // association_element has: formal => actual
+            // We only want to collect from the actual part
+            let mut assoc_cursor = child.walk();
+            let mut found_arrow = false;
+            for part in child.children(&mut assoc_cursor) {
+                if part.kind() == "=>" {
+                    found_arrow = true;
+                } else if found_arrow {
+                    // After the arrow, collect identifiers from actual
+                    collect_identifiers_recursive(part, text, context, references);
+                    break;
+                }
+            }
+        } else {
+            // Recurse into other nodes (like association_list)
+            collect_identifiers_from_map_aspect(child, text, context, references);
+        }
+    }
+}

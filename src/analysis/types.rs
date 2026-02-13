@@ -260,7 +260,7 @@ impl fmt::Display for PortDirection {
 ///
 /// Each scope level has different rules about what can be declared
 /// and how visibility works.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScopeKind {
     /// Entity scope - can declare ports and generics
     Entity,
@@ -340,16 +340,20 @@ pub struct Usage {
 
 impl std::hash::Hash for Usage {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Only hash name and context, not range
+        // Hash name, context, AND range to distinguish multiple usages of same identifier
         self.name.hash(state);
         self.context.hash(state);
+        self.range.start.line.hash(state);
+        self.range.start.character.hash(state);
+        self.range.end.line.hash(state);
+        self.range.end.character.hash(state);
     }
 }
 
 impl PartialEq for Usage {
     fn eq(&self, other: &Self) -> bool {
-        // Only compare name and context
-        self.name == other.name && self.context == other.context
+        // Compare name, context, AND range
+        self.name == other.name && self.context == other.context && self.range == other.range
     }
 }
 

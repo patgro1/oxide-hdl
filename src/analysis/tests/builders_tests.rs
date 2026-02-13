@@ -1576,9 +1576,16 @@ end package;
     assert!(matches!(type_decl.decl_type, DeclType::Type));
 
     // Enum types should have their literals as parameters
-    let params = type_decl.parameters.as_ref().expect("Enum should have parameters");
+    let params = type_decl
+        .parameters
+        .as_ref()
+        .expect("Enum should have parameters");
     assert_eq!(params.len(), 3);
-    assert!(params.iter().all(|p| matches!(p.decl_type, DeclType::EnumLiteral)));
+    assert!(
+        params
+            .iter()
+            .all(|p| matches!(p.decl_type, DeclType::EnumLiteral))
+    );
     let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, vec!["IDLE", "RUN", "STOP"]);
 }
@@ -1603,4 +1610,90 @@ end architecture;
         .expect("Type not found");
     assert!(matches!(type_decl.decl_type, DeclType::Type));
     assert!(type_decl.parameters.is_none());
+}
+
+#[test]
+fn test_if_condition_usage_captured() {
+    let code = r#"
+architecture rtl of test is
+    signal old_name : std_logic;
+begin
+    process
+    begin
+        old_name <= '1';
+        if old_name = '1' then
+            null;
+        end if;
+    end process;
+end architecture;
+"#;
+
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    // Find the process scope (child of architecture)
+    let arch_scope = &analysis.scope_trees[0];
+    let process_scope = &arch_scope.children[0];
+
+    println!("\nProcess scope:");
+    println!("  Local usages: {}", process_scope.local_usage.len());
+
+    for usage in &process_scope.local_usage {
+        println!(
+            "    Usage: '{}' at line {}",
+            usage.name, usage.range.start.line
+        );
+    }
+
+    // Should have 2 usages of old_name
+    let old_name_usages: Vec<_> = process_scope
+        .local_usage
+        .iter()
+        .filter(|u| u.name.eq_ignore_ascii_case("old_name"))
+        .collect();
+
+    assert_eq!(
+        old_name_usages.len(),
+        2,
+        "Should capture both usages of old_name (assignment and if condition). Found: {}",
+        old_name_usages.len()
+    );
+}
+
+#[test]
+fn test_if_creates_child_scope() {
+    let code = r#"
+architecture rtl of test is
+    signal old_name : std_logic;
+begin
+    process
+    begin
+        old_name <= '1';
+        if old_name = '1' then
+            null;
+        end if;
+    end process;
+end architecture;
+"#;
+
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let arch_scope = &analysis.scope_trees[0];
+    let process_scope = &arch_scope.children[0];
+
+    println!("\nProcess has {} children", process_scope.children.len());
+    for (i, child) in process_scope.children.iter().enumerate() {
+        println!(
+            "  Child {}: {:?}, usages: {}",
+            i,
+            child.kind,
+            child.local_usage.len()
+        );
+        for usage in &child.local_usage {
+            println!("    Usage: '{}'", usage.name);
+        }
+    }
 }
