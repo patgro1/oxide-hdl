@@ -4,7 +4,7 @@ use tower_lsp::lsp_types::{
 };
 use tree_sitter::{Node, Point};
 
-use crate::analysis::{DeclType, Declaration};
+use crate::analysis::{DeclType, Declaration, ScopeTree};
 use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
 use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain};
@@ -1186,6 +1186,99 @@ pub fn create_block_snippet() -> CompletionItem {
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
+}
+
+/// Generates a component/entity instantiation snippet from a scope tree.
+///
+/// Takes an entity or component declaration's scope tree and builds a formatted
+/// instantiation with generic map and port map, with proper `=>` alignment.
+/// Tab stops start at 1 for the first generic (if any) and increment for each
+/// parameter. Default placeholder is the parameter name itself.
+///
+/// # Arguments
+///
+/// * `name` - The entity/component name for the instantiation
+/// * `scope_tree` - The ScopeTree containing generics and ports
+///
+/// # Returns
+///
+/// A formatted snippet string with tab stops for LSP completion
+///
+/// # Examples
+///
+/// ```ignore
+/// // Entity with generics and ports:
+/// // uart_tx
+/// //     generic map (
+/// //         BAUD_RATE => ${1:BAUD_RATE},
+/// //         DATA_BITS => ${2:DATA_BITS}
+/// //     )
+/// //     port map (
+/// //         clk   => ${3:clk},
+/// //         reset => ${4:reset}
+/// //     );
+/// ```
+pub fn generate_instantiation_snippet(name: &str, scope_tree: &ScopeTree) -> String {
+    let mut tab_index = 1;
+    let mut snippet = String::new();
+
+    let generics: Vec<&Declaration> = scope_tree
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Generic))
+        .collect();
+
+    let ports: Vec<&Declaration> = scope_tree
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Port(_)))
+        .collect();
+
+    let max_generic_len = generics.iter().map(|g| g.name.len()).max().unwrap_or(0);
+    let max_port_len = ports.iter().map(|p| p.name.len()).max().unwrap_or(0);
+
+    snippet.push_str(&format!("{}\n", name).to_string());
+    let generics_line: Vec<String> = generics
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let padding = " ".repeat(max_generic_len - g.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                g.name,
+                padding,
+                tab_index + i,
+                g.name
+            )
+        })
+        .collect();
+    if !generics_line.is_empty() {
+        snippet.push_str("generic map (\n");
+        snippet.push_str(&generics_line.join(",\n"));
+        snippet.push_str("\n)\n");
+    }
+    tab_index = generics_line.len() + 1;
+
+    let ports_line: Vec<String> = ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let padding = " ".repeat(max_port_len - p.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                p.name,
+                padding,
+                tab_index + i,
+                p.name
+            )
+        })
+        .collect();
+    if !ports_line.is_empty() {
+        snippet.push_str("port map (\n");
+        snippet.push_str(&ports_line.join(",\n"));
+        snippet.push_str("\n);\n");
+    }
+    snippet
 }
 
 // =============================================================================
@@ -2392,5 +2485,214 @@ u1: entity work.my_broken_comp
             !is_after_label(&code, pos, tree.root_node()),
             "Should NOT detect label pattern in entity context"
         );
+    }
+
+    // =============================================================================
+    // Tests for generate_instantiation_snippet()
+    // =============================================================================
+
+    use crate::analysis::{Declaration, PortDirection, ScopeTree, TypeInfo};
+    use tower_lsp::lsp_types::Range;
+
+    /// Helper to create a test Declaration
+    fn make_decl(name: &str, decl_type: DeclType) -> Declaration {
+        Declaration {
+            name: name.to_string(),
+            decl_type,
+            range: Range::default(),
+            selection_range: Range::default(),
+            type_info: TypeInfo::new(),
+            default_value: None,
+            doc_comment: None,
+            parameters: None,
+        }
+    }
+
+    /// Helper to create a test ScopeTree with generics and ports
+    fn make_scope_tree(generics: Vec<Declaration>, ports: Vec<Declaration>) -> ScopeTree {
+        use crate::analysis::ScopeKind;
+        use std::collections::{HashMap, HashSet};
+
+        let mut declarations = Vec::new();
+        declarations.extend(generics);
+        declarations.extend(ports);
+
+        ScopeTree {
+            kind: ScopeKind::Entity,
+            name: None,
+            entity: None,
+            package: None,
+            range: Range::default(),
+            declarations,
+            local_usage: HashSet::new(),
+            children: Vec::new(),
+            decl_index: HashMap::new(),
+            instantiations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_instantiation_snippet_with_generics_and_ports() {
+        let generics = vec![
+            make_decl("BAUD_RATE", DeclType::Generic),
+            make_decl("DATA_BITS", DeclType::Generic),
+        ];
+        let ports = vec![
+            make_decl("clk", DeclType::Port(PortDirection::In)),
+            make_decl("reset", DeclType::Port(PortDirection::In)),
+            make_decl("tx_data", DeclType::Port(PortDirection::In)),
+        ];
+        let scope_tree = make_scope_tree(generics, ports);
+
+        let snippet = generate_instantiation_snippet("uart_tx", &scope_tree);
+
+        // Should contain entity name
+        assert!(snippet.contains("uart_tx"), "Should contain entity name");
+
+        // Should contain generic map section
+        assert!(snippet.contains("generic map"), "Should have generic map");
+        assert!(
+            snippet.contains("${1:BAUD_RATE}"),
+            "Should have BAUD_RATE generic with tab stop 1"
+        );
+        assert!(
+            snippet.contains("${2:DATA_BITS}"),
+            "Should have DATA_BITS generic with tab stop 2"
+        );
+
+        // Should contain port map section
+        assert!(snippet.contains("port map"), "Should have port map");
+        assert!(
+            snippet.contains("${3:clk}"),
+            "Should have clk port with tab stop 3"
+        );
+        assert!(
+            snippet.contains("${4:reset}"),
+            "Should have reset port with tab stop 4"
+        );
+        assert!(
+            snippet.contains("${5:tx_data}"),
+            "Should have tx_data port with tab stop 5"
+        );
+
+        // Should end with semicolon
+        assert!(snippet.trim().ends_with(");"), "Should end with );");
+    }
+
+    #[test]
+    fn test_instantiation_snippet_ports_only_no_generics() {
+        let ports = vec![
+            make_decl("clk", DeclType::Port(PortDirection::In)),
+            make_decl("data_out", DeclType::Port(PortDirection::Out)),
+        ];
+        let scope_tree = make_scope_tree(vec![], ports);
+
+        let snippet = generate_instantiation_snippet("simple_comp", &scope_tree);
+
+        // Should NOT contain generic map
+        assert!(
+            !snippet.contains("generic map"),
+            "Should NOT have generic map"
+        );
+
+        // Should contain port map section
+        assert!(snippet.contains("port map"), "Should have port map");
+        assert!(snippet.contains("${1:clk}"), "Tab stops should start at 1");
+        assert!(
+            snippet.contains("${2:data_out}"),
+            "Should have data_out port"
+        );
+    }
+
+    #[test]
+    fn test_instantiation_snippet_alignment() {
+        let generics = vec![
+            make_decl("A", DeclType::Generic),
+            make_decl("VERY_LONG_NAME", DeclType::Generic),
+        ];
+        let ports = vec![
+            make_decl("x", DeclType::Port(PortDirection::In)),
+            make_decl("long_port", DeclType::Port(PortDirection::Out)),
+        ];
+        let scope_tree = make_scope_tree(generics, ports);
+
+        let snippet = generate_instantiation_snippet("test_entity", &scope_tree);
+
+        // Extract generic map section
+        let generic_section = snippet
+            .lines()
+            .skip_while(|l| !l.contains("generic map"))
+            .take_while(|l| !l.contains("port map"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Extract port map section
+        let port_section = snippet
+            .lines()
+            .skip_while(|l| !l.contains("port map"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Check that => are aligned in generic section
+        // Both lines should have => at the same column position
+        let generic_lines: Vec<&str> = generic_section
+            .lines()
+            .filter(|l| l.contains("=>"))
+            .collect();
+        if generic_lines.len() >= 2 {
+            let arrow_pos_1 = generic_lines[0].find("=>").unwrap();
+            let arrow_pos_2 = generic_lines[1].find("=>").unwrap();
+            assert_eq!(arrow_pos_1, arrow_pos_2, "Generic => should be aligned");
+        }
+
+        // Check that => are aligned in port section
+        let port_lines: Vec<&str> = port_section.lines().filter(|l| l.contains("=>")).collect();
+        if port_lines.len() >= 2 {
+            let arrow_pos_1 = port_lines[0].find("=>").unwrap();
+            let arrow_pos_2 = port_lines[1].find("=>").unwrap();
+            assert_eq!(arrow_pos_1, arrow_pos_2, "Port => should be aligned");
+        }
+    }
+
+    #[test]
+    fn test_instantiation_snippet_empty_scope() {
+        let scope_tree = make_scope_tree(vec![], vec![]);
+
+        let snippet = generate_instantiation_snippet("empty_entity", &scope_tree);
+
+        // Should have entity name
+        assert!(
+            snippet.contains("empty_entity"),
+            "Should contain entity name"
+        );
+
+        // With no ports or generics, should still have port map (might be empty)
+        // This is a design decision - adjust based on desired behavior
+    }
+
+    #[test]
+    fn test_instantiation_snippet_tab_stop_numbering() {
+        let generics = vec![
+            make_decl("G1", DeclType::Generic),
+            make_decl("G2", DeclType::Generic),
+        ];
+        let ports = vec![
+            make_decl("P1", DeclType::Port(PortDirection::In)),
+            make_decl("P2", DeclType::Port(PortDirection::Out)),
+            make_decl("P3", DeclType::Port(PortDirection::Out)),
+        ];
+        let scope_tree = make_scope_tree(generics, ports);
+
+        let snippet = generate_instantiation_snippet("test", &scope_tree);
+
+        // Verify sequential tab stop numbering
+        assert!(snippet.contains("${1:G1}"), "First generic should be tab 1");
+        assert!(
+            snippet.contains("${2:G2}"),
+            "Second generic should be tab 2"
+        );
+        assert!(snippet.contains("${3:P1}"), "First port should be tab 3");
+        assert!(snippet.contains("${4:P2}"), "Second port should be tab 4");
+        assert!(snippet.contains("${5:P3}"), "Third port should be tab 5");
     }
 }
