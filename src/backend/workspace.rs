@@ -3,7 +3,7 @@
 use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel};
 use crate::backend::AnalysisMap;
 use crate::backend::syntax::{parser, scanner};
-use crate::config::{self, OxideConfig};
+use crate::config::OxideConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;

@@ -1,26 +1,8 @@
 use crate::analysis::{ScopeTree, UsageContext};
-use crate::backend::AnalysisMap;
-use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
+use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticContext, messages};
 use crate::backend::features::lookup::lookup_symbol;
-use regex::Regex;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::Url;
 use tree_sitter::Node;
-
-/// Immutable context for the undeclared-identifier validation pass.
-///
-/// Bundles the AST root, global analysis map, and current file URI
-/// to reduce argument count on recursive calls.
-pub struct ValidationContext<'a> {
-    /// The AST root node used to resolve usage positions back to tree-sitter nodes.
-    pub root: Node<'a>,
-    /// The workspace-wide analysis map for cross-file symbol resolution.
-    pub global_map: &'a AnalysisMap,
-    /// URI of the file being validated.
-    pub current_uri: &'a Url,
-    /// Regex patterns for identifiers that should be ignored
-    pub ignored_patterns: &'a [Regex],
-}
 
 /// Checks all identifier usages in a scope tree for undeclared references.
 ///
@@ -33,12 +15,14 @@ pub struct ValidationContext<'a> {
 /// Recurses into child scopes to cover the full hierarchy.
 ///
 /// # Arguments
-/// * `ctx` - Immutable validation context (AST root, global map, URI)
+/// * `root` - The AST root node used to resolve usage positions back to tree-sitter nodes
+/// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `scope_tree` - The scope tree node to check
 /// * `collectors` - Diagnostic collectors to push errors into
 /// * `lookup_cache` - Name-keyed cache to avoid redundant lookups
 pub fn check_undeclared_identifiers(
-    ctx: &ValidationContext,
+    root: Node,
+    ctx: &DiagnosticContext,
     scope_tree: &ScopeTree,
     collectors: &mut DiagnosticCollectors,
     lookup_cache: &mut HashMap<String, bool>,
@@ -49,8 +33,8 @@ pub fn check_undeclared_identifiers(
             continue;
         }
 
-        // 1. Get the AST node using context root
-        let node_opt = ctx.root.descendant_for_point_range(
+        // 1. Get the AST node using root
+        let node_opt = root.descendant_for_point_range(
             tree_sitter::Point {
                 row: usage.range.start.line as usize,
                 column: usage.range.start.character as usize,
@@ -107,7 +91,7 @@ pub fn check_undeclared_identifiers(
 
     for child in &scope_tree.children {
         // Pass context down without exploding arguments
-        check_undeclared_identifiers(ctx, child, collectors, lookup_cache);
+        check_undeclared_identifiers(root, ctx, child, collectors, lookup_cache);
     }
 }
 
@@ -161,11 +145,11 @@ fn is_aggregate_choice(node: Node) -> bool {
     let mut current = node;
     for _ in 0..5 {
         if let Some(parent) = current.parent() {
-            if parent.kind() == "element_association" {
-                if let Some(first) = parent.named_child(0) {
-                    return node.start_byte() >= first.start_byte()
-                        && node.end_byte() <= first.end_byte();
-                }
+            if parent.kind() == "element_association"
+                && let Some(first) = parent.named_child(0)
+            {
+                return node.start_byte() >= first.start_byte()
+                    && node.end_byte() <= first.end_byte();
             }
             current = parent;
         } else {
@@ -231,8 +215,10 @@ mod tests {
         let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
         let mut lookup_cache = HashMap::new();
 
-        let ctx = super::ValidationContext {
-            root,
+        let ctx = super::super::DiagnosticContext {
+            text: code,
+            scope_tree: None,
+            analysis: &analysis,
             global_map: &analysis_map,
             current_uri: &dummy_uri,
             ignored_patterns: &[],
@@ -240,6 +226,7 @@ mod tests {
 
         for scope_tree in &analysis.scope_trees {
             super::check_undeclared_identifiers(
+                root,
                 &ctx,
                 scope_tree,
                 &mut collectors,
@@ -249,6 +236,7 @@ mod tests {
 
         for scope_tree in analysis.entity_scope_trees.values() {
             super::check_undeclared_identifiers(
+                root,
                 &ctx,
                 scope_tree,
                 &mut collectors,
@@ -1374,8 +1362,10 @@ end architecture;
         let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
         let mut lookup_cache = HashMap::new();
 
-        let ctx = super::ValidationContext {
-            root: arch_root,
+        let ctx = super::super::DiagnosticContext {
+            text: arch_code,
+            scope_tree: None,
+            analysis: &arch_analysis,
             global_map: &analysis_map,
             current_uri: &arch_uri,
             ignored_patterns: &[],
@@ -1383,6 +1373,7 @@ end architecture;
 
         for scope_tree in &arch_analysis.scope_trees {
             super::check_undeclared_identifiers(
+                arch_root,
                 &ctx,
                 scope_tree,
                 &mut collectors,

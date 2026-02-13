@@ -19,11 +19,9 @@
 //! - Async resets: Not yet validated (TODO v0.5)
 //! - Package constants: Conservatively assumed valid if undeclared
 
-use crate::analysis::{
-    Analysis, DeclType, Declaration, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
-};
+use crate::analysis::{DeclType, Declaration, Usage, UsageContext, collect_identifiers_recursive};
 use crate::backend::AnalysisMap;
-use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
+use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticContext, messages};
 use crate::backend::features::lookup::lookup_procedure_declaration;
 use crate::utils::ast::{find_child, find_descendant};
 use crate::utils::node_to_range;
@@ -274,9 +272,7 @@ impl<'a> SignalExtractionContext<'a> {
 /// # Arguments
 ///
 /// * `process_node` - Tree-sitter node of type `process_statement`
-/// * `text` - Full source text of the file
-/// * `scope_tree` - Scope tree containing the process (for declaration lookup)
-/// * `analysis` - Full analysis context (for entity scope resolution)
+/// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `collectors` - Diagnostic collectors to append findings to
 ///
 /// # Diagnostics Produced
@@ -301,14 +297,10 @@ impl<'a> SignalExtractionContext<'a> {
 /// ```
 pub fn check_process_sensitivity(
     process_node: Node,
-    text: &str,
-    scope_tree: Option<&ScopeTree>,
-    analysis: &Analysis,
+    ctx: &DiagnosticContext,
     collectors: &mut DiagnosticCollectors,
-    global_map: &AnalysisMap,
-    current_uri: &Url,
 ) {
-    let sensitivity_list = extract_sensitivity_list(process_node, text);
+    let sensitivity_list = extract_sensitivity_list(process_node, ctx.text);
 
     // Skip validation if 'all' keyword is used (VHDL-2008)
     if sensitivity_list
@@ -323,20 +315,20 @@ pub fn check_process_sensitivity(
     if let Some(sequential_block) = process_node
         .children(&mut process_node.walk())
         .find(|c| c.kind() == "sequential_block")
-        && let Some(scope_tree) = scope_tree
+        && let Some(scope_tree) = ctx.scope_tree
     {
-        let process_type = classify_process(sequential_block, text);
+        let process_type = classify_process(sequential_block, ctx.text);
 
         // Extract signals based on process type
         match process_type {
             ProcessType::Combinatorial => {
-                let mut ctx = SignalExtractionContext {
-                    text,
+                let mut extraction_ctx = SignalExtractionContext {
+                    text: ctx.text,
                     read_signals: &mut read_signals,
-                    global_map,
-                    current_uri,
+                    global_map: ctx.global_map,
+                    current_uri: ctx.current_uri,
                 };
-                ctx.extract(sequential_block, false)
+                extraction_ctx.extract(sequential_block, false)
             }
             ProcessType::Synchronous {
                 clock_signals: ref clocks,
@@ -348,8 +340,9 @@ pub fn check_process_sensitivity(
             .any(|child| find_descendant(child, "wait_statement").is_some());
 
         // Filter to only signals/ports (exclude variables, constants, generics)
-        if let Some(visible_decl) =
-            analysis.collect_visible_declarations(scope_tree, node_to_range(process_node))
+        if let Some(visible_decl) = ctx
+            .analysis
+            .collect_visible_declarations(scope_tree, node_to_range(process_node))
         {
             let read_signals: Vec<&Usage> = read_signals
                 .iter()
@@ -777,7 +770,10 @@ fn check_comb_process(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::test_utils::parse_text;
+    use crate::{
+        analysis::{Analysis, ScopeTree},
+        backend::test_utils::parse_text,
+    };
     use tower_lsp::lsp_types::Url;
 
     fn check_sensitivity(code: &str) -> Vec<Diagnostic> {
@@ -831,15 +827,15 @@ mod tests {
         current_uri: &Url,
     ) {
         if node.kind() == "process_statement" {
-            check_process_sensitivity(
-                node,
+            let ctx = super::super::DiagnosticContext {
                 text,
-                Some(scope_tree),
+                scope_tree: Some(scope_tree),
                 analysis,
-                collectors,
                 global_map,
                 current_uri,
-            );
+                ignored_patterns: &[],
+            };
+            check_process_sensitivity(node, &ctx, collectors);
         }
 
         for child in node.children(&mut node.walk()) {
