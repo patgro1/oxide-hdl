@@ -1,10 +1,10 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, MarkupContent, MarkupKind,
-    Position, Url,
+    CompletionItem, CompletionItemKind, CompletionItemLabelDetails, Documentation,
+    InsertTextFormat, MarkupContent, MarkupKind, Position, Url,
 };
 use tree_sitter::{Node, Point};
 
-use crate::analysis::{DeclType, Declaration, ScopeTree};
+use crate::analysis::{Analysis, DeclType, Declaration, ScopeTree};
 use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
 use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain};
@@ -1024,11 +1024,25 @@ fn is_dot_access_context(node: &Node, text: &str, pos: Position) -> bool {
 /// # Returns
 /// CompletionItem configured as a snippet with label "process"
 pub fn create_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:all}) is\nbegin\n\t$0\nend process;".to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "process".to_string(),
         detail: Some("Combinatiorial process".to_string()),
-        insert_text: Some("process(${1:all}) is\nbegin\n\t$0\nend process;".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Combinatiorial process".to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Combinatorial process **\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1049,11 +1063,25 @@ pub fn create_process_snippet() -> CompletionItem {
 /// # Returns
 /// CompletionItem configured as a snippet with label "sync"
 pub fn create_sync_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "process-sync".to_string(),
         detail: Some("Synchronous process".to_string()),
-        insert_text: Some("process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Synchronous process".to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Synchronous process **\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1077,11 +1105,25 @@ pub fn create_sync_process_snippet() -> CompletionItem {
 /// # Returns
 /// CompletionItem configured as a snippet with label "sync_rst"
 pub fn create_sync_rst_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\t\tif ${2:rst} = '1' then\n\t\t\t${3:-- reset_value}\n\t\tend if;\n\tend if;\nend process;".to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "process-sync-rst".to_string(),
-        detail: Some("Synchronous process with reset".to_string()),
-        insert_text: Some("process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\t\tif ${2:rst} = '1' then\n\t\t\t${3:-- reset_value}\n\t\tend if;\n\tend if;\nend process;".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Synchronous process with synchronous reset".to_string()),
+        }),
+        detail: Some("Synchronous process with synchronous reset".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Synchronous process with synchronous reset**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1104,11 +1146,25 @@ pub fn create_sync_rst_process_snippet() -> CompletionItem {
 /// # Returns
 /// CompletionItem configured as a snippet with label "async_rst"
 pub fn create_async_rst_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:clk}, ${2:rst_n}) is\nbegin\n\tif ${2:rst_n} = '0' then\n\t\t${3:-- reset values}\n\telsif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "process-async-rst".to_string(),
-        detail: Some("Asynchronous reset process".to_string()),
-        insert_text: Some("process(${1:clk}, ${2:rst_n}) is\nbegin\n\tif ${2:rst_n} = '0' then\n\t\t${3:-- reset values}\n\telsif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Synchronous process with asynchronous reset".to_string()),
+        }),
+        detail: Some("Synchronous process with asynchronous reset".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Synchronous process with asynchronous reset**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1126,13 +1182,25 @@ pub fn create_async_rst_process_snippet() -> CompletionItem {
 /// # Returns
 /// CompletionItem configured as a snippet with label "for"
 pub fn create_for_generate_snippet() -> CompletionItem {
+    let snippet = "for ${1:i} in ${2:0} to ${3:N-1} generate\n\t${4:-- local parameters}\nbegin\n\t$0\nend generate;".to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "for-generate".to_string(),
-        detail: Some("Generate For Loop".to_string()),
-        insert_text: Some(
-            "for ${1:i} in ${2:0} to ${3:N-1} generate\n\t${4:-- local parameters}\nbegin\n\t$0\nend generate;".to_string(),
-        ),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("For-generate statement".to_string()),
+        }),
+        detail: Some("For-generate statement".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** For-generate statement**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("generate".to_string()),
+        filter_text: Some("generate".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1150,14 +1218,27 @@ pub fn create_for_generate_snippet() -> CompletionItem {
 /// # Returns
 /// CompletionItem configured as a snippet with label "if"
 pub fn create_if_generate_snippet() -> CompletionItem {
+    let snippet =
+        "if ${1:condition} generate\n\t${2:-- local parameters}\nbegin\n\t$0\nend generate;"
+            .to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "if-generate".to_string(),
-        detail: Some("Generate if".to_string()),
-        insert_text: Some(
-            "if ${1:condition} generate\n\t${2:-- local parameters}\nbegin\n\t$0\nend generate;"
-                .to_string(),
-        ),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("if-generate statement".to_string()),
+        }),
+        detail: Some("if-generate statement".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** If-generate statement**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("generate".to_string()),
+        filter_text: Some("generate".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1176,13 +1257,22 @@ pub fn create_if_generate_snippet() -> CompletionItem {
 /// # Returns
 /// CompletionItem configured as a snippet with label "block"
 pub fn create_block_snippet() -> CompletionItem {
+    let snippet = "block \n\t${1:-- local parameters}\nbegin\n\t$0\nend block;".to_string();
     CompletionItem {
         kind: Some(CompletionItemKind::SNIPPET),
         label: "block".to_string(),
-        detail: Some("block".to_string()),
-        insert_text: Some(
-            "block \n\t${1:-- local parameters}\nbegin\n\t$0\nend generate;".to_string(),
-        ),
+        detail: Some("block statement".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("block statement".to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("** Block statement**\n\n```vhdl\n{}\n```", snippet.clone()),
+        })),
+        sort_text: Some("block".to_string()),
+        filter_text: Some("block".to_string()),
+        insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
@@ -1311,6 +1401,7 @@ pub fn complete_scope(
 
         if *context == CompletionContext::Architecture && is_after_label(text, position, tree_root)
         {
+            // Offer process and generate snippets
             items.push(create_process_snippet());
             items.push(create_sync_process_snippet());
             items.push(create_sync_rst_process_snippet());
