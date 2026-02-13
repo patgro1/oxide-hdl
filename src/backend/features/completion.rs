@@ -1371,6 +1371,206 @@ pub fn generate_instantiation_snippet(name: &str, scope_tree: &ScopeTree) -> Str
     snippet
 }
 
+/// Generates a component instantiation snippet from a component Declaration.
+///
+/// Similar to `generate_instantiation_snippet()` but works with component declarations
+/// found in packages, where generics and ports are stored in `declaration.parameters`
+/// rather than in a separate ScopeTree.
+///
+/// # Arguments
+///
+/// * `name` - The component name for the instantiation
+/// * `declaration` - The component Declaration containing parameters (generics/ports)
+///
+/// # Returns
+///
+/// A formatted snippet string with tab stops for LSP completion
+///
+/// # Examples
+///
+/// ```ignore
+/// // Component declaration with generics and ports in parameters:
+/// // uart_tx
+/// //     generic map (
+/// //         BAUD_RATE => ${1:BAUD_RATE}
+/// //     )
+/// //     port map (
+/// //         clk => ${2:clk}
+/// //     );
+/// ```
+pub fn generate_instantiation_snippet_from_declaration(
+    name: &str,
+    declaration: &Declaration,
+) -> String {
+    // TODO: Extract parameters from declaration.parameters
+    // If None, return simple instantiation with just port map
+    let parameters = match &declaration.parameters {
+        Some(params) => params,
+        None => return format!("{};\n", name), // No interface, just name
+    };
+
+    let mut tab_index = 1;
+    let mut snippet = String::new();
+
+    let generics: Vec<&Declaration> = parameters
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Generic))
+        .collect();
+
+    let ports: Vec<&Declaration> = parameters
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Port(_)))
+        .collect();
+
+    let max_generic_len = generics.iter().map(|g| g.name.len()).max().unwrap_or(0);
+    let max_port_len = ports.iter().map(|p| p.name.len()).max().unwrap_or(0);
+
+    snippet.push_str(&format!("{}\n", name).to_string());
+    let generics_line: Vec<String> = generics
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let padding = " ".repeat(max_generic_len - g.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                g.name,
+                padding,
+                tab_index + i,
+                g.name
+            )
+        })
+        .collect();
+    if !generics_line.is_empty() {
+        snippet.push_str("generic map (\n");
+        snippet.push_str(&generics_line.join(",\n"));
+        snippet.push_str("\n)\n");
+    }
+    tab_index = generics_line.len() + 1;
+
+    let ports_line: Vec<String> = ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let padding = " ".repeat(max_port_len - p.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                p.name,
+                padding,
+                tab_index + i,
+                p.name
+            )
+        })
+        .collect();
+    if !ports_line.is_empty() {
+        snippet.push_str("port map (\n");
+        snippet.push_str(&ports_line.join(",\n"));
+        snippet.push_str("\n);\n");
+    }
+    snippet
+}
+
+/// Generates completion items for entity and component instantiations.
+///
+/// Finds all visible entities (from current file) and components (from imported packages)
+/// and creates snippet-based completion items for each one.
+///
+/// # Arguments
+///
+/// * `analysis_map` - The global map of all file analyses
+/// * `analysis` - The analysis of the current file
+///
+/// # Returns
+///
+/// Vector of completion items, one for each available entity/component
+pub fn generate_entity_completions(
+    analysis_map: &AnalysisMap,
+    analysis: &Analysis,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+
+    for entity in analysis.entity_scope_trees.values() {
+        let name = entity.name.clone().unwrap_or("UNKNOWN".to_string());
+        let snippet = generate_instantiation_snippet(&name, entity);
+        items.push(CompletionItem {
+            kind: Some(CompletionItemKind::SNIPPET),
+            label: name.clone(),
+            detail: Some("Component Instantiation".to_string()),
+            label_details: Some(CompletionItemLabelDetails {
+                detail: None,
+                description: Some("Component Instantiation".to_string()),
+            }),
+            documentation: Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!(
+                    "** Generate instantiation for `{}`**\n\n```vhdl\n{}\n```",
+                    name.clone(),
+                    snippet.clone()
+                ),
+            })),
+            sort_text: Some(format!("!{}", name.clone())),
+            filter_text: Some(name),
+            insert_text: Some(snippet),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    for clause in &analysis.use_clauses {
+        let pkg_name = &clause.name;
+        for (_, global_analysis) in analysis_map.iter() {
+            if let Some(pkg_scope) = global_analysis
+                .package_scope_trees
+                .get(&pkg_name.to_lowercase())
+            {
+                let components = if clause.all_import {
+                    pkg_scope
+                        .declarations
+                        .iter()
+                        .filter(|d| matches!(d.decl_type, DeclType::Component))
+                        .collect()
+                } else if let Some(sym) = &clause.imported_symbol
+                    && let Some(decl) = pkg_scope
+                        .declarations
+                        .iter()
+                        .find(|d| d.name.eq_ignore_ascii_case(sym))
+                {
+                    vec![decl]
+                } else {
+                    vec![]
+                };
+                items.extend(components.iter().map(|c| {
+                    let name = c.name.clone();
+                    let snippet = generate_instantiation_snippet_from_declaration(&name, c);
+                    CompletionItem {
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        label: name.clone(),
+                        detail: Some("Component Instantiation".to_string()),
+                        label_details: Some(CompletionItemLabelDetails {
+                            detail: None,
+                            description: Some("Component Instantiation".to_string()),
+                        }),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "** Generate instantiation for `{}`**\n\n```vhdl\n{}\n```",
+                                name.clone(),
+                                snippet.clone()
+                            ),
+                        })),
+                        sort_text: Some(format!("!{}", name.clone())),
+                        filter_text: Some(name),
+                        insert_text: Some(snippet),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        ..Default::default()
+                    }
+                }));
+            }
+        }
+    }
+
+    items
+}
+
 // =============================================================================
 // Completion Item Generation
 // =============================================================================
@@ -1410,6 +1610,9 @@ pub fn complete_scope(
             items.push(create_for_generate_snippet());
             items.push(create_if_generate_snippet());
             items.push(create_block_snippet());
+
+            // Offer entity/component instantiation snippets
+            items.extend(generate_entity_completions(analysis_map, current_analysis));
         }
 
         match context {
