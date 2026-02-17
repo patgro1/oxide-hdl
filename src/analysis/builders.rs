@@ -328,8 +328,14 @@ fn process_sequential_statements(sequential_node: Node, text: &str, parent_tree:
                 loop_tree.rebuild_index();
                 parent_tree.children.push(loop_tree);
             }
-            "if_statement" | "case_statement" => {
-                // For if/case, recursively process their bodies
+            "if_statement_block"
+            | "if_statement"
+            | "if_statement_body"
+            | "elsif_statement"
+            | "else_statement"
+            | "case_statement"
+            | "case_statement_alternative" => {
+                // For if/case and their body/branch nodes, recursively process their bodies
                 process_sequential_statements(child, text, parent_tree);
             }
             _ => {

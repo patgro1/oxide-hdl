@@ -1739,4 +1739,34 @@ end architecture;
             diag_messages(&diags)
         );
     }
+    #[test]
+    fn test_for_loop_variable_rhs_in_process_not_flagged() {
+        let code = r#"
+architecture rtl of toto is
+    signal some_data: std_logic_vector(8-1 downto 0);
+    signal signal_b: std_logic;
+begin
+    p_proc : process(some_data,signal_b)
+    begin
+        if (signal_b = '1') then
+            for i in 8/8-1 downto 0 loop
+                if (some_data((i+1)*8-1 downto 8*i)/=X"55") then
+                end if;
+            end loop;
+        end if;
+    end process;
+end architecture;
+
+"#;
+        let diags = check_undeclared(code);
+        let loop_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains(" i"))
+            .collect();
+        assert!(
+            loop_diags.is_empty(),
+            "For-loop variable 'i' should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
 }
