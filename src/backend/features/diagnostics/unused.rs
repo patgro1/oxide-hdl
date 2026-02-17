@@ -705,4 +705,28 @@ end architecture;
             .collect();
         assert_eq!(flagged.len(), 1, "Should flag toto");
     }
+
+    #[test]
+    fn constant_inner_loops_should_not_be_unused() {
+        // Signals used only in type declarations ('range, 'length) should still be flagged
+        // as unused - unlike constants which ARE valid in type expressions
+        let code = r#"
+architecture rtl of toto is
+    constant C_CONF: natural := 5;
+    function my_func(conf: natural; param: string; def_val: boolean) return boolean;
+    constant MY_CONST                      : boolean  := my_func(C_CONF, "MY_CONST", false);
+begin
+    p_proc: process
+    begin
+        for t in 0 to 8-1 loop
+            if not MY_CONST then
+            end if;
+        end loop;
+    end process;
+end architecture;
+"#;
+        let diags = check_unused_signals(code);
+        // CONS2 is used in the attribute definition
+        assert_eq!(diags.len(), 0, "Constant is used");
+    }
 }

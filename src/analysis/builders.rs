@@ -292,10 +292,11 @@ fn process_sequential_statements(sequential_node: Node, text: &str, parent_tree:
                 // Create a child scope for the loop
                 let mut loop_tree = ScopeTree::new(ScopeKind::Process, &child);
 
-                // Extract loop variable from for_loop if present
-                if let Some(iteration_scheme) = find_child(child, "iteration_scheme")
+                // Extract loop variable from for_loop if present.
+                // _iteration_scheme is a hidden rule; the actual child is for_loop or while_loop.
+                if let Some(for_loop) = find_child(child, "for_loop")
                     && let Some(parameter_spec) =
-                        find_child(iteration_scheme, "parameter_specification")
+                        find_child(for_loop, "parameter_specification")
                     && let Some(identifier) = find_child(parameter_spec, "identifier")
                 {
                     loop_tree.declarations.push(Declaration {
@@ -308,21 +309,20 @@ fn process_sequential_statements(sequential_node: Node, text: &str, parent_tree:
                         doc_comment: None,
                         parameters: None,
                     });
-                }
 
-                // Collect identifiers from loop body as usages
-                if let Some(loop_body) = find_child(child, "sequential_block") {
-                    process_sequential_statements(loop_body, text, &mut loop_tree);
-                }
-
-                // Collect identifiers from iteration scheme (range expressions)
-                if let Some(iteration_scheme) = find_child(child, "iteration_scheme") {
+                    // Collect identifiers from the range expression (e.g. constants used in bounds)
                     collect_identifiers_recursive(
-                        iteration_scheme,
+                        for_loop,
                         text,
                         UsageContext::Behavioral,
                         &mut loop_tree.local_usage,
                     );
+                }
+
+                // Collect identifiers from loop body as usages.
+                // The loop body node is loop_body, not sequential_block.
+                if let Some(loop_body) = find_child(child, "loop_body") {
+                    process_sequential_statements(loop_body, text, &mut loop_tree);
                 }
 
                 loop_tree.rebuild_index();
