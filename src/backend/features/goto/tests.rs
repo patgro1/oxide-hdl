@@ -111,4 +111,34 @@ mod tests {
         // No component found, should fallback to entity in uart.vhd
         assert_eq!(locs[0].uri.path(), "/uart.vhd");
     }
+
+    #[test]
+    fn test_goto_implementation_finds_shallow_architecture() {
+        let ent_code = "entity uart_tx is\nend entity;";
+        let arch_code = "architecture rtl of uart_tx is\nbegin\nend architecture;";
+        
+        let mut map = AnalysisMap::new();
+        
+        // Entity: Deep parsed
+        let ent_uri = Url::parse("file:///uart_ent.vhd").unwrap();
+        let ent_tree = parse_text(ent_code);
+        let ent_analysis = crate::backend::syntax::parser::extract_document_symbols(ent_code, ent_tree.root_node());
+        map.insert(ent_uri.clone(), ent_analysis);
+
+        // Architecture: Shallow parsed (regex only)
+        let arch_uri = Url::parse("file:///uart_arch.vhd").unwrap();
+        let arch_syms = crate::backend::syntax::scanner::scan_fast(arch_code);
+        let mut arch_analysis = crate::analysis::Analysis::new();
+        for s in arch_syms {
+            arch_analysis.symbols.insert(s.name.clone().to_lowercase(), s);
+        }
+        map.insert(arch_uri.clone(), arch_analysis);
+
+        // Target: The entity name
+        let pos = Position { line: 0, character: 7 };
+        let locs = lookup_implementation("uart_tx", &ent_uri, &map, pos);
+        
+        assert!(!locs.is_empty(), "Should have found the shallow architecture");
+        assert_eq!(locs[0].uri.path(), "/uart_arch.vhd");
+    }
 }

@@ -1,4 +1,4 @@
-use crate::analysis::{DeclType, OxideSymbolKind};
+use crate::analysis::{DeclType, OxideSymbolKind, ScopeKind};
 use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, LookupResult};
 use crate::backend::{AnalysisMap, Location};
 use tower_lsp::lsp_types::{Position, Url};
@@ -193,8 +193,9 @@ pub fn lookup_implementation(
             };
 
             for (uri, analysis) in analysis_map.iter() {
+                // A. Check Deep-Parsed Architectures
                 for scope in &analysis.scope_trees {
-                    if scope.kind == crate::analysis::ScopeKind::Architecture
+                    if scope.kind == ScopeKind::Architecture
                         && scope.entity.as_deref().unwrap_or_default().eq_ignore_ascii_case(ent_name)
                     {
                         implementations.push(LookupResult {
@@ -207,6 +208,24 @@ pub fn lookup_implementation(
                             }),
                             source_uri: uri.clone(),
                         });
+                    }
+                }
+
+                // B. Check Shallow-Indexed Architectures (Fallback)
+                if implementations.iter().all(|res| &res.source_uri != uri) {
+                    let target_detail = format!("Architecture of {}", ent_name).to_lowercase();
+                    for sym in analysis.symbols.values() {
+                        if sym.kind == OxideSymbolKind::Architecture {
+                            if let Some(detail) = &sym.detail {
+                                // Detail is "Architecture of <entity_name>"
+                                if detail.to_lowercase() == target_detail {
+                                    implementations.push(LookupResult {
+                                        item: ResolvedItem::Symbol(sym.clone()),
+                                        source_uri: uri.clone(),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -116,12 +116,12 @@ pub fn scan_fast(text: &str) -> Vec<Symbol> {
 
     // 3. Architectures
     for cap in RE_ARCH.captures_iter(text) {
-        if let Some(m) = cap.get(1) {
+        if let (Some(arch_m), Some(ent_m)) = (cap.get(1), cap.get(2)) {
             symbols.push(Symbol {
-                name: m.as_str().to_string(),
+                name: arch_m.as_str().to_string(),
                 kind: OxideSymbolKind::Architecture,
-                detail: Some("Architecture".to_string()),
-                range: byte_to_range(text, m.start()),
+                detail: Some(format!("Architecture of {}", ent_m.as_str())),
+                range: byte_to_range(text, arch_m.start()),
                 children: Vec::new(),
             })
         }
