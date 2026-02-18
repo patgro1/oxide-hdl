@@ -346,11 +346,13 @@ fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
     let name_lc = name.to_lowercase();
     for (uri, analysis) in map.iter() {
         if let Some(symbol) = analysis.symbols.get(&name_lc)
-            && symbol.kind == OxideSymbolKind::Package
+            && (symbol.kind == OxideSymbolKind::Package || symbol.kind == OxideSymbolKind::PackageBody)
         {
             return Some(uri.clone());
         }
-        if analysis.package_scope_trees.contains_key(&name_lc) {
+        if analysis.package_declaration_scope_trees.contains_key(&name_lc)
+            || analysis.package_body_scope_trees.contains_key(&name_lc)
+        {
             return Some(uri.clone());
         }
     }
@@ -428,7 +430,8 @@ pub async fn ensure_fully_parsed(
     .await
     .unwrap();
     if let Some(analysis) = result {
-        if analysis.package_scope_trees.is_empty()
+        if analysis.package_declaration_scope_trees.is_empty()
+            && analysis.package_body_scope_trees.is_empty()
             && analysis.entity_scope_trees.is_empty()
             && analysis.scope_trees.is_empty()
         {

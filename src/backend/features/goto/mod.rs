@@ -1,41 +1,219 @@
-use crate::backend::features::lookup::lookup_symbol;
+use crate::analysis::{DeclType, OxideSymbolKind};
+use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, LookupResult};
 use crate::backend::{AnalysisMap, Location};
 use tower_lsp::lsp_types::{Position, Url};
 
 /// Resolves the definition location(s) for a given symbol.
 ///
-/// This function implements the "Go to Definition" logic, handling scoping rules
-/// and multiple candidates (overloading).
+/// This function implements the "Go to Definition" logic, prioritizing the 
+/// implementation (body) over the interface (declaration).
 ///
 /// # Logic
-///
-/// 1.  **Local Search (Priority):** Checks the current file first. If the symbol is defined locally
-///     (e.g., a signal in the current architecture), it returns that location and stops searching.
-///     This ensures local variables shadow global names.
-/// 2.  **Global Search (Fallback):** If not found locally, it scans the entire workspace index.
-///     * **Top-Level:** Matches Entities and Packages.
-///     * **Nested:** Matches Functions/Procedures defined inside Packages (by crawling the package hierarchy).
-///
-/// # Arguments
-///
-/// * `target` - The identifier string to look up (e.g., "clk", "my_func").
-/// * `current_uri` - The URI of the file where the request originated (used for local search).
-/// * `analysis_map` - The global index of all parsed files.
-/// * `pos` - Position of the cursor
-///
-/// # Returns
-///
-/// A `Vec<Location>`. Returns a vector because VHDL supports overloading (multiple functions
-/// with the same name), so a single lookup might result in multiple valid definitions.
+/// 1.  **Prioritization:** 
+///     *   Subprograms: Favors implementation bodies (`DeclType::Function`) over signatures.
+///     *   Entities: Favors the Entity declaration over a Component declaration.
+/// 2.  **Fallback:** If the preferred implementation isn't found, it returns available declarations.
 pub fn lookup_definition(
     target: &str,
     current_uri: &Url,
     analysis_map: &AnalysisMap,
     pos: Position,
 ) -> Vec<Location> {
-    let results = lookup_symbol(target, current_uri, analysis_map, &pos);
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
 
-    results
+    let mut entities = Vec::new();
+    let mut components = Vec::new();
+    let mut subprogram_bodies = Vec::new();
+    let mut others = Vec::new();
+
+    for res in &results {
+        match &res.item {
+            ResolvedItem::Symbol(s) => match s.kind {
+                OxideSymbolKind::Entity => entities.push(res),
+                OxideSymbolKind::Component => components.push(res),
+                OxideSymbolKind::PackageBody | OxideSymbolKind::Architecture => subprogram_bodies.push(res),
+                _ => others.push(res),
+            },
+            ResolvedItem::Declaration(d) => match d.decl_type {
+                DeclType::Function | DeclType::Procedure => {
+                    subprogram_bodies.push(res);
+                }
+                DeclType::Component => components.push(res),
+                DeclType::FunctionDeclaration | DeclType::ProcedureDeclaration => {
+                    others.push(res);
+                }
+                _ => others.push(res),
+            },
+        }
+    }
+
+    let mut final_results = if !subprogram_bodies.is_empty() {
+        subprogram_bodies
+    } else if !entities.is_empty() {
+        entities
+    } else if !components.is_empty() {
+        components
+    } else {
+        others
+    };
+
+    // If we have multiple results, try to prioritize the one in the current file
+    if final_results.len() > 1 && final_results.iter().any(|res| res.source_uri == *current_uri) {
+        final_results.retain(|res| res.source_uri == *current_uri);
+    }
+
+    final_results
+        .into_iter()
+        .map(|res| Location {
+            uri: res.source_uri.clone(),
+            range: res.item.selection_range(),
+        })
+        .collect()
+}
+
+/// Resolves the declaration location(s) for a given symbol.
+///
+/// This function implements the "Go to Declaration" logic, prioritizing the 
+/// interface/specification over the implementation body.
+///
+/// # Logic
+/// 1.  **Prioritization:** 
+///     *   Subprograms: Favors signatures (`DeclType::FunctionDeclaration`) over bodies.
+///     *   Components: Favors Component declarations over Entity declarations.
+/// 2.  **Fallback:** If the preferred declaration isn't found (e.g. no component defined), 
+///     it falls back to the Entity declaration.
+pub fn lookup_declaration(
+    target: &str,
+    current_uri: &Url,
+    analysis_map: &AnalysisMap,
+    pos: Position,
+) -> Vec<Location> {
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
+
+    let mut components = Vec::new();
+    let mut subprogram_specs = Vec::new();
+    let mut entities = Vec::new();
+    let mut others = Vec::new();
+
+    for res in &results {
+        match &res.item {
+            ResolvedItem::Symbol(s) => match s.kind {
+                OxideSymbolKind::Component => components.push(res),
+                OxideSymbolKind::Package => subprogram_specs.push(res),
+                OxideSymbolKind::Entity => entities.push(res),
+                _ => others.push(res),
+            },
+            ResolvedItem::Declaration(d) => match d.decl_type {
+                DeclType::Component => components.push(res),
+                DeclType::FunctionDeclaration | DeclType::ProcedureDeclaration => {
+                    subprogram_specs.push(res);
+                }
+                DeclType::Function | DeclType::Procedure => {
+                    others.push(res);
+                }
+                _ => others.push(res),
+            },
+        }
+    }
+
+    let mut final_results = if !components.is_empty() {
+        components
+    } else if !subprogram_specs.is_empty() {
+        subprogram_specs
+    } else if !entities.is_empty() {
+        entities
+    } else {
+        others
+    };
+
+    if final_results.len() > 1 && final_results.iter().any(|res| res.source_uri == *current_uri) {
+        final_results.retain(|res| res.source_uri == *current_uri);
+    }
+
+    final_results
+        .into_iter()
+        .map(|res| Location {
+            uri: res.source_uri.clone(),
+            range: res.item.selection_range(),
+        })
+        .collect()
+}
+
+/// Resolves the implementation location(s) for a given symbol.
+///
+/// This function implements the "Go to Implementation" logic, specifically 
+/// targeting Architecture bodies and subprogram bodies.
+///
+/// # Logic
+/// 1.  **Direct Match:** Searches for `Architecture`, `PackageBody`, or subprogram implementations (`DeclType::Function`).
+/// 2.  **Entity-to-Architecture:** If the target is an Entity name, it performs a 
+///     global search to find all Architectures associated with that Entity.
+pub fn lookup_implementation(
+    target: &str,
+    current_uri: &Url,
+    analysis_map: &AnalysisMap,
+    pos: Position,
+) -> Vec<Location> {
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
+
+    let mut implementations = Vec::new();
+
+    for res in &results {
+        let is_impl = match &res.item {
+            ResolvedItem::Symbol(s) => matches!(
+                s.kind,
+                OxideSymbolKind::Architecture | OxideSymbolKind::PackageBody
+            ),
+            ResolvedItem::Declaration(d) => {
+                matches!(d.decl_type, DeclType::Function | DeclType::Procedure)
+            }
+        };
+
+        if is_impl {
+            implementations.push(LookupResult {
+                item: res.item.clone(),
+                source_uri: res.source_uri.clone(),
+            });
+        }
+    }
+
+    if implementations.is_empty() {
+        let entities: Vec<_> = results
+            .iter()
+            .filter(|res| match &res.item {
+                ResolvedItem::Symbol(s) => s.kind == OxideSymbolKind::Entity,
+                _ => false,
+            })
+            .collect();
+
+        for ent_res in entities {
+            let ent_name = match &ent_res.item {
+                ResolvedItem::Symbol(s) => &s.name,
+                _ => unreachable!(),
+            };
+
+            for (uri, analysis) in analysis_map.iter() {
+                for scope in &analysis.scope_trees {
+                    if scope.kind == crate::analysis::ScopeKind::Architecture
+                        && scope.entity.as_deref().unwrap_or_default().eq_ignore_ascii_case(ent_name)
+                    {
+                        implementations.push(LookupResult {
+                            item: ResolvedItem::Symbol(crate::analysis::Symbol {
+                                name: scope.name.clone().unwrap_or_default(),
+                                kind: OxideSymbolKind::Architecture,
+                                detail: None,
+                                range: scope.range,
+                                children: vec![],
+                            }),
+                            source_uri: uri.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    implementations
         .into_iter()
         .map(|res| Location {
             uri: res.source_uri,
@@ -43,3 +221,6 @@ pub fn lookup_definition(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

@@ -231,6 +231,34 @@ pub fn collect_all_diagnostics(
                         ignored_patterns: &ignored_patterns,
                     };
                     walk_node(child, &ctx, &mut collectors);
+                } else if child.kind() == "package_declaration" {
+                    let pkg_scope = child
+                        .child_by_field_name("package")
+                        .map(|n| &text[n.byte_range()])
+                        .and_then(|name| analysis.package_declaration_scope_trees.get(name));
+                    let ctx = DiagnosticContext {
+                        text,
+                        scope_tree: pkg_scope,
+                        analysis,
+                        global_map,
+                        current_uri,
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
+                } else if child.kind() == "package_definition" {
+                    let pkg_scope = child
+                        .child_by_field_name("package")
+                        .map(|n| &text[n.byte_range()])
+                        .and_then(|name| analysis.package_body_scope_trees.get(name));
+                    let ctx = DiagnosticContext {
+                        text,
+                        scope_tree: pkg_scope,
+                        analysis,
+                        global_map,
+                        current_uri,
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
                 } else {
                     let ctx = DiagnosticContext {
                         text,

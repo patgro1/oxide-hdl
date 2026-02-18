@@ -1094,9 +1094,9 @@ fn create_subprogram_declaration_from_node(
     let mut name = "".to_string();
     let name_node_id = {
         match decl_type {
-            DeclType::Function => "function",
-            DeclType::Procedure => "procedure",
-            _ => panic!("We should not get here with other decl_type than Function or Procedure"),
+            DeclType::Function | DeclType::FunctionDeclaration => "function",
+            DeclType::Procedure | DeclType::ProcedureDeclaration => "procedure",
+            _ => panic!("We should not get here with other decl_type than Function or Procedure variants"),
         }
     };
     if let Some(name_node) = node.child_by_field_name(name_node_id) {
@@ -1511,13 +1511,13 @@ fn extract_declaration_from_node(
             declarations.push(create_subprogram_declaration_from_node(
                 function_node,
                 text,
-                DeclType::Function,
+                DeclType::FunctionDeclaration,
             ));
         } else if let Some(proc_node) = find_child(sub_prog, "procedure_specification") {
             declarations.push(create_subprogram_declaration_from_node(
                 proc_node,
                 text,
-                DeclType::Procedure,
+                DeclType::ProcedureDeclaration,
             ));
         }
     }

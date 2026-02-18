@@ -36,8 +36,12 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
             DeclType::Variable => format!("Unused variable '{}'", decl.name),
             DeclType::Constant => format!("Unused constant '{}'", decl.name),
             DeclType::Signal => format!("Unused signal '{}'", decl.name),
-            DeclType::Function => format!("Unused function '{}'", decl.name),
-            DeclType::Procedure => format!("Unused procedure '{}'", decl.name),
+            DeclType::Function | DeclType::FunctionDeclaration => {
+                format!("Unused function '{}'", decl.name)
+            }
+            DeclType::Procedure | DeclType::ProcedureDeclaration => {
+                format!("Unused procedure '{}'", decl.name)
+            }
             DeclType::Type => format!("Unused type '{}'", decl.name),
             DeclType::Subtype => format!("Unused type '{}'", decl.name),
             DeclType::Attribute => format!("Unused attribute '{}'", decl.name),

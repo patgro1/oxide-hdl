@@ -16,6 +16,8 @@ pub enum OxideSymbolKind {
     Entity,
     /// A VHDL Package declaration (Collection of types/constants).
     Package,
+    /// A VHDL Package body (Implementation).
+    PackageBody,
     /// A Component declaration.
     Component,
     /// A Component Instantiation statement (Usage of a component).
@@ -51,6 +53,7 @@ impl fmt::Display for OxideSymbolKind {
         let s = match self {
             OxideSymbolKind::Entity => "entity",
             OxideSymbolKind::Package => "package",
+            OxideSymbolKind::PackageBody => "package body",
             OxideSymbolKind::Component => "component",
             OxideSymbolKind::ComponentInstantiation => "instantiation",
             OxideSymbolKind::Port => "port",
@@ -75,6 +78,7 @@ impl From<OxideSymbolKind> for SymbolKind {
         match kind {
             OxideSymbolKind::Entity => SymbolKind::INTERFACE,
             OxideSymbolKind::Package => SymbolKind::MODULE,
+            OxideSymbolKind::PackageBody => SymbolKind::MODULE,
             OxideSymbolKind::Component => SymbolKind::INTERFACE,
             OxideSymbolKind::ComponentInstantiation => SymbolKind::FIELD,
             OxideSymbolKind::Port => SymbolKind::FIELD,
@@ -149,10 +153,14 @@ pub enum DeclType {
     Subtype,
     /// Record fields
     RecordField,
-    /// Function subprogram
+    /// Function subprogram implementation (the body)
     Function,
-    /// Procedure subprogram
+    /// Function subprogram declaration (the signature/specification)
+    FunctionDeclaration,
+    /// Procedure subprogram implementation (the body)
     Procedure,
+    /// Procedure subprogram declaration (the signature/specification)
+    ProcedureDeclaration,
     /// Alias
     Alias,
     /// Enumeration literal (e.g., `IDLE` from `type t_state is (IDLE, RUN, STOP)`)
@@ -171,8 +179,8 @@ impl fmt::Display for DeclType {
             DeclType::Variable => "variable",
             DeclType::Type => "type",
             DeclType::Subtype => "subtype",
-            DeclType::Function => "function",
-            DeclType::Procedure => "procedure",
+            DeclType::Function | DeclType::FunctionDeclaration => "function",
+            DeclType::Procedure | DeclType::ProcedureDeclaration => "procedure",
             DeclType::Alias => "alias",
             DeclType::Attribute => "attribute",
             DeclType::RecordField => "field",
@@ -194,8 +202,8 @@ impl From<DeclType> for SymbolKind {
             DeclType::Signal => SymbolKind::VARIABLE,
             DeclType::Type => SymbolKind::STRUCT,
             DeclType::Subtype => SymbolKind::STRUCT,
-            DeclType::Function => SymbolKind::FUNCTION,
-            DeclType::Procedure => SymbolKind::FUNCTION,
+            DeclType::Function | DeclType::FunctionDeclaration => SymbolKind::FUNCTION,
+            DeclType::Procedure | DeclType::ProcedureDeclaration => SymbolKind::FUNCTION,
             DeclType::Alias => SymbolKind::VARIABLE,
             DeclType::Attribute => SymbolKind::PROPERTY,
             DeclType::RecordField => SymbolKind::FIELD,
@@ -216,8 +224,8 @@ impl From<DeclType> for OxideSymbolKind {
             DeclType::Signal => OxideSymbolKind::Signal,
             DeclType::Type => OxideSymbolKind::Struct,
             DeclType::Subtype => OxideSymbolKind::Struct,
-            DeclType::Function => OxideSymbolKind::Function,
-            DeclType::Procedure => OxideSymbolKind::Function,
+            DeclType::Function | DeclType::FunctionDeclaration => OxideSymbolKind::Function,
+            DeclType::Procedure | DeclType::ProcedureDeclaration => OxideSymbolKind::Function,
             DeclType::Alias => OxideSymbolKind::Variable,
             DeclType::Attribute => OxideSymbolKind::Generic,
             DeclType::RecordField => OxideSymbolKind::Port,

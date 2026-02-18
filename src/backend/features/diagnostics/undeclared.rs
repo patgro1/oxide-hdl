@@ -73,6 +73,7 @@ pub fn check_undeclared_identifiers(
                 ctx.current_uri,
                 ctx.global_map,
                 &usage.range.start,
+                false,
             );
             !results.is_empty()
         });
@@ -1456,11 +1457,11 @@ end architecture;
 
         // Verify the package scope tree has the protected type
         assert!(
-            pkg_analysis.package_scope_trees.contains_key("my_pkg"),
+            pkg_analysis.package_declaration_scope_trees.contains_key("my_pkg"),
             "Package scope tree should exist. Keys: {:?}",
-            pkg_analysis.package_scope_trees.keys().collect::<Vec<_>>()
+            pkg_analysis.package_declaration_scope_trees.keys().collect::<Vec<_>>()
         );
-        let pkg_scope = pkg_analysis.package_scope_trees.get("my_pkg").unwrap();
+        let pkg_scope = pkg_analysis.package_declaration_scope_trees.get("my_pkg").unwrap();
         let has_t_counter = pkg_scope
             .declarations
             .iter()
@@ -1767,6 +1768,75 @@ end architecture;
             loop_diags.is_empty(),
             "For-loop variable 'i' should not be flagged. Got: {:?}",
             diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_package_header_and_body_in_same_file_visibility() {
+        let pkg_code = r#"
+package my_pkg is
+    constant C_PKG_CONST : integer := 42;
+    function calc(x : integer) return integer;
+end package;
+
+package body my_pkg is
+    function calc(x : integer) return integer is
+    begin
+        return x + C_PKG_CONST;
+    end function;
+end package body;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+architecture rtl of top is
+    signal s : integer := calc(10);
+begin
+end architecture;
+"#;
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///top.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
+        let mut lookup_cache = HashMap::new();
+
+        let ctx = super::super::DiagnosticContext {
+            text: arch_code,
+            scope_tree: None,
+            analysis: &arch_analysis,
+            global_map: &analysis_map,
+            current_uri: &arch_uri,
+            ignored_patterns: &[],
+        };
+
+        for scope_tree in &arch_analysis.scope_trees {
+            super::check_undeclared_identifiers(
+                arch_root,
+                &ctx,
+                scope_tree,
+                &mut collectors,
+                &mut lookup_cache,
+            );
+        }
+
+        assert!(
+            collectors.undefined.is_empty(),
+            "C_PKG_CONST should be visible from the package header. Got: {:?}",
+            diag_messages(&collectors.undefined)
         );
     }
 }

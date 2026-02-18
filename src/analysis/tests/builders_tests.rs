@@ -862,7 +862,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.name, Some("my_pkg".to_string()));
@@ -880,7 +880,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
@@ -904,7 +904,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 3);
@@ -927,7 +927,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     // 1 type + 3 enum literals (IDLE, RUN, STOP) flattened into scope
@@ -961,14 +961,14 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let func_decl = &pkg.declarations[0];
     assert_eq!(func_decl.name, "calc_parity");
-    assert!(matches!(func_decl.decl_type, DeclType::Function));
+    assert!(matches!(func_decl.decl_type, DeclType::FunctionDeclaration));
 }
 
 #[test]
@@ -983,14 +983,14 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
 
     let proc_decl = &pkg.declarations[0];
     assert_eq!(proc_decl.name, "do_reset");
-    assert!(matches!(proc_decl.decl_type, DeclType::Procedure));
+    assert!(matches!(proc_decl.decl_type, DeclType::ProcedureDeclaration));
 }
 
 #[test]
@@ -1008,7 +1008,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     // 4 original (type + constant + function + procedure) + 3 enum literals (IDLE, RUN, STOP)
@@ -1027,7 +1027,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 1);
@@ -1050,7 +1050,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
     assert_eq!(pkg.declarations.len(), 2);
@@ -1074,8 +1074,8 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    assert_eq!(analysis.scope_trees.len(), 1);
-    let pkg_body = &analysis.scope_trees[0];
+    assert_eq!(analysis.package_body_scope_trees.len(), 1);
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     assert_eq!(pkg_body.name, Some("my_pkg".to_string()));
     assert!(matches!(pkg_body.kind, ScopeKind::PackageBody));
 }
@@ -1090,7 +1090,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     assert_eq!(pkg_body.package, Some("my_pkg".to_string()));
 }
 
@@ -1105,7 +1105,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     assert_eq!(pkg_body.declarations.len(), 1);
 
     let constant = &pkg_body.declarations[0];
@@ -1124,7 +1124,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     // 1 type + 3 enum literals (INIT, WORK, DONE) flattened into scope
     assert_eq!(pkg_body.declarations.len(), 4);
 
@@ -1151,7 +1151,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     // Function implementation should create a child scope
     assert_eq!(pkg_body.children.len(), 1);
 
@@ -1174,7 +1174,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     assert_eq!(pkg_body.children.len(), 1);
 
     let proc_scope = &pkg_body.children[0];
@@ -1198,7 +1198,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     let func_scope = &pkg_body.children[0];
 
     // Function should have parameter and local variable
@@ -1232,7 +1232,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
 
     // Top-level declarations: constant + type + 3 enum literals (A, B, C) + function + procedure
     assert_eq!(pkg_body.declarations.len(), 7);
@@ -1265,7 +1265,7 @@ end package body;
     let root = tree.root_node();
     let analysis = extract_document_symbols(code, root);
 
-    let pkg_body = &analysis.scope_trees[0];
+    let pkg_body = analysis.package_body_scope_trees.get("my_pkg").unwrap();
     assert_eq!(pkg_body.children.len(), 3);
 
     let names: Vec<&str> = pkg_body
@@ -1297,7 +1297,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
 
@@ -1339,7 +1339,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
 
@@ -1433,7 +1433,7 @@ end package;
     println!("analysis: {:?}", analysis);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
 
@@ -1473,7 +1473,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
 
@@ -1517,7 +1517,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
 
@@ -1564,7 +1564,7 @@ end package;
     let analysis = extract_document_symbols(code, root);
 
     let pkg = analysis
-        .package_scope_trees
+        .package_declaration_scope_trees
         .get("my_pkg")
         .expect("Package not found");
 

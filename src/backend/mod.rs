@@ -30,6 +30,7 @@ use tower_lsp::lsp_types::{
     InitializedParams, Location, MessageType, OneOf, Position, RenameOptions, SaveOptions,
     ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
+    request::{GotoDeclarationParams, GotoImplementationParams},
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -278,6 +279,10 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+                // Goto declaration
+                declaration_provider: Some(tower_lsp::lsp_types::DeclarationCapability::Simple(true)),
+                // Goto implementation
+                implementation_provider: Some(tower_lsp::lsp_types::ImplementationProviderCapability::Simple(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -464,6 +469,64 @@ impl LanguageServer for Backend {
                 if !locations.is_empty() {
                     return Ok(Some(GotoDefinitionResponse::Array(locations)));
                 }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn goto_declaration(
+        &self,
+        params: GotoDeclarationParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = get_word_at_pos(&rope, position) {
+            let map = self.analysis_map.read().await;
+            let target = &word.to_lowercase();
+            let locations = features::goto::lookup_declaration(target, &uri, &map, position);
+            if !locations.is_empty() {
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    locations,
+                )));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = get_word_at_pos(&rope, position) {
+            let map = self.analysis_map.read().await;
+            let target = &word.to_lowercase();
+            let locations = features::goto::lookup_implementation(target, &uri, &map, position);
+            if !locations.is_empty() {
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    locations,
+                )));
             }
         }
 

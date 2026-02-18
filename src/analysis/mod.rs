@@ -46,14 +46,17 @@ pub struct Analysis {
     /// How the file was parsed
     pub parse_level: ParseLevel,
 
-    /// Scope tree with entity declaration
+    /// Scope tree with entity declaration (Headers)
     pub entity_scope_trees: HashMap<String, ScopeTree>,
 
-    /// Scope tree with signals, constants, types declaration and usage
+    /// Scope tree with signals, constants, types declaration and usage (Architectures)
     pub scope_trees: Vec<ScopeTree>,
 
-    /// Scope tree for packages
-    pub package_scope_trees: HashMap<String, ScopeTree>,
+    /// Scope tree for package declarations (Headers)
+    pub package_declaration_scope_trees: HashMap<String, ScopeTree>,
+
+    /// Scope tree for package bodies (Implementations)
+    pub package_body_scope_trees: HashMap<String, ScopeTree>,
 }
 
 impl Analysis {
@@ -71,7 +74,8 @@ impl Analysis {
             parse_level: ParseLevel::Shallow,
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
-            package_scope_trees: HashMap::new(),
+            package_declaration_scope_trees: HashMap::new(),
+            package_body_scope_trees: HashMap::new(),
             use_clauses: vec![implicit_standard],
         }
     }
@@ -116,7 +120,12 @@ impl Analysis {
                     .find(|scope_tree| position_in_range(*pos, scope_tree.range))
             })
             .or_else(|| {
-                self.package_scope_trees
+                self.package_declaration_scope_trees
+                    .values()
+                    .find(|scope_tree| position_in_range(*pos, scope_tree.range))
+            })
+            .or_else(|| {
+                self.package_body_scope_trees
                     .values()
                     .find(|scope_tree| position_in_range(*pos, scope_tree.range))
             })
@@ -148,10 +157,17 @@ impl Analysis {
             }
             // At that point, we might need to check in the package declaration. If the scope_tree links
             // to one, check if we can find the name in it.
-            if let Some(package_name) = &scope_tree.package
-                && let Some(package_scope_tree) = self.package_scope_trees.get(package_name)
-            {
-                return package_scope_tree.get_declaration(name);
+            if let Some(package_name) = &scope_tree.package {
+                if let Some(header) = self.package_declaration_scope_trees.get(package_name) {
+                    if let Some(decl) = header.get_declaration(name) {
+                        return Some(decl);
+                    }
+                }
+                if let Some(body) = self.package_body_scope_trees.get(package_name) {
+                    if let Some(decl) = body.get_declaration(name) {
+                        return Some(decl);
+                    }
+                }
             }
         }
         None

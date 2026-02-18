@@ -1527,8 +1527,9 @@ pub fn generate_entity_completions(
     for clause in &analysis.use_clauses {
         let pkg_name = &clause.name;
         for (_, global_analysis) in analysis_map.iter() {
+            // Primarily check declarations (headers) for completions
             if let Some(pkg_scope) = global_analysis
-                .package_scope_trees
+                .package_declaration_scope_trees
                 .get(&pkg_name.to_lowercase())
             {
                 let components = if clause.all_import {
@@ -1658,7 +1659,10 @@ pub fn complete_scope(
                         .or_else(|| {
                             tree.package
                                 .as_ref()
-                                .and_then(|n| current_analysis.package_scope_trees.get(n))
+                                .and_then(|n| {
+                                    current_analysis.package_declaration_scope_trees.get(n)
+                                        .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                                })
                         });
 
                     if let Some(decls) = tree.collect_visible_declarations(&innermost.range, header)
@@ -1695,7 +1699,7 @@ pub fn complete_scope(
                         if let ResolvedItem::Declaration(decl) = res.item {
                             let type_name = &decl.type_info.base_type;
                             let type_defs =
-                                lookup_symbol(type_name, current_uri, analysis_map, &position);
+                                lookup_symbol(type_name, current_uri, analysis_map, &position, false);
                             for type_res in type_defs {
                                 if let ResolvedItem::Declaration(t) = type_res.item
                                     && let Some(fields) = &t.parameters
@@ -1721,7 +1725,10 @@ pub fn complete_scope(
                         .or_else(|| {
                             tree.package
                                 .as_ref()
-                                .and_then(|n| current_analysis.package_scope_trees.get(n))
+                                .and_then(|n| {
+                                    current_analysis.package_declaration_scope_trees.get(n)
+                                        .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                                })
                         });
 
                     if let Some(declarations) =
@@ -1797,10 +1804,10 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Generic => CompletionItemKind::CONSTANT,
         DeclType::Port(_) => CompletionItemKind::FIELD,
         DeclType::Parameter(_, _) => CompletionItemKind::FIELD,
-        DeclType::Function => CompletionItemKind::FUNCTION,
+        DeclType::Function | DeclType::FunctionDeclaration => CompletionItemKind::FUNCTION,
         DeclType::Type => CompletionItemKind::STRUCT,
         DeclType::Subtype => CompletionItemKind::STRUCT,
-        DeclType::Procedure => CompletionItemKind::FUNCTION,
+        DeclType::Procedure | DeclType::ProcedureDeclaration => CompletionItemKind::FUNCTION,
         DeclType::Attribute => CompletionItemKind::TYPE_PARAMETER,
         DeclType::RecordField => CompletionItemKind::FIELD,
         DeclType::EnumLiteral => CompletionItemKind::ENUM_MEMBER,

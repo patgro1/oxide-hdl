@@ -15,6 +15,9 @@ lazy_static! {
     // Matches "package Name is"
     static ref RE_PACKAGE: Regex = Regex::new(r"(?im)^\s*package\s+(\w+)\s+is").unwrap();
 
+    // Matches "package body Name is"
+    static ref RE_PACKAGE_BODY: Regex = Regex::new(r"(?im)^\s*package\s+body\s+(\w+)\s+is").unwrap();
+
     // Matches "architecture Name of Entity is"
     // Capture group 1: Arch Name, Capture group 2: Entity Name
     static ref RE_ARCH: Regex = Regex::new(r"(?im)^\s*architecture\s+(\w+)\s+of\s+(\w+)\s+is").unwrap();
@@ -68,6 +71,63 @@ fn byte_to_range(text: &str, start_byte: usize) -> Range {
 /// and will be upgraded to "Deep" symbols by the JIT parser when the file is opened.
 pub fn scan_fast(text: &str) -> Vec<Symbol> {
     let mut symbols = Vec::new();
+
+    // 1. Entities
+    for cap in RE_ENTITY.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            symbols.push(Symbol {
+                name: m.as_str().to_string(),
+                kind: OxideSymbolKind::Entity,
+                detail: Some("Entity".to_string()),
+                range: byte_to_range(text, m.start()),
+                children: Vec::new(),
+            })
+        }
+    }
+
+    // 2. Package & Package Body
+    for cap in RE_PACKAGE.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            let name = m.as_str();
+            if name.to_lowercase() == "body" {
+                continue; // Will be handled by RE_PACKAGE_BODY
+            }
+            symbols.push(Symbol {
+                name: name.to_string(),
+                kind: OxideSymbolKind::Package,
+                detail: Some("Package".to_string()),
+                range: byte_to_range(text, m.start()),
+                children: Vec::new(),
+            })
+        }
+    }
+
+    for cap in RE_PACKAGE_BODY.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            symbols.push(Symbol {
+                name: m.as_str().to_string(),
+                kind: OxideSymbolKind::PackageBody,
+                detail: Some("Package Body".to_string()),
+                range: byte_to_range(text, m.start()),
+                children: Vec::new(),
+            })
+        }
+    }
+
+    // 3. Architectures
+    for cap in RE_ARCH.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            symbols.push(Symbol {
+                name: m.as_str().to_string(),
+                kind: OxideSymbolKind::Architecture,
+                detail: Some("Architecture".to_string()),
+                range: byte_to_range(text, m.start()),
+                children: Vec::new(),
+            })
+        }
+    }
+
+    // 4. Other symbols
     let mut add_sym = |re: &Regex, kind: OxideSymbolKind, detail: &str| {
         for cap in re.captures_iter(text) {
             if let Some(m) = cap.get(1) {
@@ -81,9 +141,7 @@ pub fn scan_fast(text: &str) -> Vec<Symbol> {
             }
         }
     };
-    add_sym(&RE_ENTITY, OxideSymbolKind::Entity, "Entity");
-    add_sym(&RE_PACKAGE, OxideSymbolKind::Package, "Package");
-    add_sym(&RE_ARCH, OxideSymbolKind::Architecture, "Package");
+
     add_sym(&RE_TYPE, OxideSymbolKind::Struct, "Type");
     add_sym(&RE_CONSTANT, OxideSymbolKind::Constant, "Constant");
     add_sym(&RE_SUBPROGRAM, OxideSymbolKind::Function, "Subprogram");
@@ -160,5 +218,24 @@ end MyPackage;
         assert!(names.contains(&"t_state".to_string()));
         assert!(names.contains(&"t_data".to_string()));
         assert!(names.contains(&"C_WIDTH".to_string()));
+    }
+
+    #[test]
+    fn test_finds_package_body() {
+        let src = r#"
+package body MyPackage is
+    function my_func return boolean is
+    begin
+        return true;
+    end function;
+end package body;
+"#;
+        let syms = scan_fast(src);
+
+        assert_eq!(syms.len(), 2); // Package Body + Function
+        assert_eq!(syms[0].name, "MyPackage");
+        assert_eq!(syms[0].kind, OxideSymbolKind::PackageBody);
+        assert_eq!(syms[1].name, "my_func");
+        assert_eq!(syms[1].kind, OxideSymbolKind::Function);
     }
 }

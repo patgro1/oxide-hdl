@@ -9,13 +9,30 @@
 ### In Progress: The "Undeclared" Guard
 **Goal:** Stop the user from using things that don't exist. This is the final semantic check needed before the analyzer is "trustworthy".
 
-- [ ] **Undeclared Identifier Diagnostics**
-  - [ ] Check `Reference` nodes against `ScopeTree`
-  - [ ] Flag unknown signals/variables/constants (Error Severity)
-  - [ ] Ignore known built-ins (std_logic, true/false)
-- [ ] **Undefined Type Diagnostics**
-  - [ ] Flag unknown types in signal declarations (e.g., `signal x : foo;`)
-  - [ ] Validate against IEEE library types (already available in `builtins.rs`)
+- [X] **Undeclared Identifier Diagnostics**
+  - [X] Check `Reference` nodes against `ScopeTree`
+  - [X] Flag unknown signals/variables/constants (Error Severity)
+  - [X] Ignore known built-ins (std_logic, true/false)
+- [X] **Undefined Type Diagnostics**
+  - [X] Flag unknown types in signal declarations (e.g., `signal x : foo;`)
+  - [X] Validate against IEEE library types (already available in `builtins.rs`)
+
+---
+
+## 🧭 Enhanced Navigation (v0.5.x)
+**Goal:** Improve developer mobility between entities, architectures, and subprograms.
+
+- [X] **Refine `goto_definition`**
+  - [X] Prioritize Entity definitions over Component declarations.
+  - [X] Fallback to Component only if the Entity is not found in the workspace.
+  - [X] For Subprograms (Functions/Procedures): Jump directly to the subprogram body.
+- [X] **Implement `goto_declaration`**
+  - [X] Lead to the Component declaration.
+  - [X] Fallback logic: If Component not found, fallback to Entity.
+  - [X] For Subprograms: Match `goto_definition` behavior.
+- [X] **Implement `goto_implementation`**
+  - [X] Lead to the Architecture corresponding to an Entity.
+  - [X] For Subprograms: Lead to the subprogram body (same as definition).
 
 ---
 
@@ -49,9 +66,9 @@
 - [X] **Smart Auto-Fill Snippets** ✨
   - [X] **Component Instantiation:** Selecting a component in completion triggers a snippet that types out `port map ( clk => $1, rst => $2 ... );`
   - [X] **Procedure/Function Calls:** Auto-fill parameter lists for subprograms.
-- [ ] **Rename Symbol**
-  - [ ] Rename identifier under cursor
-  - [ ] Update definition and all usages across the file
+- [X] **Rename Symbol**
+  - [X] Rename identifier under cursor
+  - [X] Update definition and all usages across the file
 - [ ] **Find All References**
   - [ ] Show all locations where a signal/variable is used
 - [ ] **Code Actions (Quick Fixes)**
@@ -77,6 +94,9 @@
 1. **Overloaded Functions:**
    - **Issue:** Function resolution doesn't check signature types, only names.
    - **Status:** Acceptable limitation for now.
+2. **Subprogram Deduplication (Hover):**
+   - **Issue:** Hover might show both Specification and Body if both are indexed.
+   - **Task:** Ensure `lookup_symbol` (find_all=false) or formatter prioritizes Body over Spec to avoid duplicates in tooltips.
 
 2. **Record Type Visibility:**
    - **Issue:** Dot completion relies on text heuristics in some edge cases.

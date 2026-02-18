@@ -54,17 +54,16 @@ pub struct LookupResult {
 ///
 /// Resolution order:
 /// 1. Local scope - signals, variables, constants visible at the cursor position
-/// 2. Imported packages - symbols from `use` clauses
+/// 2. Imported packages - symbols from `use` clauses (Headers only)
 /// 3. Global top-level - entities and packages by name
-///
-/// Returns early if local matches are found, preventing shadowed global symbols
-/// from appearing in results.
 ///
 /// # Arguments
 /// * `target` - The symbol name to look up (case-insensitive).
 /// * `current_uri` - The URI of the file containing the cursor.
 /// * `analysis_map` - The global analysis map for cross-file lookups.
 /// * `pos` - The cursor position for scope resolution.
+/// * `find_all` - If true, continues searching all files even if local matches are found. 
+///   Useful for prioritization logic in navigation.
 ///
 /// # Returns
 /// A vector of all matching lookup results with source URIs.
@@ -73,10 +72,13 @@ pub fn lookup_symbol(
     current_uri: &Url,
     analysis_map: &AnalysisMap,
     pos: &Position,
+    find_all: bool,
 ) -> Vec<LookupResult> {
     let mut results = Vec::new();
     let target_lc = target.to_lowercase();
-    if let Some(analysis) = analysis_map.get(current_uri) {
+    let analysis = analysis_map.get(current_uri);
+
+    if let Some(analysis) = analysis {
         // 1. Local lookup
         if let Some(root_scope) = analysis.find_scope_tree_at(pos) {
             let innermost = root_scope.find_innermost_scope(pos);
@@ -88,7 +90,9 @@ pub fn lookup_symbol(
                     root_scope
                         .package
                         .as_ref()
-                        .and_then(|name| analysis.package_scope_trees.get(&name.to_lowercase()))
+                        .and_then(|name| {
+                            analysis.package_declaration_scope_trees.get(&name.to_lowercase())
+                        })
                 });
             if let Some(locals) =
                 root_scope.collect_visible_declarations(&innermost.range, header_scope)
@@ -130,15 +134,19 @@ pub fn lookup_symbol(
                 }
             }
         }
-        if !results.is_empty() {
+        if !results.is_empty() && !find_all {
             return results;
         }
 
-        // 2. Imports
+        // 2. Imports (Strict: Headers only)
         resolve_imports_for_symbol(analysis, &target_lc, analysis_map, &mut results);
+        if !results.is_empty() && !find_all {
+            return results;
+        }
     }
 
-    if results.is_empty() {
+    // 3. Global search (Entities, Package Headers, and Package Bodies if find_all)
+    if results.is_empty() || find_all {
         resolve_global_toplevel_symbols(&target_lc, analysis_map, &mut results);
     }
 
@@ -165,11 +173,14 @@ pub fn lookup_procedure_declaration(
     map: &AnalysisMap,
     pos: &Position,
 ) -> Option<Declaration> {
-    let results = lookup_symbol(name, uri, map, pos);
+    let results = lookup_symbol(name, uri, map, pos, false);
 
     results.into_iter().find_map(|res| match res.item {
         ResolvedItem::Declaration(decl) => match decl.decl_type {
-            DeclType::Procedure | DeclType::Function => Some(decl),
+            DeclType::Procedure
+            | DeclType::Function
+            | DeclType::ProcedureDeclaration
+            | DeclType::FunctionDeclaration => Some(decl),
             _ => None,
         },
         ResolvedItem::Symbol(_) => None,
@@ -179,11 +190,9 @@ pub fn lookup_procedure_declaration(
 /// Resolves a symbol through imported packages from `use` clauses.
 ///
 /// For each `use` clause in the current file's analysis, searches the referenced
-/// package for matching symbols. Handles both `use lib.pkg.all` (wildcard imports)
-/// and `use lib.pkg.symbol` (specific imports).
-///
-/// Checks both deep-parsed `package_scope_trees` and shallow-indexed `symbols`
-/// to handle packages at different parse levels.
+/// package for matching symbols. 
+/// 
+/// VHDL Rule: Only Package DECLARATIONS (Headers) are searched for imported symbols.
 ///
 /// # Arguments
 /// * `analysis` - The analysis of the current file containing `use` clauses.
@@ -200,7 +209,7 @@ fn resolve_imports_for_symbol(
         let pkg_name = &clause.name;
         for (uri, global_analysis) in map.iter() {
             if let Some(pkg_scope) = global_analysis
-                .package_scope_trees
+                .package_declaration_scope_trees
                 .get(&pkg_name.to_lowercase())
             {
                 let check_scope_decls = |scope: &ScopeTree, output: &mut Vec<LookupResult>| {
@@ -221,21 +230,12 @@ fn resolve_imports_for_symbol(
                     check_scope_decls(pkg_scope, results);
                 }
             } else if let Some(pkg_sym) = global_analysis.symbols.get(&pkg_name.to_lowercase())
-                && pkg_sym.kind == OxideSymbolKind::Package
+                && (pkg_sym.kind == OxideSymbolKind::Package || pkg_sym.kind == OxideSymbolKind::PackageBody)
             {
+                // Shallow Fallback: If we found the package (or body) via regex, 
+                // check if the target symbol exists anywhere in that file's flat symbol map.
                 let find_and_push = |t: &str, output: &mut Vec<LookupResult>| {
-                    if let Some(child) = pkg_sym
-                        .children
-                        .iter()
-                        .find(|c| c.name.eq_ignore_ascii_case(t))
-                    {
-                        output.push(LookupResult {
-                            item: ResolvedItem::Symbol(child.clone()),
-                            source_uri: uri.clone(),
-                        });
-                    } else if let Some(sym) = global_analysis.symbols.get(&t.to_lowercase()) {
-                        // Shallow fallback: scan_fast stores types as separate top-level
-                        // symbols (not as children of the package). Check them directly.
+                    if let Some(sym) = global_analysis.symbols.get(&t.to_lowercase()) {
                         output.push(LookupResult {
                             item: ResolvedItem::Symbol(sym.clone()),
                             source_uri: uri.clone(),
@@ -273,7 +273,6 @@ fn resolve_global_toplevel_symbols(
 ) {
     for (uri, analysis) in map.iter() {
         if let Some(sym) = analysis.symbols.get(target)
-            && matches!(sym.kind, OxideSymbolKind::Entity | OxideSymbolKind::Package)
         {
             results.push(LookupResult {
                 item: ResolvedItem::Symbol(sym.clone()),
@@ -294,7 +293,7 @@ fn resolve_global_toplevel_symbols(
             });
         }
 
-        if let Some(scope) = analysis.package_scope_trees.get(target) {
+        if let Some(scope) = analysis.package_declaration_scope_trees.get(target) {
             results.push(LookupResult {
                 item: ResolvedItem::Symbol(Symbol {
                     name: scope.name.clone().unwrap_or_default(),
@@ -305,6 +304,41 @@ fn resolve_global_toplevel_symbols(
                 }),
                 source_uri: uri.clone(),
             });
+        }
+
+        if let Some(scope) = analysis.package_body_scope_trees.get(target) {
+            results.push(LookupResult {
+                item: ResolvedItem::Symbol(Symbol {
+                    name: scope.name.clone().unwrap_or_default(),
+                    kind: OxideSymbolKind::PackageBody,
+                    detail: None,
+                    range: scope.range,
+                    children: vec![],
+                }),
+                source_uri: uri.clone(),
+            });
+        }
+        
+        // Broad search for subprograms inside packages (Deep Parse fallback)
+        for scope in analysis.package_declaration_scope_trees.values() {
+            for decl in &scope.declarations {
+                if decl.name.eq_ignore_ascii_case(target) {
+                    results.push(LookupResult {
+                        item: ResolvedItem::Declaration(decl.clone()),
+                        source_uri: uri.clone(),
+                    });
+                }
+            }
+        }
+        for scope in analysis.package_body_scope_trees.values() {
+            for decl in &scope.declarations {
+                if decl.name.eq_ignore_ascii_case(target) {
+                    results.push(LookupResult {
+                        item: ResolvedItem::Declaration(decl.clone()),
+                        source_uri: uri.clone(),
+                    });
+                }
+            }
         }
     }
 }
@@ -467,7 +501,7 @@ pub fn resolve_path_chain(
         return vec![];
     }
     let root_name = &chain[0];
-    let mut current_results = lookup_symbol(root_name, current_uri, analysis_map, pos);
+    let mut current_results = lookup_symbol(root_name, current_uri, analysis_map, pos, false);
 
     for (_, part) in chain.iter().enumerate().skip(1) {
         let mut next_results = Vec::new();
@@ -476,7 +510,7 @@ pub fn resolve_path_chain(
                 // If it is a declation, we need to check its type for the fields
                 ResolvedItem::Declaration(decl) => {
                     let type_name = &decl.type_info.base_type;
-                    let type_defs = lookup_symbol(type_name, current_uri, analysis_map, pos);
+                    let type_defs = lookup_symbol(type_name, current_uri, analysis_map, pos, false);
                     for type_res in type_defs {
                         if let ResolvedItem::Declaration(type_decl) = type_res.item
                             && let Some(fields) = &type_decl.parameters
