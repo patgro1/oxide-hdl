@@ -1839,4 +1839,79 @@ end architecture;
             diag_messages(&collectors.undefined)
         );
     }
+
+    #[test]
+    fn test_loop_variable_visibility_in_nested_case_if() {
+        let code = r#"
+architecture rtl of top is
+    type t_state is (S0, S1);
+    signal r_state : t_state;
+    signal w_val : integer;
+    signal w_data : std_logic_vector(7 downto 0);
+begin
+    process(r_state, w_val)
+    begin
+        case r_state is
+            when S0 =>
+                if w_val > 0 then
+                    for i in 0 to 7 loop
+                        if w_val = i then
+                            w_data(i) <= '0';
+                        end if;
+                    end loop;
+                end if;
+            when others =>
+                null;
+        end case;
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let i_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains(" i"))
+            .collect();
+        assert!(
+            i_diags.is_empty(),
+            "Loop variable 'i' should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_byte_remainder_regression() {
+        let code = r#"
+architecture rtl of top is
+    constant MAC2TCP_DATA_WIDTH : integer := 64;
+    signal r_padd_to_0 : integer;
+    signal w_tcp_ip_hdr_and_payload_out_data : std_logic_vector(63 downto 0);
+    type t_state is (S_IDLE, S_BLANK);
+    signal r_blank_state : t_state;
+begin
+    process(r_blank_state, r_padd_to_0)
+    begin
+        case r_blank_state is
+            when S_IDLE =>
+                for byte_remainder in 0 to MAC2TCP_DATA_WIDTH/8 - 1 loop
+                    if r_padd_to_0 = byte_remainder then
+                        w_tcp_ip_hdr_and_payload_out_data(byte_remainder*8 -1 downto 0) <= (others=>'0');
+                    end if;
+                end loop;
+            when others =>
+                null;
+        end case;
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let rem_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("byte_remainder"))
+            .collect();
+        assert!(
+            rem_diags.is_empty(),
+            "Loop variable 'byte_remainder' should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
 }

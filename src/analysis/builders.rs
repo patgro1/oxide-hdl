@@ -334,7 +334,9 @@ fn process_sequential_statements(sequential_node: Node, text: &str, parent_tree:
             | "elsif_statement"
             | "else_statement"
             | "case_statement"
-            | "case_statement_alternative" => {
+            | "case_body"
+            | "case_statement_alternative"
+            | "sequential_block_statement" => {
                 // For if/case and their body/branch nodes, recursively process their bodies
                 process_sequential_statements(child, text, parent_tree);
             }
