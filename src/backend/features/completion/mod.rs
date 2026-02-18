@@ -338,13 +338,22 @@ pub fn is_after_label(_text: &str, position: Position, tree_root: Node) -> bool 
 /// # Returns
 /// `true` if an ERROR node with label_declaration is found on target line
 fn find_error_with_label_on_line(node: Node, target_line: usize) -> bool {
-    if (node.kind() == "ERROR" || node.kind() == "concurrent_procedure_call_statement")
-        && (node.start_position().row == target_line || node.end_position().row == target_line)
-    {
-        return has_label_declaration(node);
+    // Any statement-level node that starts on the cursor line and already has
+    // a label_declaration child should trigger label-completion. This covers:
+    // - ERROR nodes (incomplete syntax, e.g. "inst1: |")
+    // - concurrent_procedure_call_statement
+    // - simple_waveform_assignment / conditional_signal_assignment / etc.
+    //   where the parser successfully binds the label to the next line's signal
+    //   assignment, producing a valid (non-ERROR) node that still starts on the
+    //   label line.
+    if node.start_position().row == target_line && has_label_declaration(node) {
+        return true;
+    }
+    // Prune branches that can't contain the target line.
+    if node.end_position().row < target_line {
+        return false;
     }
     for child in node.children(&mut node.walk()) {
-        // println!("child.kind(): {:?}", child.kind());
         if find_error_with_label_on_line(child, target_line) {
             return true;
         }
@@ -1820,7 +1829,6 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
 // =============================================================================
 // Tests
 // =============================================================================
-
 
 #[cfg(test)]
 mod tests;

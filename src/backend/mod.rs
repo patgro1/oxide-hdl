@@ -23,13 +23,13 @@ use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
-    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, Position, RenameOptions, SaveOptions, ServerCapabilities,
-    SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
+    CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, Position, RenameOptions, SaveOptions,
+    ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -657,7 +657,10 @@ impl LanguageServer for Backend {
             &text,
             tree.root_node(),
         );
-        return Ok(Some(CompletionResponse::Array(items)));
+        return Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: true,
+            items,
+        })));
     }
 
     async fn prepare_rename(
