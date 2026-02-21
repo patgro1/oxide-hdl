@@ -69,8 +69,8 @@
 - [X] **Rename Symbol**
   - [X] Rename identifier under cursor
   - [X] Update definition and all usages across the file
-- [ ] **Find All References**
-  - [ ] Show all locations where a signal/variable is used
+- [X] **Find All References**
+  - [X] Show all locations where a signal/variable is used
 - [ ] **Code Actions (Quick Fixes)**
   - [ ] "Remove unused signal" (using existing unused diagnostic)
   - [ ] "Add to sensitivity list" (using existing sensitivity diagnostic)
@@ -86,14 +86,31 @@
 - **Type Mismatches:** Full expression type inference is currently out of scope.
 - **Background Worker/Disk Cache:** Current performance (<100ms) does not justify the complexity yet.
 
+### Post 1.0
+- **Overload Resolution for Sensitivity Analysis**
+  - **Context:** When a procedure has multiple overloads with different parameter directions
+    (e.g., two overloads where the 2nd param is `out`, and a third where it is `in`), the
+    sensitivity checker currently falls back to conservative "direction unknown" treatment —
+    no "missing" and no "unnecessary" warnings are emitted for any argument of that call.
+  - **Goal:** Resolve which overload is actually being called by matching argument count and,
+    ideally, argument types.  Once the correct overload is identified, parameter directions
+    can be applied precisely, recovering accurate sensitivity diagnostics.
+  - **Why it's hard:** Requires partial type inference on actual arguments to disambiguate
+    overloads — the same problem as full type checking, just scoped to call sites.  May also
+    need to handle implicit type conversions (e.g., `std_logic` ↔ `std_ulogic`).
+  - **Status:** Deferred — the conservative fallback is correct and safe; this is a
+    precision improvement, not a correctness fix.
+
 ---
 
 ## 🐛 Known Bugs & Concerns
 
 ### Medium Priority
 1. **Overloaded Functions:**
-   - **Issue:** Function resolution doesn't check signature types, only names.
-   - **Status:** Acceptable limitation for now.
+   - **Issue:** Function/procedure resolution doesn't check signature types, only names.
+   - **Sensitivity impact:** When multiple overloads exist, the sensitivity checker falls back
+     to "direction unknown" — no false positives, but also no diagnostics for those arguments.
+   - **Status:** Safe conservative fallback in place; full overload resolution tracked as post-1.0.
 2. **Subprogram Deduplication (Hover):**
    - **Issue:** Hover might show both Specification and Body if both are indexed.
    - **Task:** Ensure `lookup_symbol` (find_all=false) or formatter prioritizes Body over Spec to avoid duplicates in tooltips.

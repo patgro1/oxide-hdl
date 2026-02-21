@@ -215,8 +215,8 @@ pub fn lookup_implementation(
                 if implementations.iter().all(|res| &res.source_uri != uri) {
                     let target_detail = format!("Architecture of {}", ent_name).to_lowercase();
                     for sym in analysis.symbols.values() {
-                        if sym.kind == OxideSymbolKind::Architecture {
-                            if let Some(detail) = &sym.detail {
+                        if sym.kind == OxideSymbolKind::Architecture
+                            && let Some(detail) = &sym.detail {
                                 // Detail is "Architecture of <entity_name>"
                                 if detail.to_lowercase() == target_detail {
                                     implementations.push(LookupResult {
@@ -225,7 +225,6 @@ pub fn lookup_implementation(
                                     });
                                 }
                             }
-                        }
                     }
                 }
             }

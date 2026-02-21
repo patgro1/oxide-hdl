@@ -124,7 +124,6 @@ pub async fn rename_symbol(
     current_uri: &Url,
     parser: &mut Parser,
 ) -> Option<WorkspaceEdit> {
-
     if !is_valid_vhdl_identifier(new_name) {
         return None;
     }
@@ -142,7 +141,6 @@ pub async fn rename_symbol(
     let mut node = tree
         .root_node()
         .descendant_for_point_range(start_point, start_point)?;
-
 
     // If the node isn't an identifier, recursively search for the innermost identifier at cursor
     if node.kind() != "identifier" && node.kind() != "library_type" {
@@ -175,50 +173,51 @@ pub async fn rename_symbol(
         let scope_tree = analysis.find_scope_tree_at(&declaration.range.start);
 
         if let Some(scope_tree) = scope_tree {
-        let mut edits: Vec<TextEdit> = Vec::new();
+            let scope_tree = scope_tree.find_innermost_scope(&declaration.range.start);
+            let mut edits: Vec<TextEdit> = Vec::new();
 
-        // Determine which scope trees to search based on declaration location
-        let base_scopes: Vec<&ScopeTree> = if scope_tree.kind == ScopeKind::Entity {
-            // For entity declarations (ports/generics), include the entity itself
-            // plus all architectures that reference it
-            let mut scopes: Vec<&ScopeTree> = vec![scope_tree];
-            scopes.extend(
-                analysis
-                    .scope_trees
-                    .iter()
-                    .filter(|s| s.entity == scope_tree.name)
-            );
-            scopes
-        } else {
-            vec![scope_tree]
-        };
+            // Determine which scope trees to search based on declaration location
+            let base_scopes: Vec<&ScopeTree> = if scope_tree.kind == ScopeKind::Entity {
+                // For entity declarations (ports/generics), include the entity itself
+                // plus all architectures that reference it
+                let mut scopes: Vec<&ScopeTree> = vec![scope_tree];
+                scopes.extend(
+                    analysis
+                        .scope_trees
+                        .iter()
+                        .filter(|s| s.entity == scope_tree.name),
+                );
+                scopes
+            } else {
+                vec![scope_tree]
+            };
 
-        // Collect all usages from the relevant scope trees
-        let usages: Vec<Usage> = base_scopes
-            .iter()
-            .flat_map(|st| collect_all_usage(symbol_name, st))
-            .collect();
+            // Collect all usages from the relevant scope trees
+            let usages: Vec<Usage> = base_scopes
+                .iter()
+                .flat_map(|st| collect_all_usage(symbol_name, st))
+                .collect();
 
-        // Create text edits for the declaration and all usages
-        edits.push(TextEdit {
-            range: declaration.selection_range,
-            new_text: new_name.to_string(),
-        });
-        for usage in usages {
+            // Create text edits for the declaration and all usages
             edits.push(TextEdit {
-                range: usage.range,
+                range: declaration.selection_range,
                 new_text: new_name.to_string(),
             });
-        }
+            for usage in usages {
+                edits.push(TextEdit {
+                    range: usage.range,
+                    new_text: new_name.to_string(),
+                });
+            }
 
-        let mut changes = HashMap::new();
-        changes.insert(current_uri.clone(), edits);
+            let mut changes = HashMap::new();
+            changes.insert(current_uri.clone(), edits);
 
-        return Some(WorkspaceEdit {
-            changes: Some(changes),
-            document_changes: None,
-            change_annotations: None,
-        });
+            return Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            });
         }
     }
 

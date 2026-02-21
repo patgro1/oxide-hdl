@@ -158,16 +158,14 @@ impl Analysis {
             // At that point, we might need to check in the package declaration. If the scope_tree links
             // to one, check if we can find the name in it.
             if let Some(package_name) = &scope_tree.package {
-                if let Some(header) = self.package_declaration_scope_trees.get(package_name) {
-                    if let Some(decl) = header.get_declaration(name) {
+                if let Some(header) = self.package_declaration_scope_trees.get(package_name)
+                    && let Some(decl) = header.get_declaration(name) {
                         return Some(decl);
                     }
-                }
-                if let Some(body) = self.package_body_scope_trees.get(package_name) {
-                    if let Some(decl) = body.get_declaration(name) {
+                if let Some(body) = self.package_body_scope_trees.get(package_name)
+                    && let Some(decl) = body.get_declaration(name) {
                         return Some(decl);
                     }
-                }
             }
         }
         None

@@ -27,7 +27,7 @@ use tower_lsp::lsp_types::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
     Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, Position, RenameOptions, SaveOptions,
+    InitializedParams, Location, MessageType, OneOf, Position, ReferenceParams, RenameOptions, SaveOptions,
     ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
     request::{GotoDeclarationParams, GotoImplementationParams},
@@ -283,6 +283,8 @@ impl LanguageServer for Backend {
                 declaration_provider: Some(tower_lsp::lsp_types::DeclarationCapability::Simple(true)),
                 // Goto implementation
                 implementation_provider: Some(tower_lsp::lsp_types::ImplementationProviderCapability::Simple(true)),
+                // References
+                references_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -795,6 +797,34 @@ impl LanguageServer for Backend {
         };
 
         Ok(workspace_edit)
+    }
+
+    async fn references(
+        &self,
+        params: ReferenceParams,
+    ) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let position = params.text_document_position.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = get_word_at_pos(&rope, position) {
+            let map = self.analysis_map.read().await;
+            if let Some(analysis) = map.get(&uri) {
+                let locations = features::references::find_references(&params, analysis, &uri, &word);
+                if !locations.is_empty() {
+                    return Ok(Some(locations));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     async fn shutdown(&self) -> Result<()> {

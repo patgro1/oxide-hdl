@@ -167,6 +167,7 @@ pub fn lookup_symbol(
 ///
 /// # Returns
 /// The declaration if a matching procedure/function is found.
+#[allow(dead_code)]
 pub fn lookup_procedure_declaration(
     name: &str,
     uri: &Url,
