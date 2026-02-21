@@ -145,14 +145,16 @@ impl<'a> SignalExtractionContext<'a> {
                         character: start_node.range().start_point.column as u32,
                     };
 
-                    if let Some(name) = proc_name
-                        && let Some(declaration) = lookup_procedure_declaration(
+                    let declaration = proc_name.and_then(|name| {
+                        lookup_procedure_declaration(
                             &name,
                             self.current_uri,
                             self.global_map,
                             &pos,
                         )
-                    {
+                    });
+
+                    if let Some(declaration) = declaration {
                         match declaration.decl_type {
                             DeclType::Function => {
                                 // Function only uses input as parameter
@@ -167,7 +169,19 @@ impl<'a> SignalExtractionContext<'a> {
                                     self.analyze_procedure_arguments(args, &declaration);
                                 }
                             }
-                            _ => {}
+                            _ => {
+                                // Unknown subprogram kind – conservatively treat all args as reads
+                                if let Some(args) = args_node {
+                                    self.extract(args, false);
+                                }
+                            }
+                        }
+                    } else {
+                        // Lookup failed (procedure defined in another file or not yet parsed).
+                        // Conservatively treat every argument as a read so that signals
+                        // already in the sensitivity list are not wrongly flagged as unnecessary.
+                        if let Some(args) = args_node {
+                            self.extract(args, false);
                         }
                     }
                 }
@@ -1619,12 +1633,196 @@ architecture rtl of test is
     signal inp: std_logic_vector(31 downto 0);
     signal toto: std_logic;
 begin
-    p_the_process: process() is 
+    p_the_process: process() is
     begin
     end process;
 end architecture;
 "#;
         let diags = check_sensitivity(code);
         assert_eq!(diags.len(), 0, "nothing should be flagged");
+    }
+
+    // Regression tests: signals used as in/inout procedure params must not be
+    // flagged as "unnecessary" when they appear in the sensitivity list.
+
+    #[test]
+    fn test_in_param_in_sensitivity_not_unnecessary() {
+        // sig_in is used as an `in` parameter → it IS read → should NOT be
+        // reported as unnecessary in the sensitivity list.
+        let code = r#"
+architecture rtl of test is
+    signal sig_in  : std_logic;
+    signal sig_out : std_logic;
+    procedure my_proc(signal v_in: in std_logic; signal v_out: out std_logic) is
+    begin
+        v_out <= v_in;
+    end;
+begin
+    process(sig_in)
+    begin
+        my_proc(sig_in, sig_out);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(
+            diags.len(),
+            0,
+            "sig_in is read via 'in' param – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_unknown_proc_in_param_in_sensitivity_not_unnecessary() {
+        // sig_in is passed as the only argument to an external procedure whose
+        // declaration is not visible locally.  When lookup fails the checker must
+        // conservatively assume the argument is read, so sig_in must NOT be
+        // flagged as "unnecessary" in the sensitivity list.
+        let code = r#"
+architecture rtl of test is
+    signal sig_in : std_logic;
+begin
+    process(sig_in)
+    begin
+        some_external_proc(sig_in);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        let unnecessary_sig_in = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_in")
+                && d.message.to_lowercase().contains("not needed")
+        });
+        assert!(
+            !unnecessary_sig_in,
+            "sig_in may be read by unknown proc – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_inout_param_in_sensitivity_not_unnecessary() {
+        // sig_inout is used as an `inout` parameter → it IS read → should NOT
+        // be reported as unnecessary in the sensitivity list.
+        let code = r#"
+architecture rtl of test is
+    signal sig_inout : std_logic;
+    procedure my_proc(signal v_inout: inout std_logic) is
+    begin
+        v_inout <= '0';
+    end;
+begin
+    process(sig_inout)
+    begin
+        my_proc(sig_inout);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(
+            diags.len(),
+            0,
+            "sig_inout is read via 'inout' param – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    // Cross-file: procedure declared in a package, called from an architecture.
+    // This is the realistic scenario the user reported.
+    fn check_sensitivity_with_package(pkg_code: &str, arch_code: &str) -> Vec<Diagnostic> {
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        crate::backend::features::diagnostics::collect_all_diagnostics(
+            arch_root,
+            &arch_analysis,
+            arch_code,
+            &analysis_map,
+            &arch_uri,
+            &crate::config::OxideConfig::default(),
+        )
+        .into_iter()
+        .filter(|d| d.source.as_deref() == Some("oxide-hdl-sensitivity"))
+        .collect()
+    }
+
+    #[test]
+    fn test_cross_file_in_param_in_sensitivity_not_unnecessary() {
+        // The procedure is declared in a separate package file.  This is the
+        // real-world scenario the user hit: hover/goto work (lookup succeeds)
+        // but the sensitivity checker was still flagging sig_in as unnecessary.
+        let pkg_code = r#"
+package my_pkg is
+    procedure my_proc(signal v_in: in std_logic; signal v_out: out std_logic);
+end package;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+architecture rtl of test is
+    signal sig_in  : std_logic;
+    signal sig_out : std_logic;
+begin
+    process(sig_in)
+    begin
+        my_proc(sig_in, sig_out);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity_with_package(pkg_code, arch_code);
+        let unnecessary_sig_in = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_in")
+                && d.message.to_lowercase().contains("not needed")
+        });
+        assert!(
+            !unnecessary_sig_in,
+            "sig_in is an 'in' param from a package proc – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_cross_file_inout_param_in_sensitivity_not_unnecessary() {
+        let pkg_code = r#"
+package my_pkg is
+    procedure my_proc(signal v_inout: inout std_logic);
+end package;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+architecture rtl of test is
+    signal sig_inout : std_logic;
+begin
+    process(sig_inout)
+    begin
+        my_proc(sig_inout);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity_with_package(pkg_code, arch_code);
+        let unnecessary = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_inout")
+                && d.message.to_lowercase().contains("not needed")
+        });
+        assert!(
+            !unnecessary,
+            "sig_inout is an 'inout' param from a package proc – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
     }
 }
