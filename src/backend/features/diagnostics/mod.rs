@@ -29,6 +29,25 @@ use tree_sitter::Node;
 /// The kind identifier for ERROR nodes in the Tree-sitter AST.
 const ERROR_NODE_KIND: &str = "ERROR";
 
+/// Context bundle for diagnostic collection.
+///
+/// Groups all read-only context parameters into a single struct to reduce
+/// function parameter count and improve code maintainability.
+pub struct DiagnosticContext<'a> {
+    /// Source text of the file being analyzed
+    pub text: &'a str,
+    /// Current scope tree being validated (if applicable)
+    pub scope_tree: Option<&'a ScopeTree>,
+    /// Analysis of the current file
+    pub analysis: &'a Analysis,
+    /// Workspace-wide symbol map for cross-file lookups
+    pub global_map: &'a AnalysisMap,
+    /// URI of the current file
+    pub current_uri: &'a Url,
+    /// Regex patterns for identifiers to ignore during validation
+    pub ignored_patterns: &'a [Regex],
+}
+
 /// Types of diagnostic messages that can be generated.
 ///
 /// Each variant represents a specific type of error that can be detected
@@ -188,56 +207,80 @@ pub fn collect_all_diagnostics(
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "architecture_definition" {
                     let scope_tree = analysis.scope_trees.get(arch_index);
-                    walk_node(
-                        child,
+                    let ctx = DiagnosticContext {
                         text,
                         scope_tree,
                         analysis,
-                        &mut collectors,
                         global_map,
                         current_uri,
-                        &ignored_patterns,
-                    );
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
                     arch_index += 1;
                 } else if child.kind() == "entity_declaration" {
                     let entity_scope = child
                         .child_by_field_name("entity")
                         .map(|n| &text[n.byte_range()])
                         .and_then(|name| analysis.entity_scope_trees.get(name));
-                    walk_node(
-                        child,
+                    let ctx = DiagnosticContext {
                         text,
-                        entity_scope,
+                        scope_tree: entity_scope,
                         analysis,
-                        &mut collectors,
                         global_map,
                         current_uri,
-                        &ignored_patterns,
-                    );
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
+                } else if child.kind() == "package_declaration" {
+                    let pkg_scope = child
+                        .child_by_field_name("package")
+                        .map(|n| &text[n.byte_range()])
+                        .and_then(|name| analysis.package_declaration_scope_trees.get(name));
+                    let ctx = DiagnosticContext {
+                        text,
+                        scope_tree: pkg_scope,
+                        analysis,
+                        global_map,
+                        current_uri,
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
+                } else if child.kind() == "package_definition" {
+                    let pkg_scope = child
+                        .child_by_field_name("package")
+                        .map(|n| &text[n.byte_range()])
+                        .and_then(|name| analysis.package_body_scope_trees.get(name));
+                    let ctx = DiagnosticContext {
+                        text,
+                        scope_tree: pkg_scope,
+                        analysis,
+                        global_map,
+                        current_uri,
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
                 } else {
-                    walk_node(
-                        child,
+                    let ctx = DiagnosticContext {
                         text,
-                        None,
+                        scope_tree: None,
                         analysis,
-                        &mut collectors,
                         global_map,
                         current_uri,
-                        &ignored_patterns,
-                    );
+                        ignored_patterns: &ignored_patterns,
+                    };
+                    walk_node(child, &ctx, &mut collectors);
                 }
             }
         } else {
-            walk_node(
-                node,
+            let ctx = DiagnosticContext {
                 text,
-                None,
+                scope_tree: None,
                 analysis,
-                &mut collectors,
                 global_map,
                 current_uri,
-                &ignored_patterns,
-            );
+                ignored_patterns: &ignored_patterns,
+            };
+            walk_node(node, &ctx, &mut collectors);
         }
     }
 
@@ -252,42 +295,19 @@ pub fn collect_all_diagnostics(
 /// # Arguments
 ///
 /// * `node` - The current Tree-sitter node to check
-/// * `scope_trees` - Vector containing all the scope trees of the document
-/// * `text` - The full source text of the file
+/// * `node` - The Tree-sitter node to walk
+/// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `collectors` - Mutable reference to diagnostic collectors
 fn walk_node(
     node: Node,
-    text: &str,
-    scope_tree: Option<&ScopeTree>,
-    analysis: &Analysis,
+    ctx: &DiagnosticContext,
     collectors: &mut DiagnosticCollectors,
-    global_map: &AnalysisMap,
-    current_uri: &Url,
-    ignored_patterns: &[Regex],
 ) {
-    check_node(
-        node,
-        text,
-        scope_tree,
-        analysis,
-        collectors,
-        global_map,
-        current_uri,
-        ignored_patterns,
-    );
+    check_node(node, ctx, collectors);
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_node(
-            child,
-            text,
-            scope_tree,
-            analysis,
-            collectors,
-            global_map,
-            current_uri,
-            ignored_patterns,
-        );
+        walk_node(child, ctx, collectors);
     }
 }
 
@@ -300,8 +320,7 @@ fn walk_node(
 /// # Arguments
 ///
 /// * `node` - The Tree-sitter node to check
-/// * `scope_trees` - Vector containing all the scope trees of the document
-/// * `text` - The full source text of the file
+/// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `collectors` - Mutable reference to diagnostic collectors
 ///
 /// # Node Types Checked
@@ -316,13 +335,8 @@ fn walk_node(
 /// - `association_list` - Matching parentheses in port maps
 fn check_node(
     node: Node,
-    text: &str,
-    scope_tree: Option<&ScopeTree>,
-    analysis: &Analysis,
+    ctx: &DiagnosticContext,
     collectors: &mut DiagnosticCollectors,
-    global_map: &AnalysisMap,
-    current_uri: &Url,
-    ignored_patterns: &[Regex],
 ) {
     if node.kind() == ERROR_NODE_KIND {
         syntax::check_syntax_error(node, collectors);
@@ -333,20 +347,12 @@ fn check_node(
 
     match node.kind() {
         "architecture_definition" => {
-            if let Some(scope_tree) = scope_tree {
+            if let Some(scope_tree) = ctx.scope_tree {
                 unused::check_unused_signals(scope_tree, collectors);
                 let mut lookup_cache: HashMap<String, bool> = HashMap::new();
-                // Create the context bundle
-                let ctx = undeclared::ValidationContext {
-                    root: node, // The architecture node acts as the "root" for this scope's search
-                    global_map,
-                    current_uri,
-                    ignored_patterns,
-                };
-
-                // Call with just 4 arguments
                 undeclared::check_undeclared_identifiers(
-                    &ctx,
+                    node,
+                    ctx,
                     scope_tree,
                     collectors,
                     &mut lookup_cache,
@@ -354,16 +360,11 @@ fn check_node(
             }
         }
         "entity_declaration" => {
-            if let Some(scope_tree) = scope_tree {
+            if let Some(scope_tree) = ctx.scope_tree {
                 let mut lookup_cache: HashMap<String, bool> = HashMap::new();
-                let ctx = undeclared::ValidationContext {
-                    root: node,
-                    global_map,
-                    current_uri,
-                    ignored_patterns,
-                };
                 undeclared::check_undeclared_identifiers(
-                    &ctx,
+                    node,
+                    ctx,
                     scope_tree,
                     collectors,
                     &mut lookup_cache,
@@ -374,21 +375,13 @@ fn check_node(
             syntax::check_signal_declaration(node, collectors);
             syntax::check_end_with_semicolon(
                 node,
-                text,
+                ctx.text,
                 collectors,
                 DiagnosticMessage::MissingSemicolon,
             )
         }
         "process_statement" => {
-            sensitivity::check_process_sensitivity(
-                node,
-                text,
-                scope_tree,
-                analysis,
-                collectors,
-                global_map,
-                current_uri,
-            );
+            sensitivity::check_process_sensitivity(node, ctx, collectors);
         }
         "interface_declaration" => {
             syntax::check_port_declaration(node, collectors);
@@ -396,7 +389,7 @@ fn check_node(
         "port_clause" => {
             syntax::check_end_with_semicolon(
                 node,
-                text,
+                ctx.text,
                 collectors,
                 DiagnosticMessage::MissingSemiColonAfterPort,
             );
@@ -404,7 +397,7 @@ fn check_node(
         "component_instantiation_statement" => {
             syntax::check_end_with_semicolon(
                 node,
-                text,
+                ctx.text,
                 collectors,
                 DiagnosticMessage::MissingSemicolonAfterInstance,
             );
@@ -413,10 +406,10 @@ fn check_node(
             syntax::check_label_has_valid_parent(node, collectors);
         }
         "sensitivity_specification" => {
-            syntax::check_sensitivity_parens(node, text, collectors);
+            syntax::check_sensitivity_parens(node, ctx.text, collectors);
         }
         "association_list" => {
-            syntax::check_association_list_parens(node, text, collectors);
+            syntax::check_association_list_parens(node, ctx.text, collectors);
         }
         _ => {}
     }

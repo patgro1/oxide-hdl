@@ -23,13 +23,14 @@ use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
-    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MessageType, OneOf, Position, SaveOptions, ServerCapabilities, SymbolInformation,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
+    CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, Position, ReferenceParams, RenameOptions, SaveOptions,
+    ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
+    request::{GotoDeclarationParams, GotoImplementationParams},
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -273,6 +274,17 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 // Workspace symbol
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                // Rename with prepare support
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
+                // Goto declaration
+                declaration_provider: Some(tower_lsp::lsp_types::DeclarationCapability::Simple(true)),
+                // Goto implementation
+                implementation_provider: Some(tower_lsp::lsp_types::ImplementationProviderCapability::Simple(true)),
+                // References
+                references_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -465,6 +477,64 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
+    async fn goto_declaration(
+        &self,
+        params: GotoDeclarationParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = get_word_at_pos(&rope, position) {
+            let map = self.analysis_map.read().await;
+            let target = &word.to_lowercase();
+            let locations = features::goto::lookup_declaration(target, &uri, &map, position);
+            if !locations.is_empty() {
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    locations,
+                )));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = get_word_at_pos(&rope, position) {
+            let map = self.analysis_map.read().await;
+            let target = &word.to_lowercase();
+            let locations = features::goto::lookup_implementation(target, &uri, &map, position);
+            if !locations.is_empty() {
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    locations,
+                )));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Handles the "Hover" request to show documentation/type info.
     ///
     /// # Logic
@@ -598,15 +668,16 @@ impl LanguageServer for Backend {
         };
 
         let text = rope.to_string();
-        let context = {
+        let tree = {
             let mut parser = self.parser.lock().await;
             let lang = unsafe { crate::tree_sitter_vhdl() };
             let _ = parser.set_language(&lang);
 
-            let tree = parser.parse(&text, None).unwrap();
-
-            features::completion::get_completion_context(&text, tree.root_node(), position)
+            parser.parse(&text, None).unwrap()
         };
+
+        let context =
+            features::completion::get_completion_context(&text, tree.root_node(), position);
 
         self.client
             .log_message(MessageType::INFO, format!("Context: {:?}", context))
@@ -643,8 +714,117 @@ impl LanguageServer for Backend {
             }
         }
         let map = self.analysis_map.read().await;
-        let items = features::completion::complete_scope(&map, &uri, &context, position, &text);
-        return Ok(Some(CompletionResponse::Array(items)));
+        let items = features::completion::complete_scope(
+            &map,
+            &uri,
+            &context,
+            position,
+            &text,
+            tree.root_node(),
+        );
+        return Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: true,
+            items,
+        })));
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: tower_lsp::lsp_types::TextDocumentPositionParams,
+    ) -> Result<Option<tower_lsp::lsp_types::PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        let text = rope.to_string();
+        let analysis_map = self.analysis_map.read().await;
+        let analysis = match analysis_map.get(&uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        // Check if symbol can be renamed
+        let range = {
+            let mut parser = self.parser.lock().await;
+            features::rename::prepare_rename(&text, &position, analysis, &mut parser).await
+        };
+
+        Ok(range.map(tower_lsp::lsp_types::PrepareRenameResponse::Range))
+    }
+
+    async fn rename(
+        &self,
+        params: tower_lsp::lsp_types::RenameParams,
+    ) -> Result<Option<tower_lsp::lsp_types::WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        let text = rope.to_string();
+        let analysis_map = self.analysis_map.read().await;
+        let analysis = match analysis_map.get(&uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        // Perform rename
+        let workspace_edit = {
+            let mut parser = self.parser.lock().await;
+            features::rename::rename_symbol(
+                &text,
+                &position,
+                &new_name,
+                analysis,
+                &uri,
+                &mut parser,
+            )
+            .await
+        };
+
+        Ok(workspace_edit)
+    }
+
+    async fn references(
+        &self,
+        params: ReferenceParams,
+    ) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let position = params.text_document_position.position;
+
+        let rope = {
+            let map = self.document_map.read().await;
+            match map.get(&uri) {
+                Some(r) => r.clone(),
+                None => return Ok(None),
+            }
+        };
+
+        if let Some(word) = get_word_at_pos(&rope, position) {
+            let map = self.analysis_map.read().await;
+            if let Some(analysis) = map.get(&uri) {
+                let locations = features::references::find_references(&params, analysis, &uri, &word);
+                if !locations.is_empty() {
+                    return Ok(Some(locations));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     async fn shutdown(&self) -> Result<()> {

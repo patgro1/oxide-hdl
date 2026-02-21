@@ -1,26 +1,8 @@
 use crate::analysis::{ScopeTree, UsageContext};
-use crate::backend::AnalysisMap;
-use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
+use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticContext, messages};
 use crate::backend::features::lookup::lookup_symbol;
-use regex::Regex;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::Url;
 use tree_sitter::Node;
-
-/// Immutable context for the undeclared-identifier validation pass.
-///
-/// Bundles the AST root, global analysis map, and current file URI
-/// to reduce argument count on recursive calls.
-pub struct ValidationContext<'a> {
-    /// The AST root node used to resolve usage positions back to tree-sitter nodes.
-    pub root: Node<'a>,
-    /// The workspace-wide analysis map for cross-file symbol resolution.
-    pub global_map: &'a AnalysisMap,
-    /// URI of the file being validated.
-    pub current_uri: &'a Url,
-    /// Regex patterns for identifiers that should be ignored
-    pub ignored_patterns: &'a [Regex],
-}
 
 /// Checks all identifier usages in a scope tree for undeclared references.
 ///
@@ -33,12 +15,14 @@ pub struct ValidationContext<'a> {
 /// Recurses into child scopes to cover the full hierarchy.
 ///
 /// # Arguments
-/// * `ctx` - Immutable validation context (AST root, global map, URI)
+/// * `root` - The AST root node used to resolve usage positions back to tree-sitter nodes
+/// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `scope_tree` - The scope tree node to check
 /// * `collectors` - Diagnostic collectors to push errors into
 /// * `lookup_cache` - Name-keyed cache to avoid redundant lookups
 pub fn check_undeclared_identifiers(
-    ctx: &ValidationContext,
+    root: Node,
+    ctx: &DiagnosticContext,
     scope_tree: &ScopeTree,
     collectors: &mut DiagnosticCollectors,
     lookup_cache: &mut HashMap<String, bool>,
@@ -49,8 +33,8 @@ pub fn check_undeclared_identifiers(
             continue;
         }
 
-        // 1. Get the AST node using context root
-        let node_opt = ctx.root.descendant_for_point_range(
+        // 1. Get the AST node using root
+        let node_opt = root.descendant_for_point_range(
             tree_sitter::Point {
                 row: usage.range.start.line as usize,
                 column: usage.range.start.character as usize,
@@ -89,6 +73,7 @@ pub fn check_undeclared_identifiers(
                 ctx.current_uri,
                 ctx.global_map,
                 &usage.range.start,
+                false,
             );
             !results.is_empty()
         });
@@ -107,7 +92,7 @@ pub fn check_undeclared_identifiers(
 
     for child in &scope_tree.children {
         // Pass context down without exploding arguments
-        check_undeclared_identifiers(ctx, child, collectors, lookup_cache);
+        check_undeclared_identifiers(root, ctx, child, collectors, lookup_cache);
     }
 }
 
@@ -161,11 +146,11 @@ fn is_aggregate_choice(node: Node) -> bool {
     let mut current = node;
     for _ in 0..5 {
         if let Some(parent) = current.parent() {
-            if parent.kind() == "element_association" {
-                if let Some(first) = parent.named_child(0) {
-                    return node.start_byte() >= first.start_byte()
-                        && node.end_byte() <= first.end_byte();
-                }
+            if parent.kind() == "element_association"
+                && let Some(first) = parent.named_child(0)
+            {
+                return node.start_byte() >= first.start_byte()
+                    && node.end_byte() <= first.end_byte();
             }
             current = parent;
         } else {
@@ -231,8 +216,10 @@ mod tests {
         let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
         let mut lookup_cache = HashMap::new();
 
-        let ctx = super::ValidationContext {
-            root,
+        let ctx = super::super::DiagnosticContext {
+            text: code,
+            scope_tree: None,
+            analysis: &analysis,
             global_map: &analysis_map,
             current_uri: &dummy_uri,
             ignored_patterns: &[],
@@ -240,6 +227,7 @@ mod tests {
 
         for scope_tree in &analysis.scope_trees {
             super::check_undeclared_identifiers(
+                root,
                 &ctx,
                 scope_tree,
                 &mut collectors,
@@ -249,6 +237,7 @@ mod tests {
 
         for scope_tree in analysis.entity_scope_trees.values() {
             super::check_undeclared_identifiers(
+                root,
                 &ctx,
                 scope_tree,
                 &mut collectors,
@@ -1374,8 +1363,10 @@ end architecture;
         let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
         let mut lookup_cache = HashMap::new();
 
-        let ctx = super::ValidationContext {
-            root: arch_root,
+        let ctx = super::super::DiagnosticContext {
+            text: arch_code,
+            scope_tree: None,
+            analysis: &arch_analysis,
             global_map: &analysis_map,
             current_uri: &arch_uri,
             ignored_patterns: &[],
@@ -1383,6 +1374,7 @@ end architecture;
 
         for scope_tree in &arch_analysis.scope_trees {
             super::check_undeclared_identifiers(
+                arch_root,
                 &ctx,
                 scope_tree,
                 &mut collectors,
@@ -1465,11 +1457,11 @@ end architecture;
 
         // Verify the package scope tree has the protected type
         assert!(
-            pkg_analysis.package_scope_trees.contains_key("my_pkg"),
+            pkg_analysis.package_declaration_scope_trees.contains_key("my_pkg"),
             "Package scope tree should exist. Keys: {:?}",
-            pkg_analysis.package_scope_trees.keys().collect::<Vec<_>>()
+            pkg_analysis.package_declaration_scope_trees.keys().collect::<Vec<_>>()
         );
-        let pkg_scope = pkg_analysis.package_scope_trees.get("my_pkg").unwrap();
+        let pkg_scope = pkg_analysis.package_declaration_scope_trees.get("my_pkg").unwrap();
         let has_t_counter = pkg_scope
             .declarations
             .iter()
@@ -1745,6 +1737,180 @@ end architecture;
         assert!(
             loop_diags.is_empty(),
             "For-loop variable 'i' should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+    #[test]
+    fn test_for_loop_variable_rhs_in_process_not_flagged() {
+        let code = r#"
+architecture rtl of toto is
+    signal some_data: std_logic_vector(8-1 downto 0);
+    signal signal_b: std_logic;
+begin
+    p_proc : process(some_data,signal_b)
+    begin
+        if (signal_b = '1') then
+            for i in 8/8-1 downto 0 loop
+                if (some_data((i+1)*8-1 downto 8*i)/=X"55") then
+                end if;
+            end loop;
+        end if;
+    end process;
+end architecture;
+
+"#;
+        let diags = check_undeclared(code);
+        let loop_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains(" i"))
+            .collect();
+        assert!(
+            loop_diags.is_empty(),
+            "For-loop variable 'i' should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_package_header_and_body_in_same_file_visibility() {
+        let pkg_code = r#"
+package my_pkg is
+    constant C_PKG_CONST : integer := 42;
+    function calc(x : integer) return integer;
+end package;
+
+package body my_pkg is
+    function calc(x : integer) return integer is
+    begin
+        return x + C_PKG_CONST;
+    end function;
+end package body;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+architecture rtl of top is
+    signal s : integer := calc(10);
+begin
+end architecture;
+"#;
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///top.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
+        let mut lookup_cache = HashMap::new();
+
+        let ctx = super::super::DiagnosticContext {
+            text: arch_code,
+            scope_tree: None,
+            analysis: &arch_analysis,
+            global_map: &analysis_map,
+            current_uri: &arch_uri,
+            ignored_patterns: &[],
+        };
+
+        for scope_tree in &arch_analysis.scope_trees {
+            super::check_undeclared_identifiers(
+                arch_root,
+                &ctx,
+                scope_tree,
+                &mut collectors,
+                &mut lookup_cache,
+            );
+        }
+
+        assert!(
+            collectors.undefined.is_empty(),
+            "C_PKG_CONST should be visible from the package header. Got: {:?}",
+            diag_messages(&collectors.undefined)
+        );
+    }
+
+    #[test]
+    fn test_loop_variable_visibility_in_nested_case_if() {
+        let code = r#"
+architecture rtl of top is
+    type t_state is (S0, S1);
+    signal r_state : t_state;
+    signal w_val : integer;
+    signal w_data : std_logic_vector(7 downto 0);
+begin
+    process(r_state, w_val)
+    begin
+        case r_state is
+            when S0 =>
+                if w_val > 0 then
+                    for i in 0 to 7 loop
+                        if w_val = i then
+                            w_data(i) <= '0';
+                        end if;
+                    end loop;
+                end if;
+            when others =>
+                null;
+        end case;
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let i_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains(" i"))
+            .collect();
+        assert!(
+            i_diags.is_empty(),
+            "Loop variable 'i' should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_byte_remainder_regression() {
+        let code = r#"
+architecture rtl of top is
+    constant MAC2TCP_DATA_WIDTH : integer := 64;
+    signal r_padd_to_0 : integer;
+    signal w_tcp_ip_hdr_and_payload_out_data : std_logic_vector(63 downto 0);
+    type t_state is (S_IDLE, S_BLANK);
+    signal r_blank_state : t_state;
+begin
+    process(r_blank_state, r_padd_to_0)
+    begin
+        case r_blank_state is
+            when S_IDLE =>
+                for byte_remainder in 0 to MAC2TCP_DATA_WIDTH/8 - 1 loop
+                    if r_padd_to_0 = byte_remainder then
+                        w_tcp_ip_hdr_and_payload_out_data(byte_remainder*8 -1 downto 0) <= (others=>'0');
+                    end if;
+                end loop;
+            when others =>
+                null;
+        end case;
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let rem_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("byte_remainder"))
+            .collect();
+        assert!(
+            rem_diags.is_empty(),
+            "Loop variable 'byte_remainder' should not be flagged. Got: {:?}",
             diag_messages(&diags)
         );
     }

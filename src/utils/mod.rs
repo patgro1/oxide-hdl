@@ -1,6 +1,21 @@
 pub mod ast;
+use lazy_static::lazy_static;
+use std::sync::Mutex;
 use tower_lsp::lsp_types::{Position, Range};
 use tree_sitter::Node;
+
+lazy_static! {
+    /// Global lock for tree-sitter parser usage.
+    ///
+    /// Tree-sitter parsers use unsafe C FFI code that isn't thread-safe.
+    /// This global lock ensures only one parser operates at a time, preventing
+    /// memory corruption when multiple operations (parsing, rename, completion, etc.)
+    /// happen concurrently.
+    ///
+    /// **CRITICAL**: All code that creates or uses a tree-sitter Parser MUST
+    /// acquire this lock first, both in production and tests.
+    pub static ref PARSER_LOCK: Mutex<()> = Mutex::new(());
+}
 
 /// Converts a Tree-sitter `Node` into a standard LSP `Range`.
 ///

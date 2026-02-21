@@ -9,13 +9,30 @@
 ### In Progress: The "Undeclared" Guard
 **Goal:** Stop the user from using things that don't exist. This is the final semantic check needed before the analyzer is "trustworthy".
 
-- [ ] **Undeclared Identifier Diagnostics**
-  - [ ] Check `Reference` nodes against `ScopeTree`
-  - [ ] Flag unknown signals/variables/constants (Error Severity)
-  - [ ] Ignore known built-ins (std_logic, true/false)
-- [ ] **Undefined Type Diagnostics**
-  - [ ] Flag unknown types in signal declarations (e.g., `signal x : foo;`)
-  - [ ] Validate against IEEE library types (already available in `builtins.rs`)
+- [X] **Undeclared Identifier Diagnostics**
+  - [X] Check `Reference` nodes against `ScopeTree`
+  - [X] Flag unknown signals/variables/constants (Error Severity)
+  - [X] Ignore known built-ins (std_logic, true/false)
+- [X] **Undefined Type Diagnostics**
+  - [X] Flag unknown types in signal declarations (e.g., `signal x : foo;`)
+  - [X] Validate against IEEE library types (already available in `builtins.rs`)
+
+---
+
+## 🧭 Enhanced Navigation (v0.5.x)
+**Goal:** Improve developer mobility between entities, architectures, and subprograms.
+
+- [X] **Refine `goto_definition`**
+  - [X] Prioritize Entity definitions over Component declarations.
+  - [X] Fallback to Component only if the Entity is not found in the workspace.
+  - [X] For Subprograms (Functions/Procedures): Jump directly to the subprogram body.
+- [X] **Implement `goto_declaration`**
+  - [X] Lead to the Component declaration.
+  - [X] Fallback logic: If Component not found, fallback to Entity.
+  - [X] For Subprograms: Match `goto_definition` behavior.
+- [X] **Implement `goto_implementation`**
+  - [X] Lead to the Architecture corresponding to an Entity.
+  - [X] For Subprograms: Lead to the subprogram body (same as definition).
 
 ---
 
@@ -46,14 +63,14 @@
 ### v0.6: Productivity & Smart Snippets
 **Goal:** Make writing VHDL faster by automating the tedious parts using the Scope Tree.
 
-- [ ] **Smart Auto-Fill Snippets** ✨
-  - [ ] **Component Instantiation:** Selecting a component in completion triggers a snippet that types out `port map ( clk => $1, rst => $2 ... );`
-  - [ ] **Procedure/Function Calls:** Auto-fill parameter lists for subprograms.
-- [ ] **Rename Symbol**
-  - [ ] Rename identifier under cursor
-  - [ ] Update definition and all usages across the file
-- [ ] **Find All References**
-  - [ ] Show all locations where a signal/variable is used
+- [X] **Smart Auto-Fill Snippets** ✨
+  - [X] **Component Instantiation:** Selecting a component in completion triggers a snippet that types out `port map ( clk => $1, rst => $2 ... );`
+  - [X] **Procedure/Function Calls:** Auto-fill parameter lists for subprograms.
+- [X] **Rename Symbol**
+  - [X] Rename identifier under cursor
+  - [X] Update definition and all usages across the file
+- [X] **Find All References**
+  - [X] Show all locations where a signal/variable is used
 - [ ] **Code Actions (Quick Fixes)**
   - [ ] "Remove unused signal" (using existing unused diagnostic)
   - [ ] "Add to sensitivity list" (using existing sensitivity diagnostic)
@@ -69,14 +86,34 @@
 - **Type Mismatches:** Full expression type inference is currently out of scope.
 - **Background Worker/Disk Cache:** Current performance (<100ms) does not justify the complexity yet.
 
+### Post 1.0
+- **Overload Resolution for Sensitivity Analysis**
+  - **Context:** When a procedure has multiple overloads with different parameter directions
+    (e.g., two overloads where the 2nd param is `out`, and a third where it is `in`), the
+    sensitivity checker currently falls back to conservative "direction unknown" treatment —
+    no "missing" and no "unnecessary" warnings are emitted for any argument of that call.
+  - **Goal:** Resolve which overload is actually being called by matching argument count and,
+    ideally, argument types.  Once the correct overload is identified, parameter directions
+    can be applied precisely, recovering accurate sensitivity diagnostics.
+  - **Why it's hard:** Requires partial type inference on actual arguments to disambiguate
+    overloads — the same problem as full type checking, just scoped to call sites.  May also
+    need to handle implicit type conversions (e.g., `std_logic` ↔ `std_ulogic`).
+  - **Status:** Deferred — the conservative fallback is correct and safe; this is a
+    precision improvement, not a correctness fix.
+
 ---
 
 ## 🐛 Known Bugs & Concerns
 
 ### Medium Priority
 1. **Overloaded Functions:**
-   - **Issue:** Function resolution doesn't check signature types, only names.
-   - **Status:** Acceptable limitation for now.
+   - **Issue:** Function/procedure resolution doesn't check signature types, only names.
+   - **Sensitivity impact:** When multiple overloads exist, the sensitivity checker falls back
+     to "direction unknown" — no false positives, but also no diagnostics for those arguments.
+   - **Status:** Safe conservative fallback in place; full overload resolution tracked as post-1.0.
+2. **Subprogram Deduplication (Hover):**
+   - **Issue:** Hover might show both Specification and Body if both are indexed.
+   - **Task:** Ensure `lookup_symbol` (find_all=false) or formatter prioritizes Body over Spec to avoid duplicates in tooltips.
 
 2. **Record Type Visibility:**
    - **Issue:** Dot completion relies on text heuristics in some edge cases.

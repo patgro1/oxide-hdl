@@ -75,7 +75,8 @@ pub fn collect_document_symbol(analysis: &Analysis) -> Vec<DocumentSymbol> {
     let mut scope_trees: Vec<&ScopeTree> = Vec::new();
     scope_trees.extend(analysis.scope_trees.iter());
     scope_trees.extend(analysis.entity_scope_trees.values().collect::<Vec<_>>());
-    scope_trees.extend(analysis.package_scope_trees.values().collect::<Vec<_>>());
+    scope_trees.extend(analysis.package_declaration_scope_trees.values().collect::<Vec<_>>());
+    scope_trees.extend(analysis.package_body_scope_trees.values().collect::<Vec<_>>());
     // Now we need to sort then by start value to make sure the ordering is respected in the
     // document
     scope_trees.sort_by_key(|a| a.range.start);
@@ -206,13 +207,19 @@ fn should_include_symbol(
 ) -> bool {
     match symbol.kind {
         // Always include these at any level
-        OxideSymbolKind::Entity | OxideSymbolKind::Package | OxideSymbolKind::Component => true,
+        OxideSymbolKind::Entity
+        | OxideSymbolKind::Package
+        | OxideSymbolKind::PackageBody
+        | OxideSymbolKind::Component => true,
 
-        // Only include if parent is a Package
+        // Only include if parent is a Package or PackageBody
         OxideSymbolKind::Function | OxideSymbolKind::Constant | OxideSymbolKind::Struct => {
             match parse_level {
                 ParseLevel::Shallow => true,
-                ParseLevel::Deep => matches!(parent_kind, Some(OxideSymbolKind::Package)),
+                ParseLevel::Deep => matches!(
+                    parent_kind,
+                    Some(OxideSymbolKind::Package) | Some(OxideSymbolKind::PackageBody)
+                ),
             }
         }
 
@@ -243,7 +250,7 @@ fn collect_symbols_recursive(
         //   add to the result
         results.push(to_symbol_information(symbol, file_uri))
     }
-    if symbol.kind == OxideSymbolKind::Package {
+    if symbol.kind == OxideSymbolKind::Package || symbol.kind == OxideSymbolKind::PackageBody {
         for children in &symbol.children {
             // If the symbol is a container for stuff (aka a package)
             //   recurse into its children

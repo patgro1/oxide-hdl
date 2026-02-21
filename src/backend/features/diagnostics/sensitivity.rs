@@ -19,12 +19,10 @@
 //! - Async resets: Not yet validated (TODO v0.5)
 //! - Package constants: Conservatively assumed valid if undeclared
 
-use crate::analysis::{
-    Analysis, DeclType, Declaration, ScopeTree, Usage, UsageContext, collect_identifiers_recursive,
-};
+use crate::analysis::{DeclType, Declaration, Usage, UsageContext, collect_identifiers_recursive};
 use crate::backend::AnalysisMap;
-use crate::backend::features::diagnostics::{DiagnosticCollectors, messages};
-use crate::backend::features::lookup::lookup_procedure_declaration;
+use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticContext, messages};
+use crate::backend::features::lookup::lookup_all_procedure_declarations;
 use crate::utils::ast::{find_child, find_descendant};
 use crate::utils::node_to_range;
 use std::collections::HashSet;
@@ -57,8 +55,12 @@ struct SignalExtractionContext<'a> {
     text: &'a str,
     global_map: &'a AnalysisMap,
     current_uri: &'a Url,
-    // You can also put the mutable result set here if you want
+    /// Signals that are definitely read (used for "missing" and "unnecessary" checks).
     read_signals: &'a mut HashSet<Usage>,
+    /// Signals that appear as arguments to a procedure call whose declaration
+    /// could not be resolved.  We don't know their direction, so they are
+    /// excluded from both the "missing" check and the "unnecessary" check.
+    maybe_read_signals: &'a mut HashSet<Usage>,
 }
 
 impl<'a> SignalExtractionContext<'a> {
@@ -147,29 +149,66 @@ impl<'a> SignalExtractionContext<'a> {
                         character: start_node.range().start_point.column as u32,
                     };
 
-                    if let Some(name) = proc_name
-                        && let Some(declaration) = lookup_procedure_declaration(
-                            &name,
-                            self.current_uri,
-                            self.global_map,
-                            &pos,
-                        )
-                    {
-                        match declaration.decl_type {
-                            DeclType::Function => {
-                                // Function only uses input as parameter
-                                if let Some(args) = args_node {
-                                    self.extract(args, false);
+                    let declarations = proc_name
+                        .map(|name| {
+                            lookup_all_procedure_declarations(
+                                &name,
+                                self.current_uri,
+                                self.global_map,
+                                &pos,
+                            )
+                        })
+                        .unwrap_or_default();
+
+                    match declarations.len() {
+                        0 => {
+                            // Lookup failed (procedure defined in another file or not yet
+                            // parsed).  We don't know the directions, so add all identifiers
+                            // to `maybe_read_signals`: suppresses false "unnecessary" warnings
+                            // without generating false "missing" warnings.
+                            if let Some(args) = args_node {
+                                collect_identifiers_recursive(
+                                    args,
+                                    self.text,
+                                    UsageContext::Behavioral,
+                                    self.maybe_read_signals,
+                                );
+                            }
+                        }
+                        1 => {
+                            // Exactly one overload – we know the parameter directions.
+                            let declaration = &declarations[0];
+                            match declaration.decl_type {
+                                DeclType::Function => {
+                                    if let Some(args) = args_node {
+                                        self.extract(args, false);
+                                    }
+                                }
+                                DeclType::Procedure
+                                | DeclType::ProcedureDeclaration => {
+                                    if let Some(args) = args_node {
+                                        self.analyze_procedure_arguments(args, declaration);
+                                    }
+                                }
+                                _ => {
+                                    if let Some(args) = args_node {
+                                        self.extract(args, false);
+                                    }
                                 }
                             }
-                            DeclType::Procedure => {
-                                // Check parameter per parameter what is input, what is inout and what
-                                // is out.
-                                if let Some(args) = args_node {
-                                    self.analyze_procedure_arguments(args, &declaration);
-                                }
+                        }
+                        _ => {
+                            // Multiple overloads – directions may differ per overload so we
+                            // cannot determine them without resolving the call.  Fall back to
+                            // the same conservative treatment as a failed lookup.
+                            if let Some(args) = args_node {
+                                collect_identifiers_recursive(
+                                    args,
+                                    self.text,
+                                    UsageContext::Behavioral,
+                                    self.maybe_read_signals,
+                                );
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -274,9 +313,7 @@ impl<'a> SignalExtractionContext<'a> {
 /// # Arguments
 ///
 /// * `process_node` - Tree-sitter node of type `process_statement`
-/// * `text` - Full source text of the file
-/// * `scope_tree` - Scope tree containing the process (for declaration lookup)
-/// * `analysis` - Full analysis context (for entity scope resolution)
+/// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `collectors` - Diagnostic collectors to append findings to
 ///
 /// # Diagnostics Produced
@@ -301,14 +338,10 @@ impl<'a> SignalExtractionContext<'a> {
 /// ```
 pub fn check_process_sensitivity(
     process_node: Node,
-    text: &str,
-    scope_tree: Option<&ScopeTree>,
-    analysis: &Analysis,
+    ctx: &DiagnosticContext,
     collectors: &mut DiagnosticCollectors,
-    global_map: &AnalysisMap,
-    current_uri: &Url,
 ) {
-    let sensitivity_list = extract_sensitivity_list(process_node, text);
+    let sensitivity_list = extract_sensitivity_list(process_node, ctx.text);
 
     // Skip validation if 'all' keyword is used (VHDL-2008)
     if sensitivity_list
@@ -319,24 +352,26 @@ pub fn check_process_sensitivity(
     }
 
     let mut read_signals = HashSet::new();
+    let mut maybe_read_signals = HashSet::new();
 
     if let Some(sequential_block) = process_node
         .children(&mut process_node.walk())
         .find(|c| c.kind() == "sequential_block")
-        && let Some(scope_tree) = scope_tree
+        && let Some(scope_tree) = ctx.scope_tree
     {
-        let process_type = classify_process(sequential_block, text);
+        let process_type = classify_process(sequential_block, ctx.text);
 
         // Extract signals based on process type
         match process_type {
             ProcessType::Combinatorial => {
-                let mut ctx = SignalExtractionContext {
-                    text,
+                let mut extraction_ctx = SignalExtractionContext {
+                    text: ctx.text,
                     read_signals: &mut read_signals,
-                    global_map,
-                    current_uri,
+                    maybe_read_signals: &mut maybe_read_signals,
+                    global_map: ctx.global_map,
+                    current_uri: ctx.current_uri,
                 };
-                ctx.extract(sequential_block, false)
+                extraction_ctx.extract(sequential_block, false)
             }
             ProcessType::Synchronous {
                 clock_signals: ref clocks,
@@ -348,22 +383,33 @@ pub fn check_process_sensitivity(
             .any(|child| find_descendant(child, "wait_statement").is_some());
 
         // Filter to only signals/ports (exclude variables, constants, generics)
-        if let Some(visible_decl) =
-            analysis.collect_visible_declarations(scope_tree, node_to_range(process_node))
+        if let Some(visible_decl) = ctx
+            .analysis
+            .collect_visible_declarations(scope_tree, node_to_range(process_node))
         {
+            let is_signal_or_port = |name: &str| {
+                if let Some(decl) = visible_decl
+                    .iter()
+                    .find(|n| n.name.to_lowercase() == name.to_lowercase())
+                {
+                    matches!(decl.decl_type, DeclType::Port(_) | DeclType::Signal)
+                } else {
+                    // Conservative: assume undeclared identifiers are package constants
+                    false
+                }
+            };
+
             let read_signals: Vec<&Usage> = read_signals
                 .iter()
-                .filter(|s| {
-                    if let Some(decl) = visible_decl
-                        .iter()
-                        .find(|n| *n.name.to_lowercase() == s.name.to_lowercase())
-                    {
-                        matches!(decl.decl_type, DeclType::Port(_) | DeclType::Signal)
-                    } else {
-                        // Conservative: assume undeclared identifiers are package constants
-                        false
-                    }
-                })
+                .filter(|s| is_signal_or_port(&s.name))
+                .collect();
+
+            // `maybe_read_signals`: args of unresolved procedure calls – direction unknown.
+            // Used only to suppress false "unnecessary" warnings; never used for "missing".
+            let maybe_read_names: HashSet<String> = maybe_read_signals
+                .iter()
+                .filter(|s| is_signal_or_port(&s.name))
+                .map(|s| s.name.to_lowercase())
                 .collect();
 
             // Check for missing signals
@@ -392,11 +438,12 @@ pub fn check_process_sensitivity(
             };
 
             for sensitive in sensitivity_list {
-                if !read_signals
+                let name_lc = sensitive.name.to_lowercase();
+                let is_read = read_signals
                     .iter()
-                    .any(|s| s.name.to_lowercase() == sensitive.name.to_lowercase())
-                    || has_wait
-                {
+                    .any(|s| s.name.to_lowercase() == name_lc);
+                let is_maybe_read = maybe_read_names.contains(&name_lc);
+                if (!is_read && !is_maybe_read) || has_wait {
                     collectors
                         .sensitivity
                         .push(messages::unnecessary_sensitivity(
@@ -777,7 +824,10 @@ fn check_comb_process(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::test_utils::parse_text;
+    use crate::{
+        analysis::{Analysis, ScopeTree},
+        backend::test_utils::parse_text,
+    };
     use tower_lsp::lsp_types::Url;
 
     fn check_sensitivity(code: &str) -> Vec<Diagnostic> {
@@ -831,15 +881,15 @@ mod tests {
         current_uri: &Url,
     ) {
         if node.kind() == "process_statement" {
-            check_process_sensitivity(
-                node,
+            let ctx = super::super::DiagnosticContext {
                 text,
-                Some(scope_tree),
+                scope_tree: Some(scope_tree),
                 analysis,
-                collectors,
                 global_map,
                 current_uri,
-            );
+                ignored_patterns: &[],
+            };
+            check_process_sensitivity(node, &ctx, collectors);
         }
 
         for child in node.children(&mut node.walk()) {
@@ -1623,12 +1673,206 @@ architecture rtl of test is
     signal inp: std_logic_vector(31 downto 0);
     signal toto: std_logic;
 begin
-    p_the_process: process() is 
+    p_the_process: process() is
     begin
     end process;
 end architecture;
 "#;
         let diags = check_sensitivity(code);
         assert_eq!(diags.len(), 0, "nothing should be flagged");
+    }
+
+    // Regression tests: signals used as in/inout procedure params must not be
+    // flagged as "unnecessary" when they appear in the sensitivity list.
+
+    #[test]
+    fn test_in_param_in_sensitivity_not_unnecessary() {
+        // sig_in is used as an `in` parameter → it IS read → should NOT be
+        // reported as unnecessary in the sensitivity list.
+        let code = r#"
+architecture rtl of test is
+    signal sig_in  : std_logic;
+    signal sig_out : std_logic;
+    procedure my_proc(signal v_in: in std_logic; signal v_out: out std_logic) is
+    begin
+        v_out <= v_in;
+    end;
+begin
+    process(sig_in)
+    begin
+        my_proc(sig_in, sig_out);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(
+            diags.len(),
+            0,
+            "sig_in is read via 'in' param – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_unknown_proc_no_false_positives() {
+        // Procedure declaration is not visible (external library etc.).
+        // sig_in is in the sensitivity list and passed as first arg (may be `in`).
+        // sig_out is NOT in the sensitivity list and passed as second arg (may be `out`).
+        // Expected: zero diagnostics – we cannot know the directions so we emit nothing.
+        let code = r#"
+architecture rtl of test is
+    signal sig_in  : std_logic;
+    signal sig_out : std_logic;
+begin
+    process(sig_in)
+    begin
+        some_external_proc(sig_in, sig_out);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        let unnecessary_sig_in = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_in")
+                && d.message.to_lowercase().contains("not needed")
+        });
+        let missing_sig_out = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_out")
+                && d.message.to_lowercase().contains("not in")
+        });
+        assert!(
+            !unnecessary_sig_in,
+            "sig_in should not be flagged as unnecessary (unknown proc); got: {:?}",
+            diags
+        );
+        assert!(
+            !missing_sig_out,
+            "sig_out should not be flagged as missing (unknown proc); got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_inout_param_in_sensitivity_not_unnecessary() {
+        // sig_inout is used as an `inout` parameter → it IS read → should NOT
+        // be reported as unnecessary in the sensitivity list.
+        let code = r#"
+architecture rtl of test is
+    signal sig_inout : std_logic;
+    procedure my_proc(signal v_inout: inout std_logic) is
+    begin
+        v_inout <= '0';
+    end;
+begin
+    process(sig_inout)
+    begin
+        my_proc(sig_inout);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        assert_eq!(
+            diags.len(),
+            0,
+            "sig_inout is read via 'inout' param – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    // Cross-file: procedure declared in a package, called from an architecture.
+    // This is the realistic scenario the user reported.
+    fn check_sensitivity_with_package(pkg_code: &str, arch_code: &str) -> Vec<Diagnostic> {
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+        let pkg_tree = parse_text(pkg_code);
+        let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+            pkg_code,
+            pkg_tree.root_node(),
+        );
+
+        let arch_tree = parse_text(arch_code);
+        let arch_root = arch_tree.root_node();
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri.clone(), pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        crate::backend::features::diagnostics::collect_all_diagnostics(
+            arch_root,
+            &arch_analysis,
+            arch_code,
+            &analysis_map,
+            &arch_uri,
+            &crate::config::OxideConfig::default(),
+        )
+        .into_iter()
+        .filter(|d| d.source.as_deref() == Some("oxide-hdl-sensitivity"))
+        .collect()
+    }
+
+    #[test]
+    fn test_cross_file_in_param_in_sensitivity_not_unnecessary() {
+        // The procedure is declared in a separate package file.  This is the
+        // real-world scenario the user hit: hover/goto work (lookup succeeds)
+        // but the sensitivity checker was still flagging sig_in as unnecessary.
+        let pkg_code = r#"
+package my_pkg is
+    procedure my_proc(signal v_in: in std_logic; signal v_out: out std_logic);
+end package;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+architecture rtl of test is
+    signal sig_in  : std_logic;
+    signal sig_out : std_logic;
+begin
+    process(sig_in)
+    begin
+        my_proc(sig_in, sig_out);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity_with_package(pkg_code, arch_code);
+        let unnecessary_sig_in = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_in")
+                && d.message.to_lowercase().contains("not needed")
+        });
+        assert!(
+            !unnecessary_sig_in,
+            "sig_in is an 'in' param from a package proc – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn test_cross_file_inout_param_in_sensitivity_not_unnecessary() {
+        let pkg_code = r#"
+package my_pkg is
+    procedure my_proc(signal v_inout: inout std_logic);
+end package;
+"#;
+        let arch_code = r#"
+use work.my_pkg.all;
+architecture rtl of test is
+    signal sig_inout : std_logic;
+begin
+    process(sig_inout)
+    begin
+        my_proc(sig_inout);
+    end process;
+end architecture;
+"#;
+        let diags = check_sensitivity_with_package(pkg_code, arch_code);
+        let unnecessary = diags.iter().any(|d| {
+            d.message.to_lowercase().contains("sig_inout")
+                && d.message.to_lowercase().contains("not needed")
+        });
+        assert!(
+            !unnecessary,
+            "sig_inout is an 'inout' param from a package proc – must not be flagged as unnecessary; got: {:?}",
+            diags
+        );
     }
 }

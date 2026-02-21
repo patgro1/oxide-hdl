@@ -60,7 +60,10 @@ pub fn format_rich_declaration(decl: &Declaration) -> String {
 
     match &decl.decl_type {
         // Handle Functions/Procedures with parameters
-        DeclType::Function | DeclType::Procedure => {
+        DeclType::Function
+        | DeclType::FunctionDeclaration
+        | DeclType::Procedure
+        | DeclType::ProcedureDeclaration => {
             md.push_str(&format_subprogram_signature(decl));
         }
         DeclType::Component => {
@@ -380,7 +383,7 @@ pub fn resolve_rich_hover(
     analysis_map: &AnalysisMap,
     pos: Position,
 ) -> Vec<HoverResolution> {
-    let results = lookup_symbol(target, current_uri, analysis_map, &pos);
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, false);
     results
         .into_iter()
         .map(|res| HoverResolution {
@@ -408,7 +411,10 @@ pub fn format_declaration_hover(decl: &Declaration) -> String {
     md.push_str("```vhdl\n");
 
     match &decl.decl_type {
-        DeclType::Function | DeclType::Procedure => {
+        DeclType::Function
+        | DeclType::FunctionDeclaration
+        | DeclType::Procedure
+        | DeclType::ProcedureDeclaration => {
             md.push_str(&format_subprogram_signature(decl));
         }
         _ => {
@@ -459,14 +465,18 @@ fn format_data_declaration(decl: &Declaration) -> String {
         } // Inside parameter list
 
         // Fallback (should be handled by subprogram formatter)
-        DeclType::Function | DeclType::Procedure | DeclType::Component => String::new(),
+        DeclType::Function
+        | DeclType::FunctionDeclaration
+        | DeclType::Procedure
+        | DeclType::ProcedureDeclaration
+        | DeclType::Component => String::new(),
     }
 }
 
 /// Helper to format Functions and Procedures with parameters
 fn format_subprogram_signature(decl: &Declaration) -> String {
     let mut out = String::new();
-    let keyword = if matches!(decl.decl_type, DeclType::Function) {
+    let keyword = if matches!(decl.decl_type, DeclType::Function | DeclType::FunctionDeclaration) {
         "function"
     } else {
         "procedure"
@@ -492,7 +502,7 @@ fn format_subprogram_signature(decl: &Declaration) -> String {
     }
 
     // Return type (only for functions)
-    if matches!(decl.decl_type, DeclType::Function) {
+    if matches!(decl.decl_type, DeclType::Function | DeclType::FunctionDeclaration) {
         let ret_type = format_type_info(&decl.type_info);
         out.push_str(&format!("\nreturn {};", ret_type));
     } else {

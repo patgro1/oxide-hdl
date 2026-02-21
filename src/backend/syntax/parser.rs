@@ -58,13 +58,17 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
                     let scope_tree = build_package_scope_tree(child, text);
                     if let Some(ref name) = scope_tree.name {
                         analysis
-                            .package_scope_trees
+                            .package_declaration_scope_trees
                             .insert(name.to_lowercase(), scope_tree);
                     }
                 }
                 if child.kind() == "package_definition" {
                     let scope_tree = build_package_body_scope_tree(child, text);
-                    analysis.scope_trees.push(scope_tree)
+                    if let Some(ref name) = scope_tree.name {
+                        analysis
+                            .package_body_scope_trees
+                            .insert(name.to_lowercase(), scope_tree);
+                    }
                 }
             }
         }

@@ -46,14 +46,17 @@ pub struct Analysis {
     /// How the file was parsed
     pub parse_level: ParseLevel,
 
-    /// Scope tree with entity declaration
+    /// Scope tree with entity declaration (Headers)
     pub entity_scope_trees: HashMap<String, ScopeTree>,
 
-    /// Scope tree with signals, constants, types declaration and usage
+    /// Scope tree with signals, constants, types declaration and usage (Architectures)
     pub scope_trees: Vec<ScopeTree>,
 
-    /// Scope tree for packages
-    pub package_scope_trees: HashMap<String, ScopeTree>,
+    /// Scope tree for package declarations (Headers)
+    pub package_declaration_scope_trees: HashMap<String, ScopeTree>,
+
+    /// Scope tree for package bodies (Implementations)
+    pub package_body_scope_trees: HashMap<String, ScopeTree>,
 }
 
 impl Analysis {
@@ -71,7 +74,8 @@ impl Analysis {
             parse_level: ParseLevel::Shallow,
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
-            package_scope_trees: HashMap::new(),
+            package_declaration_scope_trees: HashMap::new(),
+            package_body_scope_trees: HashMap::new(),
             use_clauses: vec![implicit_standard],
         }
     }
@@ -116,7 +120,12 @@ impl Analysis {
                     .find(|scope_tree| position_in_range(*pos, scope_tree.range))
             })
             .or_else(|| {
-                self.package_scope_trees
+                self.package_declaration_scope_trees
+                    .values()
+                    .find(|scope_tree| position_in_range(*pos, scope_tree.range))
+            })
+            .or_else(|| {
+                self.package_body_scope_trees
                     .values()
                     .find(|scope_tree| position_in_range(*pos, scope_tree.range))
             })
@@ -148,10 +157,15 @@ impl Analysis {
             }
             // At that point, we might need to check in the package declaration. If the scope_tree links
             // to one, check if we can find the name in it.
-            if let Some(package_name) = &scope_tree.package
-                && let Some(package_scope_tree) = self.package_scope_trees.get(package_name)
-            {
-                return package_scope_tree.get_declaration(name);
+            if let Some(package_name) = &scope_tree.package {
+                if let Some(header) = self.package_declaration_scope_trees.get(package_name)
+                    && let Some(decl) = header.get_declaration(name) {
+                        return Some(decl);
+                    }
+                if let Some(body) = self.package_body_scope_trees.get(package_name)
+                    && let Some(decl) = body.get_declaration(name) {
+                        return Some(decl);
+                    }
             }
         }
         None
@@ -187,6 +201,49 @@ pub fn collect_identifiers_recursive(
             }
         } else {
             collect_identifiers_recursive(child, text, context, references);
+        }
+    }
+}
+
+/// Collects identifier references from port/generic map aspects.
+///
+/// In port maps like `port map (clk => my_clk, data => my_data)`:
+/// - `clk` and `data` are formal port names (not local usages)
+/// - `my_clk` and `my_data` are actual signals (local usages)
+///
+/// This function only collects the actual parts (right-hand side of =>).
+///
+/// # Arguments
+///
+/// * `map_aspect_node` - Tree-sitter node of type `port_map_aspect` or `generic_map_aspect`
+/// * `text` - Full source text
+/// * `context` - Usage context for collected identifiers
+/// * `references` - Mutable set to collect identifier names into
+pub fn collect_identifiers_from_map_aspect(
+    map_aspect_node: Node,
+    text: &str,
+    context: UsageContext,
+    references: &mut HashSet<Usage>,
+) {
+    let mut cursor = map_aspect_node.walk();
+    for child in map_aspect_node.children(&mut cursor) {
+        if child.kind() == "association_element" {
+            // association_element has: formal => actual
+            // We only want to collect from the actual part
+            let mut assoc_cursor = child.walk();
+            let mut found_arrow = false;
+            for part in child.children(&mut assoc_cursor) {
+                if part.kind() == "=>" {
+                    found_arrow = true;
+                } else if found_arrow {
+                    // After the arrow, collect identifiers from actual
+                    collect_identifiers_recursive(part, text, context, references);
+                    break;
+                }
+            }
+        } else {
+            // Recurse into other nodes (like association_list)
+            collect_identifiers_from_map_aspect(child, text, context, references);
         }
     }
 }

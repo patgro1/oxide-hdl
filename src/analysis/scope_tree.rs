@@ -160,8 +160,10 @@ impl ScopeTree {
             }),
             DeclType::Subtype
             | DeclType::Function
+            | DeclType::FunctionDeclaration
             | DeclType::Type
             | DeclType::Procedure
+            | DeclType::ProcedureDeclaration
             | DeclType::Component => true,
         };
         if used_locally {

@@ -1,9 +1,10 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
+    CompletionItem, CompletionItemKind, CompletionItemLabelDetails, Documentation,
+    InsertTextFormat, MarkupContent, MarkupKind, Position, Url,
 };
 use tree_sitter::{Node, Point};
 
-use crate::analysis::{DeclType, Declaration};
+use crate::analysis::{Analysis, DeclType, Declaration, ScopeTree};
 use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
 use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain};
@@ -287,6 +288,96 @@ fn is_scope_container(kind: &str) -> bool {
 /// `true` if the kind represents a sequential scope.
 fn is_sequential_scope(kind: &str) -> bool {
     matches!(kind, PROCESS_STATEMENT | SUBPROGRAM_BODY)
+}
+
+/// Detects if the cursor is positioned after a label in the syntax tree.
+///
+/// Labels in VHDL can be used for various concurrent statements in architecture bodies:
+/// - Component instantiations: `inst1: my_comp ...`
+/// - Process statements: `proc1: process ...`
+/// - Generate statements: `gen1: for ... generate` or `gen1: if ... generate`
+/// - Block statements: `block1: block ...`
+///
+/// This function checks the tree-sitter AST for patterns indicating the user has typed
+/// a label followed by a colon, and the cursor is positioned where they would start
+/// typing the statement type or component name.
+///
+/// Returns `true` for patterns like:
+/// - `inst1: |` → Tree shows: `(ERROR (label_declaration (label)))`
+/// - `my_label: avl|` → Tree shows: `(concurrent_procedure_call_statement ...)`
+///
+/// Returns `false` when:
+/// - No label pattern is detected
+/// - Cursor is inside a well-formed statement body
+///
+/// # Arguments
+/// * `_text` - Full source code text (unused, reserved for future text-based validation)
+/// * `position` - LSP cursor position
+/// * `tree_root` - Tree-sitter root node
+///
+/// # Returns
+/// `true` if cursor is positioned after a label where snippets should be offered
+pub fn is_after_label(_text: &str, position: Position, tree_root: Node) -> bool {
+    let cursor_line = position.line as usize;
+
+    // Strategy: Recursively search tree for ERROR nodes on same line with label_declaration
+    // This works because incomplete syntax (inst1: |) creates ERROR nodes, while
+    // well-formed statements (inst1: comp port map...) don't have ERROR nodes
+    find_error_with_label_on_line(tree_root, cursor_line)
+}
+
+/// Recursively searches for ERROR nodes on a specific line containing label_declaration.
+///
+/// This helper enables detection of incomplete labeled statements where the user
+/// has typed a label but hasn't completed the statement yet.
+///
+/// # Arguments
+/// * `node` - Current node to check (starts from root, recurses through children)
+/// * `target_line` - Line number where cursor is positioned
+///
+/// # Returns
+/// `true` if an ERROR node with label_declaration is found on target line
+fn find_error_with_label_on_line(node: Node, target_line: usize) -> bool {
+    // Any statement-level node that starts on the cursor line and already has
+    // a label_declaration child should trigger label-completion. This covers:
+    // - ERROR nodes (incomplete syntax, e.g. "inst1: |")
+    // - concurrent_procedure_call_statement
+    // - simple_waveform_assignment / conditional_signal_assignment / etc.
+    //   where the parser successfully binds the label to the next line's signal
+    //   assignment, producing a valid (non-ERROR) node that still starts on the
+    //   label line.
+    if node.start_position().row == target_line && has_label_declaration(node) {
+        return true;
+    }
+    // Prune branches that can't contain the target line.
+    if node.end_position().row < target_line {
+        return false;
+    }
+    for child in node.children(&mut node.walk()) {
+        if find_error_with_label_on_line(child, target_line) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Checks if a node contains a label_declaration child.
+///
+/// Used to verify that an ERROR or concurrent_procedure_call_statement node
+/// actually represents a labeled statement pattern.
+///
+/// # Arguments
+/// * `node` - The node to check for label_declaration children
+///
+/// # Returns
+/// `true` if node has a label_declaration child
+fn has_label_declaration(node: Node) -> bool {
+    for child in node.children(&mut node.walk()) {
+        if child.kind() == "label_declaration" {
+            return true;
+        }
+    }
+    false
 }
 
 // =============================================================================
@@ -926,6 +1017,571 @@ fn is_dot_access_context(node: &Node, text: &str, pos: Position) -> bool {
 }
 
 // =============================================================================
+// VHDL Construct Snippet Builders
+// =============================================================================
+
+/// Creates a snippet completion item for a combinatorial process statement.
+///
+/// Expands to a combinatorial process template:
+/// ```vhdl
+/// process(${1:all}) is
+/// begin
+///     $0
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "process"
+pub fn create_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:all}) is\nbegin\n\t$0\nend process;".to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process".to_string(),
+        detail: Some("Combinatiorial process".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Combinatiorial process".to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Combinatorial process **\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a synchronous clocked process.
+///
+/// Expands to a synchronous process template with rising edge detection:
+/// ```vhdl
+/// process(${1:clk}) is
+/// begin
+///     if rising_edge(${1:clk}) then
+///         $0
+///     end if;
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "sync"
+pub fn create_sync_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process-sync".to_string(),
+        detail: Some("Synchronous process".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Synchronous process".to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Synchronous process **\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a synchronous process with synchronous reset.
+///
+/// Uses the pattern where main logic comes first, then reset overrides:
+/// ```vhdl
+/// process(${1:clk}) is
+/// begin
+///     if rising_edge(${1:clk}) then
+///         $0
+///         if ${2:rst} = '1' then
+///             ${3:-- reset values}
+///         end if;
+///     end if;
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "sync_rst"
+pub fn create_sync_rst_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:clk}) is\nbegin\n\tif rising_edge(${1:clk}) then\n\t\t$0\n\t\tif ${2:rst} = '1' then\n\t\t\t${3:-- reset_value}\n\t\tend if;\n\tend if;\nend process;".to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process-sync-rst".to_string(),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Synchronous process with synchronous reset".to_string()),
+        }),
+        detail: Some("Synchronous process with synchronous reset".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Synchronous process with synchronous reset**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a process with asynchronous reset.
+///
+/// Expands to an async reset process template:
+/// ```vhdl
+/// process(${1:clk}, ${2:rst}) is
+/// begin
+///     if ${2:rst} = '1' then
+///         ${3:-- reset values}
+///     elsif rising_edge(${1:clk}) then
+///         $0
+///     end if;
+/// end process;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "async_rst"
+pub fn create_async_rst_process_snippet() -> CompletionItem {
+    let snippet = "process(${1:clk}, ${2:rst_n}) is\nbegin\n\tif ${2:rst_n} = '0' then\n\t\t${3:-- reset values}\n\telsif rising_edge(${1:clk}) then\n\t\t$0\n\tend if;\nend process;".to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "process-async-rst".to_string(),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("Synchronous process with asynchronous reset".to_string()),
+        }),
+        detail: Some("Synchronous process with asynchronous reset".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** Synchronous process with asynchronous reset**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("process".to_string()),
+        filter_text: Some("process".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a for-generate statement.
+///
+/// Expands to a for-generate loop template:
+/// ```vhdl
+/// for ${1:i} in ${2:0} to ${3:N-1} generate
+///     $0
+/// end generate;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "for"
+pub fn create_for_generate_snippet() -> CompletionItem {
+    let snippet = "for ${1:i} in ${2:0} to ${3:N-1} generate\n\t${4:-- local parameters}\nbegin\n\t$0\nend generate;".to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "for-generate".to_string(),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("For-generate statement".to_string()),
+        }),
+        detail: Some("For-generate statement".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** For-generate statement**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("generate".to_string()),
+        filter_text: Some("generate".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for an if-generate statement.
+///
+/// Expands to an if-generate template:
+/// ```vhdl
+/// if ${1:condition} generate
+///     $0
+/// end generate;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "if"
+pub fn create_if_generate_snippet() -> CompletionItem {
+    let snippet =
+        "if ${1:condition} generate\n\t${2:-- local parameters}\nbegin\n\t$0\nend generate;"
+            .to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "if-generate".to_string(),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("if-generate statement".to_string()),
+        }),
+        detail: Some("if-generate statement".to_string()),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!(
+                "** If-generate statement**\n\n```vhdl\n{}\n```",
+                snippet.clone()
+            ),
+        })),
+        sort_text: Some("generate".to_string()),
+        filter_text: Some("generate".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Creates a snippet completion item for a block statement.
+///
+/// Expands to a block template:
+/// ```vhdl
+/// block
+/// begin
+///     $0
+/// end block;
+/// ```
+///
+/// # Returns
+/// CompletionItem configured as a snippet with label "block"
+pub fn create_block_snippet() -> CompletionItem {
+    let snippet = "block \n\t${1:-- local parameters}\nbegin\n\t$0\nend block;".to_string();
+    CompletionItem {
+        kind: Some(CompletionItemKind::SNIPPET),
+        label: "block".to_string(),
+        detail: Some("block statement".to_string()),
+        label_details: Some(CompletionItemLabelDetails {
+            detail: None,
+            description: Some("block statement".to_string()),
+        }),
+        documentation: Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("** Block statement**\n\n```vhdl\n{}\n```", snippet.clone()),
+        })),
+        sort_text: Some("block".to_string()),
+        filter_text: Some("block".to_string()),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        ..Default::default()
+    }
+}
+
+/// Generates a component/entity instantiation snippet from a scope tree.
+///
+/// Takes an entity or component declaration's scope tree and builds a formatted
+/// instantiation with generic map and port map, with proper `=>` alignment.
+/// Tab stops start at 1 for the first generic (if any) and increment for each
+/// parameter. Default placeholder is the parameter name itself.
+///
+/// # Arguments
+///
+/// * `name` - The entity/component name for the instantiation
+/// * `scope_tree` - The ScopeTree containing generics and ports
+///
+/// # Returns
+///
+/// A formatted snippet string with tab stops for LSP completion
+///
+/// # Examples
+///
+/// ```ignore
+/// // Entity with generics and ports:
+/// // uart_tx
+/// //     generic map (
+/// //         BAUD_RATE => ${1:BAUD_RATE},
+/// //         DATA_BITS => ${2:DATA_BITS}
+/// //     )
+/// //     port map (
+/// //         clk   => ${3:clk},
+/// //         reset => ${4:reset}
+/// //     );
+/// ```
+pub fn generate_instantiation_snippet(name: &str, scope_tree: &ScopeTree) -> String {
+    let mut tab_index = 1;
+    let mut snippet = String::new();
+
+    let generics: Vec<&Declaration> = scope_tree
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Generic))
+        .collect();
+
+    let ports: Vec<&Declaration> = scope_tree
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Port(_)))
+        .collect();
+
+    let max_generic_len = generics.iter().map(|g| g.name.len()).max().unwrap_or(0);
+    let max_port_len = ports.iter().map(|p| p.name.len()).max().unwrap_or(0);
+
+    snippet.push_str(&format!("{}\n", name).to_string());
+    let generics_line: Vec<String> = generics
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let padding = " ".repeat(max_generic_len - g.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                g.name,
+                padding,
+                tab_index + i,
+                g.name
+            )
+        })
+        .collect();
+    if !generics_line.is_empty() {
+        snippet.push_str("generic map (\n");
+        snippet.push_str(&generics_line.join(",\n"));
+        snippet.push_str("\n)\n");
+    }
+    tab_index = generics_line.len() + 1;
+
+    let ports_line: Vec<String> = ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let padding = " ".repeat(max_port_len - p.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                p.name,
+                padding,
+                tab_index + i,
+                p.name
+            )
+        })
+        .collect();
+    if !ports_line.is_empty() {
+        snippet.push_str("port map (\n");
+        snippet.push_str(&ports_line.join(",\n"));
+        snippet.push_str("\n);\n");
+    }
+    snippet
+}
+
+/// Generates a component instantiation snippet from a component Declaration.
+///
+/// Similar to `generate_instantiation_snippet()` but works with component declarations
+/// found in packages, where generics and ports are stored in `declaration.parameters`
+/// rather than in a separate ScopeTree.
+///
+/// # Arguments
+///
+/// * `name` - The component name for the instantiation
+/// * `declaration` - The component Declaration containing parameters (generics/ports)
+///
+/// # Returns
+///
+/// A formatted snippet string with tab stops for LSP completion
+///
+/// # Examples
+///
+/// ```ignore
+/// // Component declaration with generics and ports in parameters:
+/// // uart_tx
+/// //     generic map (
+/// //         BAUD_RATE => ${1:BAUD_RATE}
+/// //     )
+/// //     port map (
+/// //         clk => ${2:clk}
+/// //     );
+/// ```
+pub fn generate_instantiation_snippet_from_declaration(
+    name: &str,
+    declaration: &Declaration,
+) -> String {
+    // TODO: Extract parameters from declaration.parameters
+    // If None, return simple instantiation with just port map
+    let parameters = match &declaration.parameters {
+        Some(params) => params,
+        None => return format!("{};\n", name), // No interface, just name
+    };
+
+    let mut tab_index = 1;
+    let mut snippet = String::new();
+
+    let generics: Vec<&Declaration> = parameters
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Generic))
+        .collect();
+
+    let ports: Vec<&Declaration> = parameters
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Port(_)))
+        .collect();
+
+    let max_generic_len = generics.iter().map(|g| g.name.len()).max().unwrap_or(0);
+    let max_port_len = ports.iter().map(|p| p.name.len()).max().unwrap_or(0);
+
+    snippet.push_str(&format!("{}\n", name).to_string());
+    let generics_line: Vec<String> = generics
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let padding = " ".repeat(max_generic_len - g.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                g.name,
+                padding,
+                tab_index + i,
+                g.name
+            )
+        })
+        .collect();
+    if !generics_line.is_empty() {
+        snippet.push_str("generic map (\n");
+        snippet.push_str(&generics_line.join(",\n"));
+        snippet.push_str("\n)\n");
+    }
+    tab_index = generics_line.len() + 1;
+
+    let ports_line: Vec<String> = ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let padding = " ".repeat(max_port_len - p.name.len());
+            format!(
+                "\t{}{} => ${{{}:{}}}",
+                p.name,
+                padding,
+                tab_index + i,
+                p.name
+            )
+        })
+        .collect();
+    if !ports_line.is_empty() {
+        snippet.push_str("port map (\n");
+        snippet.push_str(&ports_line.join(",\n"));
+        snippet.push_str("\n);\n");
+    }
+    snippet
+}
+
+/// Generates completion items for entity and component instantiations.
+///
+/// Finds all visible entities (from current file) and components (from imported packages)
+/// and creates snippet-based completion items for each one.
+///
+/// # Arguments
+///
+/// * `analysis_map` - The global map of all file analyses
+/// * `analysis` - The analysis of the current file
+///
+/// # Returns
+///
+/// Vector of completion items, one for each available entity/component
+pub fn generate_entity_completions(
+    analysis_map: &AnalysisMap,
+    analysis: &Analysis,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+
+    for entity in analysis.entity_scope_trees.values() {
+        let name = entity.name.clone().unwrap_or("UNKNOWN".to_string());
+        let snippet = generate_instantiation_snippet(&name, entity);
+        items.push(CompletionItem {
+            kind: Some(CompletionItemKind::SNIPPET),
+            label: name.clone(),
+            detail: Some("Component Instantiation".to_string()),
+            label_details: Some(CompletionItemLabelDetails {
+                detail: None,
+                description: Some("Component Instantiation".to_string()),
+            }),
+            documentation: Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!(
+                    "** Generate instantiation for `{}`**\n\n```vhdl\n{}\n```",
+                    name.clone(),
+                    snippet.clone()
+                ),
+            })),
+            sort_text: Some(format!("!{}", name.clone())),
+            filter_text: Some(name),
+            insert_text: Some(snippet),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+    }
+
+    for clause in &analysis.use_clauses {
+        let pkg_name = &clause.name;
+        for (_, global_analysis) in analysis_map.iter() {
+            // Primarily check declarations (headers) for completions
+            if let Some(pkg_scope) = global_analysis
+                .package_declaration_scope_trees
+                .get(&pkg_name.to_lowercase())
+            {
+                let components = if clause.all_import {
+                    pkg_scope
+                        .declarations
+                        .iter()
+                        .filter(|d| matches!(d.decl_type, DeclType::Component))
+                        .collect()
+                } else if let Some(sym) = &clause.imported_symbol
+                    && let Some(decl) = pkg_scope
+                        .declarations
+                        .iter()
+                        .find(|d| d.name.eq_ignore_ascii_case(sym))
+                {
+                    vec![decl]
+                } else {
+                    vec![]
+                };
+                items.extend(components.iter().map(|c| {
+                    let name = c.name.clone();
+                    let snippet = generate_instantiation_snippet_from_declaration(&name, c);
+                    CompletionItem {
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        label: name.clone(),
+                        detail: Some("Component Instantiation".to_string()),
+                        label_details: Some(CompletionItemLabelDetails {
+                            detail: None,
+                            description: Some("Component Instantiation".to_string()),
+                        }),
+                        documentation: Some(Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!(
+                                "** Generate instantiation for `{}`**\n\n```vhdl\n{}\n```",
+                                name.clone(),
+                                snippet.clone()
+                            ),
+                        })),
+                        sort_text: Some(format!("!{}", name.clone())),
+                        filter_text: Some(name),
+                        insert_text: Some(snippet),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        ..Default::default()
+                    }
+                }));
+            }
+        }
+    }
+
+    items
+}
+
+// =============================================================================
 // Completion Item Generation
 // =============================================================================
 
@@ -946,11 +1602,28 @@ pub fn complete_scope(
     context: &CompletionContext,
     position: Position,
     text: &str,
+    tree_root: Node,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
     if let Some(current_analysis) = analysis_map.get(current_uri) {
         let local_scope_tree = current_analysis.find_scope_tree_at(&position);
+
+        if *context == CompletionContext::Architecture && is_after_label(text, position, tree_root)
+        {
+            // Offer process and generate snippets
+            items.push(create_process_snippet());
+            items.push(create_sync_process_snippet());
+            items.push(create_sync_rst_process_snippet());
+            items.push(create_async_rst_process_snippet());
+
+            items.push(create_for_generate_snippet());
+            items.push(create_if_generate_snippet());
+            items.push(create_block_snippet());
+
+            // Offer entity/component instantiation snippets
+            items.extend(generate_entity_completions(analysis_map, current_analysis));
+        }
 
         match context {
             CompletionContext::PortMapLhs(target_name)
@@ -986,7 +1659,10 @@ pub fn complete_scope(
                         .or_else(|| {
                             tree.package
                                 .as_ref()
-                                .and_then(|n| current_analysis.package_scope_trees.get(n))
+                                .and_then(|n| {
+                                    current_analysis.package_declaration_scope_trees.get(n)
+                                        .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                                })
                         });
 
                     if let Some(decls) = tree.collect_visible_declarations(&innermost.range, header)
@@ -1023,7 +1699,7 @@ pub fn complete_scope(
                         if let ResolvedItem::Declaration(decl) = res.item {
                             let type_name = &decl.type_info.base_type;
                             let type_defs =
-                                lookup_symbol(type_name, current_uri, analysis_map, &position);
+                                lookup_symbol(type_name, current_uri, analysis_map, &position, false);
                             for type_res in type_defs {
                                 if let ResolvedItem::Declaration(t) = type_res.item
                                     && let Some(fields) = &t.parameters
@@ -1049,7 +1725,10 @@ pub fn complete_scope(
                         .or_else(|| {
                             tree.package
                                 .as_ref()
-                                .and_then(|n| current_analysis.package_scope_trees.get(n))
+                                .and_then(|n| {
+                                    current_analysis.package_declaration_scope_trees.get(n)
+                                        .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                                })
                         });
 
                     if let Some(declarations) =
@@ -1125,10 +1804,10 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
         DeclType::Generic => CompletionItemKind::CONSTANT,
         DeclType::Port(_) => CompletionItemKind::FIELD,
         DeclType::Parameter(_, _) => CompletionItemKind::FIELD,
-        DeclType::Function => CompletionItemKind::FUNCTION,
+        DeclType::Function | DeclType::FunctionDeclaration => CompletionItemKind::FUNCTION,
         DeclType::Type => CompletionItemKind::STRUCT,
         DeclType::Subtype => CompletionItemKind::STRUCT,
-        DeclType::Procedure => CompletionItemKind::FUNCTION,
+        DeclType::Procedure | DeclType::ProcedureDeclaration => CompletionItemKind::FUNCTION,
         DeclType::Attribute => CompletionItemKind::TYPE_PARAMETER,
         DeclType::RecordField => CompletionItemKind::FIELD,
         DeclType::EnumLiteral => CompletionItemKind::ENUM_MEMBER,
@@ -1159,304 +1838,4 @@ fn declaration_to_completion(decl: &Declaration) -> CompletionItem {
 // =============================================================================
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend::test_utils::SHARED_PARSER_LOCK;
-    use tree_sitter::Parser;
-
-    // --- Test Helpers ---
-
-    /// Parses code with cursor marker and checks completion context.
-    fn check_context(code_with_cursor: &str, expected: CompletionContext) {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-
-        let (code, pos) = extract_cursor(code_with_cursor);
-
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        let tree = parser.parse(&code, None).unwrap();
-        drop(_guard);
-
-        let ctx = get_completion_context(&code, tree.root_node(), pos);
-        assert_eq!(ctx, expected, "\nCode:\n{}\nContext mismatch!", code);
-    }
-
-    /// Extracts cursor position '|' and returns clean code and Position.
-    fn extract_cursor(text: &str) -> (String, Position) {
-        let cursor_offset = text
-            .find('|')
-            .expect("Test case must have a '|' cursor marker");
-        let clean_text = text.replace("|", "");
-
-        let mut line = 0;
-        let mut character = 0;
-        for (i, c) in text.char_indices() {
-            if i == cursor_offset {
-                break;
-            }
-            if c == '\n' {
-                line += 1;
-                character = 0;
-            } else {
-                character += 1;
-            }
-        }
-        (clean_text, Position { line, character })
-    }
-
-    // --- Unit Tests for Helper Functions ---
-
-    #[test]
-    fn test_is_rhs_of_association() {
-        // After arrow
-        assert!(is_rhs_of_association("port map (clk => ", 17));
-        assert!(is_rhs_of_association("(a => b, c => ", 14));
-
-        // Before arrow
-        assert!(!is_rhs_of_association("port map (clk ", 14));
-        assert!(!is_rhs_of_association("(a => b, c ", 11));
-
-        // After comma resets
-        assert!(!is_rhs_of_association("(a => b, c", 10));
-
-        // Multiple associations
-        assert!(is_rhs_of_association("(a => 1, b => 2, c => ", 22));
-        assert!(!is_rhs_of_association("(a => 1, b => 2, c ", 19));
-    }
-
-    #[test]
-    fn test_build_map_context() {
-        assert_eq!(
-            build_map_context("comp".to_string(), DetectedMapKind::Port, false),
-            CompletionContext::PortMapLhs("comp".to_string())
-        );
-        assert_eq!(
-            build_map_context("comp".to_string(), DetectedMapKind::Port, true),
-            CompletionContext::PortMapRhs
-        );
-        assert_eq!(
-            build_map_context("comp".to_string(), DetectedMapKind::Generic, false),
-            CompletionContext::GenericMapLhs("comp".to_string())
-        );
-        assert_eq!(
-            build_map_context("comp".to_string(), DetectedMapKind::Generic, true),
-            CompletionContext::GenericMapRhs
-        );
-    }
-
-    #[test]
-    fn test_extract_component_name_from_text() {
-        assert_eq!(
-            extract_component_name_from_text("entity work.my_comp(rtl)"),
-            "my_comp"
-        );
-        assert_eq!(extract_component_name_from_text("work.my_comp"), "my_comp");
-        assert_eq!(extract_component_name_from_text("my_comp(rtl)"), "my_comp");
-        assert_eq!(extract_component_name_from_text("my_comp"), "my_comp");
-        assert_eq!(
-            extract_component_name_from_text("  entity  lib.pkg.comp  "),
-            "comp"
-        );
-    }
-
-    #[test]
-    fn test_get_tree_node() {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let code = "entity E is end E;";
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        let binding = parser.parse(code, None).unwrap();
-        let root = binding.root_node();
-        drop(_guard);
-
-        // Should find nodes at various positions
-        let pos1 = Position {
-            line: 0,
-            character: 0,
-        };
-        assert!(get_tree_node(root, pos1).is_some());
-
-        let pos2 = Position {
-            line: 0,
-            character: 7,
-        };
-        assert!(get_tree_node(root, pos2).is_some());
-
-        let pos3 = Position {
-            line: 0,
-            character: 18,
-        };
-        // At end of file, may or may not find node, but shouldn't panic
-        let _ = get_tree_node(root, pos3);
-    }
-
-    #[test]
-    fn test_find_component_declaration_text_fallback() {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
-        let code = r#"
-u1: entity work.my_broken_comp
-    port map (
-        data_in => sig
-"#;
-        let mut parser = Parser::new();
-        let lang = unsafe { crate::tree_sitter_vhdl() };
-        parser.set_language(&lang).unwrap();
-        let tree = parser.parse(code, None).unwrap();
-        drop(_guard);
-
-        let cursor_offset = code.find("sig").unwrap() + 3;
-        let result = find_component_declaration(tree.root_node(), code, cursor_offset);
-
-        assert!(result.is_some(), "Should find component via text fallback");
-        let (name, kind) = result.unwrap();
-        assert_eq!(name, "my_broken_comp");
-        assert_eq!(kind, DetectedMapKind::Port);
-    }
-
-    // --- Basic Context Tests ---
-
-    #[test]
-    fn test_context_architecture_body() {
-        check_context(
-            r#"
-            architecture A of E is
-                signal s : bit;
-            begin
-                s <= |
-            end A;
-            "#,
-            CompletionContext::Architecture,
-        );
-    }
-
-    #[test]
-    fn test_context_process_body() {
-        check_context(
-            r#"
-            process(clk)
-                variable v : integer;
-            begin
-                v := |
-            end process;
-            "#,
-            CompletionContext::Process,
-        );
-    }
-
-    #[test]
-    fn test_context_dot_access() {
-        check_context(
-            "architecture A of E is begin r.| end A;",
-            CompletionContext::DotAccess,
-        );
-        check_context(
-            "architecture A of E is begin r.fi| end A;",
-            CompletionContext::DotAccess,
-        );
-    }
-
-    // --- Port Map Tests ---
-
-    #[test]
-    fn test_port_map_lhs_simple() {
-        check_context(
-            r#"
-            u1: my_comp port map (
-                clk => clk,
-                | => rst
-            );
-            "#,
-            CompletionContext::PortMapLhs("my_comp".to_string()),
-        );
-    }
-
-    #[test]
-    fn test_port_map_rhs() {
-        check_context(
-            r#"
-            u1: my_comp port map (
-                clk => |,
-                rst => rst
-            );
-            "#,
-            CompletionContext::PortMapRhs,
-        );
-    }
-
-    #[test]
-    fn test_port_map_incomplete_cursor_inside() {
-        check_context(
-            r#"
-            u1 : entity work.my_comp 
-                port map (
-                    clk => |
-            "#,
-            CompletionContext::PortMapRhs,
-        );
-    }
-
-    // --- Generic Map Tests ---
-
-    #[test]
-    fn test_generic_map_lhs() {
-        check_context(
-            r#"
-            u0 : entity work.my_comp
-                generic map (
-                    param_width => 8,
-                    | => 10
-                );
-            "#,
-            CompletionContext::GenericMapLhs("my_comp".to_string()),
-        );
-    }
-
-    #[test]
-    fn test_generic_map_rhs() {
-        check_context(
-            r#"
-            u0 : entity work.my_comp
-                generic map (
-                    param_width => |,
-                    param_depth => 16
-                );
-            "#,
-            CompletionContext::GenericMapRhs,
-        );
-    }
-
-    #[test]
-    fn test_misparsed_signal_assignment_enter_key() {
-        check_context(
-            r#"
-            architecture A of B is
-            begin
-                inst_fifo2: avl_st_fifo
-                generic map (
-                    |
-
-                inst_fifo3: avl_st_fifo generic_map (); port map ();
-            "#,
-            CompletionContext::GenericMapLhs("avl_st_fifo".to_string()),
-        );
-    }
-
-    #[test]
-    fn test_nested_complex_instantiation() {
-        check_context(
-            r#"
-            u_complex: entity work.mylib.my_cpu(rtl)
-                generic map (
-                    DATA_WIDTH => 32
-                )
-                port map (
-                    clk => |,
-                    rst => rst
-                );
-            "#,
-            CompletionContext::PortMapRhs,
-        );
-    }
-}
+mod tests;

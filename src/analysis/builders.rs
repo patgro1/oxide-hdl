@@ -35,12 +35,14 @@ pub fn build_entity_scope_tree(ent_node: Node, text: &str) -> ScopeTree {
         if let Some(generic_clause) = navigate_path(ent_node, &["entity_head", "generic_clause"]) {
             tree.declarations
                 .extend(extract_decl_from_generic_clause(generic_clause, text));
-            collect_identifier_from_decl(&generic_clause, text, &mut tree.local_usage);
+            // Collect identifiers only from type constraints and default values, not from declared names
+            collect_identifier_from_interface_clause(&generic_clause, text, &mut tree.local_usage);
         }
         if let Some(port_clause) = navigate_path(ent_node, &["entity_head", "port_clause"]) {
             tree.declarations
                 .extend(extract_decl_from_port_clause(port_clause, text));
-            collect_identifier_from_decl(&port_clause, text, &mut tree.local_usage);
+            // Collect identifiers only from type constraints and default values, not from declared names
+            collect_identifier_from_interface_clause(&port_clause, text, &mut tree.local_usage);
         }
     }
     tree.rebuild_index();
@@ -229,7 +231,7 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                             .push(create_instance_from_node(inner_child, text));
                         if let Some(generic_aspect) = find_child(inner_child, "generic_map_aspect")
                         {
-                            collect_identifiers_recursive(
+                            crate::analysis::collect_identifiers_from_map_aspect(
                                 generic_aspect,
                                 text,
                                 UsageContext::Behavioral,
@@ -237,7 +239,7 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                             );
                         }
                         if let Some(port_aspect) = find_child(inner_child, "port_map_aspect") {
-                            collect_identifiers_recursive(
+                            crate::analysis::collect_identifiers_from_map_aspect(
                                 port_aspect,
                                 text,
                                 UsageContext::Behavioral,
@@ -271,8 +273,88 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
 /// * `text` - Full source text
 ///
 /// # Returns
+/// Processes sequential statements within a process, creating child scopes for for-loops.
 ///
-/// Scope tree node representing the process
+/// Sequential for-loops introduce their own scope with the loop variable visible only
+/// within the loop body. This function recursively walks statements and creates child
+/// scope trees for loops.
+///
+/// # Arguments
+///
+/// * `sequential_node` - Tree-sitter node of type `sequential_block` or statement
+/// * `text` - Full source text
+/// * `parent_tree` - Parent scope tree to add children and usages to
+fn process_sequential_statements(sequential_node: Node, text: &str, parent_tree: &mut ScopeTree) {
+    let mut cursor = sequential_node.walk();
+    for child in sequential_node.children(&mut cursor) {
+        match child.kind() {
+            "loop_statement" => {
+                // Create a child scope for the loop
+                let mut loop_tree = ScopeTree::new(ScopeKind::Process, &child);
+
+                // Extract loop variable from for_loop if present.
+                // _iteration_scheme is a hidden rule; the actual child is for_loop or while_loop.
+                if let Some(for_loop) = find_child(child, "for_loop")
+                    && let Some(parameter_spec) =
+                        find_child(for_loop, "parameter_specification")
+                    && let Some(identifier) = find_child(parameter_spec, "identifier")
+                {
+                    loop_tree.declarations.push(Declaration {
+                        name: text[identifier.byte_range()].to_string(),
+                        decl_type: DeclType::Constant,
+                        range: node_to_range(identifier),
+                        selection_range: node_to_range(identifier),
+                        type_info: TypeInfo::new(),
+                        default_value: None,
+                        doc_comment: None,
+                        parameters: None,
+                    });
+
+                    // Collect identifiers from the range expression (e.g. constants used in bounds)
+                    collect_identifiers_recursive(
+                        for_loop,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut loop_tree.local_usage,
+                    );
+                }
+
+                // Collect identifiers from loop body as usages.
+                // The loop body node is loop_body, not sequential_block.
+                if let Some(loop_body) = find_child(child, "loop_body") {
+                    process_sequential_statements(loop_body, text, &mut loop_tree);
+                }
+
+                loop_tree.rebuild_index();
+                parent_tree.children.push(loop_tree);
+            }
+            "if_statement_block"
+            | "if_statement"
+            | "if_statement_body"
+            | "elsif_statement"
+            | "else_statement"
+            | "case_statement"
+            | "case_body"
+            | "case_statement_alternative"
+            | "sequential_block_statement" => {
+                // For if/case and their body/branch nodes, recursively process their bodies
+                process_sequential_statements(child, text, parent_tree);
+            }
+            _ => {
+                // For all other statements, collect identifiers as usages
+                if !child.kind().starts_with("ERROR") && !child.is_extra() {
+                    collect_identifiers_recursive(
+                        child,
+                        text,
+                        UsageContext::Behavioral,
+                        &mut parent_tree.local_usage,
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     let mut tree = ScopeTree::new(ScopeKind::Process, &process_node);
 
@@ -305,12 +387,8 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
                 &mut tree.local_usage,
             );
         } else if child.kind() == "sequential_block" {
-            collect_identifiers_recursive(
-                child,
-                text,
-                UsageContext::Behavioral,
-                &mut tree.local_usage,
-            );
+            // Process sequential statements, creating child scopes for for-loops
+            process_sequential_statements(child, text, &mut tree);
             break;
         }
     }
@@ -393,7 +471,7 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                         tree.instantiations
                             .push(create_instance_from_node(child, text));
                         if let Some(generic_aspect) = find_child(child, "generic_map_aspect") {
-                            collect_identifiers_recursive(
+                            crate::analysis::collect_identifiers_from_map_aspect(
                                 generic_aspect,
                                 text,
                                 UsageContext::Behavioral,
@@ -401,7 +479,7 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                             );
                         }
                         if let Some(port_aspect) = find_child(child, "port_map_aspect") {
-                            collect_identifiers_recursive(
+                            crate::analysis::collect_identifiers_from_map_aspect(
                                 port_aspect,
                                 text,
                                 UsageContext::Behavioral,
@@ -509,7 +587,7 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                         tree.instantiations
                             .push(create_instance_from_node(child, text));
                         if let Some(generic_aspect) = find_child(child, "generic_map_aspect") {
-                            collect_identifiers_recursive(
+                            crate::analysis::collect_identifiers_from_map_aspect(
                                 generic_aspect,
                                 text,
                                 UsageContext::Behavioral,
@@ -517,7 +595,7 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                             );
                         }
                         if let Some(port_aspect) = find_child(child, "port_map_aspect") {
-                            collect_identifiers_recursive(
+                            crate::analysis::collect_identifiers_from_map_aspect(
                                 port_aspect,
                                 text,
                                 UsageContext::Behavioral,
@@ -600,7 +678,7 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                     tree.instantiations
                         .push(create_instance_from_node(inner_child, text));
                     if let Some(generic_aspect) = find_child(inner_child, "generic_map_aspect") {
-                        collect_identifiers_recursive(
+                        crate::analysis::collect_identifiers_from_map_aspect(
                             generic_aspect,
                             text,
                             UsageContext::Behavioral,
@@ -608,7 +686,7 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                         );
                     }
                     if let Some(port_aspect) = find_child(inner_child, "port_map_aspect") {
-                        collect_identifiers_recursive(
+                        crate::analysis::collect_identifiers_from_map_aspect(
                             port_aspect,
                             text,
                             UsageContext::Behavioral,
@@ -727,10 +805,51 @@ fn extract_signal_names(signal_node: Node, text: &str) -> Vec<(String, Range)> {
 /// * `node` - Root node to search from
 /// * `text` - Full source text
 /// * `references` - Mutable set to collect identifier usages into
+///
+/// Collects identifiers from interface clauses (generic/port clauses).
+/// Only collects from type specifications and default values, NOT from the
+/// declared identifier names themselves.
+///
+/// # Arguments
+///
+/// * `clause_node` - The generic_clause or port_clause node
+/// * `text` - Full source text
+/// * `references` - Mutable set to collect identifier usages into
+fn collect_identifier_from_interface_clause(
+    clause_node: &Node,
+    text: &str,
+    references: &mut HashSet<Usage>,
+) {
+    // Find interface_list containing the interface_declarations
+    if let Some(interface_list) = clause_node
+        .children(&mut clause_node.walk())
+        .find(|c| c.kind() == "interface_list")
+    {
+        for interface_decl in interface_list.children(&mut interface_list.walk()) {
+            if interface_decl.kind() != "interface_declaration" {
+                continue;
+            }
+            // For each interface_declaration, collect from type and default value, but NOT from identifier_list
+            for part in interface_decl.children(&mut interface_decl.walk()) {
+                match part.kind() {
+                    "identifier_list" => {} // Skip - these are the names being declared
+                    _ => collect_identifiers_recursive(
+                        part,
+                        text,
+                        UsageContext::TypeSpec,
+                        references,
+                    ),
+                }
+            }
+        }
+    }
+}
+
 fn collect_identifier_from_decl(node: &Node, text: &str, references: &mut HashSet<Usage>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
+            // Skip identifier_list - these are the names being declared, not usages
             "identifier_list" => {}
             _ => collect_identifiers_recursive(child, text, UsageContext::TypeSpec, references),
         }
@@ -977,9 +1096,9 @@ fn create_subprogram_declaration_from_node(
     let mut name = "".to_string();
     let name_node_id = {
         match decl_type {
-            DeclType::Function => "function",
-            DeclType::Procedure => "procedure",
-            _ => panic!("We should not get here with other decl_type than Function or Procedure"),
+            DeclType::Function | DeclType::FunctionDeclaration => "function",
+            DeclType::Procedure | DeclType::ProcedureDeclaration => "procedure",
+            _ => panic!("We should not get here with other decl_type than Function or Procedure variants"),
         }
     };
     if let Some(name_node) = node.child_by_field_name(name_node_id) {
@@ -1394,13 +1513,13 @@ fn extract_declaration_from_node(
             declarations.push(create_subprogram_declaration_from_node(
                 function_node,
                 text,
-                DeclType::Function,
+                DeclType::FunctionDeclaration,
             ));
         } else if let Some(proc_node) = find_child(sub_prog, "procedure_specification") {
             declarations.push(create_subprogram_declaration_from_node(
                 proc_node,
                 text,
-                DeclType::Procedure,
+                DeclType::ProcedureDeclaration,
             ));
         }
     }
