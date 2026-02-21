@@ -187,6 +187,40 @@ pub fn lookup_procedure_declaration(
     })
 }
 
+/// Looks up **all** overloads of a procedure/function by name.
+///
+/// Unlike [`lookup_procedure_declaration`], this returns every matching
+/// declaration rather than just the first one.  Used by the sensitivity
+/// checker to detect overloaded subprograms: when multiple overloads exist
+/// the parameter directions may differ, so the caller falls back to a
+/// conservative "direction unknown" treatment.
+///
+/// # Returns
+/// All matching subprogram declarations (may be empty if none found or if
+/// the symbol is only available as a shallow `Symbol`).
+pub fn lookup_all_procedure_declarations(
+    name: &str,
+    uri: &Url,
+    map: &AnalysisMap,
+    pos: &Position,
+) -> Vec<Declaration> {
+    let results = lookup_symbol(name, uri, map, pos, false);
+
+    results
+        .into_iter()
+        .filter_map(|res| match res.item {
+            ResolvedItem::Declaration(decl) => match decl.decl_type {
+                DeclType::Procedure
+                | DeclType::Function
+                | DeclType::ProcedureDeclaration
+                | DeclType::FunctionDeclaration => Some(decl),
+                _ => None,
+            },
+            ResolvedItem::Symbol(_) => None,
+        })
+        .collect()
+}
+
 /// Resolves a symbol through imported packages from `use` clauses.
 ///
 /// For each `use` clause in the current file's analysis, searches the referenced
