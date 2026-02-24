@@ -9,6 +9,7 @@
 //! * [`rename`]: Symbol rename operations
 //! * [`symbol`]: Document and workspace symbol providers
 
+pub mod code_actions;
 pub mod completion;
 pub mod diagnostics;
 pub mod goto;

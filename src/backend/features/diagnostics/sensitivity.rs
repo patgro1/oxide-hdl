@@ -21,6 +21,7 @@
 
 use crate::analysis::{DeclType, Declaration, Usage, UsageContext, collect_identifiers_recursive};
 use crate::backend::AnalysisMap;
+use crate::backend::features::code_actions::{MissingSensitivityData, UnnecessarySensitivityData};
 use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticContext, messages};
 use crate::backend::features::lookup::lookup_all_procedure_declarations;
 use crate::utils::ast::{find_child, find_descendant};
@@ -412,45 +413,94 @@ pub fn check_process_sensitivity(
                 .map(|s| s.name.to_lowercase())
                 .collect();
 
-            // Check for missing signals
-            if !has_wait {
-                for read_signal in &read_signals {
-                    let lower_name = read_signal.name.to_lowercase();
-                    if !sensitivity_list
-                        .iter()
-                        .any(|v| v.name.to_lowercase() == lower_name)
-                    {
-                        collectors.sensitivity.push(messages::missing_sensitivity(
-                            &read_signal.name,
-                            &process_node,
-                        ));
-                    }
-                }
-            }
+            // ── Gather shared context for code-action data ────────────────
+            let sensitivity_spec_range =
+                find_descendant(process_node, "sensitivity_specification")
+                    .map(|n| node_to_range(n));
 
-            // Check for unnecessary signals
-            // NOTE: Skip for synchronous processes (async resets not yet detected)
-            match process_type {
-                ProcessType::Combinatorial => {}
-                ProcessType::Synchronous {
-                    clock_signals: _clocks,
-                } => return,
+            let process_kw_end = find_process_keyword_end(process_node);
+
+            // Sort by source position so existing_signals always reflects the
+            // left-to-right order in the file, regardless of HashSet iteration order.
+            let mut existing_signals_ordered: Vec<(&str, (u32, u32))> = sensitivity_list
+                .iter()
+                .map(|u| (u.name.as_str(), (u.range.start.line, u.range.start.character)))
+                .collect();
+            existing_signals_ordered.sort_by_key(|(_, pos)| *pos);
+            let existing_signals: Vec<String> = existing_signals_ordered
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect();
+
+            // ── Collect all missing / all unnecessary up-front ────────────
+            // (so every emitted diagnostic carries the full set for "fix all")
+
+            let all_missing: Vec<String> = if !has_wait {
+                read_signals
+                    .iter()
+                    .filter(|s| {
+                        !sensitivity_list
+                            .iter()
+                            .any(|v| v.name.to_lowercase() == s.name.to_lowercase())
+                    })
+                    .map(|s| s.name.clone())
+                    .collect()
+            } else {
+                vec![]
             };
 
-            for sensitive in sensitivity_list {
-                let name_lc = sensitive.name.to_lowercase();
-                let is_read = read_signals
+            // Unnecessary only applies to combinatorial processes.
+            let all_unnecessary: Vec<String> = match process_type {
+                ProcessType::Combinatorial => sensitivity_list
                     .iter()
-                    .any(|s| s.name.to_lowercase() == name_lc);
-                let is_maybe_read = maybe_read_names.contains(&name_lc);
-                if (!is_read && !is_maybe_read) || has_wait {
-                    collectors
-                        .sensitivity
-                        .push(messages::unnecessary_sensitivity(
-                            &sensitive.name,
-                            &sensitive.range,
-                        ));
-                }
+                    .filter(|s| {
+                        let lc = s.name.to_lowercase();
+                        let is_read = read_signals.iter().any(|r| r.name.to_lowercase() == lc);
+                        let is_maybe = maybe_read_names.contains(&lc);
+                        (!is_read && !is_maybe) || has_wait
+                    })
+                    .map(|s| s.name.clone())
+                    .collect(),
+                ProcessType::Synchronous { .. } => vec![],
+            };
+
+            // ── Emit diagnostics ──────────────────────────────────────────
+
+            for signal in &all_missing {
+                collectors.sensitivity.push(messages::missing_sensitivity(
+                    &process_node,
+                    MissingSensitivityData {
+                        signal: signal.clone(),
+                        sensitivity_spec_range,
+                        process_kw_end,
+                        existing_signals: existing_signals.clone(),
+                        all_missing: all_missing.clone(),
+                    },
+                ));
+            }
+
+            // Skip unnecessary check for synchronous processes.
+            if matches!(process_type, ProcessType::Synchronous { .. }) {
+                return;
+            }
+
+            for signal_usage in sensitivity_list.iter().filter(|s| {
+                all_unnecessary
+                    .iter()
+                    .any(|u| u.to_lowercase() == s.name.to_lowercase())
+            }) {
+                collectors
+                    .sensitivity
+                    .push(messages::unnecessary_sensitivity(
+                        &signal_usage.range,
+                        UnnecessarySensitivityData {
+                            signal: signal_usage.name.clone(),
+                            sensitivity_spec_range: sensitivity_spec_range
+                                .unwrap_or_default(),
+                            existing_signals: existing_signals.clone(),
+                            all_unnecessary: all_unnecessary.clone(),
+                        },
+                    ));
             }
         }
     }
@@ -787,6 +837,27 @@ fn extract_sensitivity_list(process_node: Node, text: &str) -> HashSet<Usage> {
     }
 
     sensitivity_signals
+}
+
+/// Returns the position immediately after the `process` keyword token.
+///
+/// Used by code actions to know where to insert a brand-new sensitivity list
+/// when the process has none.  Falls back to the start of the process node if
+/// the keyword token cannot be found (should not happen in valid VHDL).
+fn find_process_keyword_end(process_node: Node) -> Position {
+    for child in process_node.children(&mut process_node.walk()) {
+        if child.kind() == "process" {
+            return Position {
+                line: child.end_position().row as u32,
+                character: child.end_position().column as u32,
+            };
+        }
+    }
+    // Fallback: start of the process node.
+    Position {
+        line: process_node.start_position().row as u32,
+        character: process_node.start_position().column as u32,
+    }
 }
 
 /// Placeholder for future synchronous process validation.

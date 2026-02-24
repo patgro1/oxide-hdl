@@ -4,6 +4,7 @@
 //! formatting, severity levels, and tags.
 
 use crate::analysis::{DeclType, Declaration};
+use crate::backend::features::code_actions::{MissingSensitivityData, UnnecessarySensitivityData};
 use crate::backend::features::diagnostics::DiagnosticMessage;
 use crate::utils::node_to_range;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, Position, Range};
@@ -58,18 +59,19 @@ pub fn unused_identifier(decl: Declaration) -> Diagnostic {
 ///
 /// # Arguments
 ///
-/// * `signal` - Name of the signal that is read but not in sensitivity list
 /// * `process_node` - Tree-sitter node of the process statement (for location)
+/// * `action_data` - Structured data for the code-action fix, embedded in `diagnostic.data`
 ///
 /// # Returns
 ///
-/// Diagnostic pointing to the process header
-pub fn missing_sensitivity(signal: &str, process_node: &Node) -> Diagnostic {
+/// Diagnostic pointing to the process header with action data attached
+pub fn missing_sensitivity(process_node: &Node, action_data: MissingSensitivityData) -> Diagnostic {
     Diagnostic {
         range: node_to_range(*process_node),
         severity: Some(DiagnosticSeverity::WARNING),
-        message: format!("Signal '{}' is read but not in sensitivity list", signal),
+        message: format!("Signal '{}' is read but not in sensitivity list", action_data.signal),
         source: Some("oxide-hdl-sensitivity".to_string()),
+        data: serde_json::to_value(action_data).ok(),
         ..Default::default()
     }
 }
@@ -81,19 +83,20 @@ pub fn missing_sensitivity(signal: &str, process_node: &Node) -> Diagnostic {
 ///
 /// # Arguments
 ///
-/// * `name` - Name of the unnecessary signal
 /// * `range` - Location of the signal in the sensitivity list
+/// * `action_data` - Structured data for the code-action fix, embedded in `diagnostic.data`
 ///
 /// # Returns
 ///
-/// Diagnostic pointing to the specific signal in the sensitivity list
-pub fn unnecessary_sensitivity(name: &str, range: &Range) -> Diagnostic {
+/// Diagnostic pointing to the specific signal in the sensitivity list with action data attached
+pub fn unnecessary_sensitivity(range: &Range, action_data: UnnecessarySensitivityData) -> Diagnostic {
     Diagnostic {
         range: *range,
         severity: Some(DiagnosticSeverity::HINT),
-        message: format!("Signal '{}' is not needed in sensitivity list", name),
+        message: format!("Signal '{}' is not needed in sensitivity list", action_data.signal),
         source: Some("oxide-hdl-sensitivity".to_string()),
         tags: vec![DiagnosticTag::UNNECESSARY].into(),
+        data: serde_json::to_value(action_data).ok(),
         ..Default::default()
     }
 }

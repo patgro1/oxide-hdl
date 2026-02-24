@@ -23,13 +23,15 @@ use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
+    CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
     Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, Position, ReferenceParams, RenameOptions, SaveOptions,
-    ServerCapabilities, SymbolInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url, WorkspaceSymbolParams,
+    InitializedParams, Location, MessageType, OneOf, Position, ReferenceParams, RenameOptions,
+    SaveOptions, ServerCapabilities, SymbolInformation, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url,
+    WorkspaceSymbolParams,
     request::{GotoDeclarationParams, GotoImplementationParams},
 };
 use tower_lsp::{Client, LanguageServer};
@@ -285,6 +287,13 @@ impl LanguageServer for Backend {
                 implementation_provider: Some(tower_lsp::lsp_types::ImplementationProviderCapability::Simple(true)),
                 // References
                 references_provider: Some(OneOf::Left(true)),
+                // Code actions (quick fixes)
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        resolve_provider: Some(false),
+                        ..Default::default()
+                    },
+                )),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -825,6 +834,30 @@ impl LanguageServer for Backend {
         }
 
         Ok(None)
+    }
+
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> Result<Option<Vec<CodeActionOrCommand>>> {
+        let uri = &params.text_document.uri;
+
+        let text = {
+            let map = self.document_map.read().await;
+            match map.get(uri) {
+                Some(r) => r.to_string(),
+                None => return Ok(None),
+            }
+        };
+
+        let mut actions = Vec::new();
+        actions.extend(features::code_actions::sensitivity_actions(&params, &text));
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
