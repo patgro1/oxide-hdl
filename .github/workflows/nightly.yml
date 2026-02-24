@@ -129,6 +129,18 @@ jobs:
         with:
           path: artifacts
 
+      - name: Stage release binaries
+        run: |
+          mkdir -p release-bins
+          for vscode_target in win32-x64 win32-arm64 linux-x64 linux-arm64 alpine-x64 alpine-arm64 darwin-x64 darwin-arm64; do
+            if [[ "$vscode_target" == win32* ]]; then
+              cp "artifacts/$vscode_target/oxide-hdl.exe" "release-bins/oxide-hdl-${vscode_target}.exe"
+            else
+              cp "artifacts/$vscode_target/oxide-hdl" "release-bins/oxide-hdl-${vscode_target}"
+              chmod +x "release-bins/oxide-hdl-${vscode_target}"
+            fi
+          done
+
       - name: Package platform-specific VSIXs
         working-directory: editors/vscode
         run: |
@@ -156,7 +168,9 @@ jobs:
           name: Nightly
           prerelease: true
           make_latest: false
-          files: editors/vscode/*.vsix
+          files: |
+            release-bins/*
+            editors/vscode/*.vsix
           body: |
             Automated nightly build from `main`.
 
