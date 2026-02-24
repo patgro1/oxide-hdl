@@ -1657,12 +1657,12 @@ pub fn complete_scope(
                         .as_ref()
                         .and_then(|n| current_analysis.entity_scope_trees.get(n))
                         .or_else(|| {
-                            tree.package
-                                .as_ref()
-                                .and_then(|n| {
-                                    current_analysis.package_declaration_scope_trees.get(n)
-                                        .or_else(|| current_analysis.package_body_scope_trees.get(n))
-                                })
+                            tree.package.as_ref().and_then(|n| {
+                                current_analysis
+                                    .package_declaration_scope_trees
+                                    .get(n)
+                                    .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                            })
                         });
 
                     if let Some(decls) = tree.collect_visible_declarations(&innermost.range, header)
@@ -1698,8 +1698,13 @@ pub fn complete_scope(
                     for res in results {
                         if let ResolvedItem::Declaration(decl) = res.item {
                             let type_name = &decl.type_info.base_type;
-                            let type_defs =
-                                lookup_symbol(type_name, current_uri, analysis_map, &position, false);
+                            let type_defs = lookup_symbol(
+                                type_name,
+                                current_uri,
+                                analysis_map,
+                                &position,
+                                false,
+                            );
                             for type_res in type_defs {
                                 if let ResolvedItem::Declaration(t) = type_res.item
                                     && let Some(fields) = &t.parameters
@@ -1723,12 +1728,12 @@ pub fn complete_scope(
                         .as_ref()
                         .and_then(|n| current_analysis.entity_scope_trees.get(n))
                         .or_else(|| {
-                            tree.package
-                                .as_ref()
-                                .and_then(|n| {
-                                    current_analysis.package_declaration_scope_trees.get(n)
-                                        .or_else(|| current_analysis.package_body_scope_trees.get(n))
-                                })
+                            tree.package.as_ref().and_then(|n| {
+                                current_analysis
+                                    .package_declaration_scope_trees
+                                    .get(n)
+                                    .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                            })
                         });
 
                     if let Some(declarations) =
@@ -1736,6 +1741,32 @@ pub fn complete_scope(
                     {
                         for decl in declarations {
                             items.push(declaration_to_completion(&decl));
+                        }
+                    }
+                    // Now we add public symbols from include packages
+                    for clause in &current_analysis.use_clauses {
+                        let pkg_name = &clause.name;
+                        for (_, analysis) in analysis_map.iter() {
+                            if let Some(pkg_scope) = analysis
+                                .package_declaration_scope_trees
+                                .get(&pkg_name.to_lowercase())
+                            {
+                                let declarations: Vec<Declaration> = if clause.all_import {
+                                    pkg_scope.declarations.clone()
+                                } else if let Some(sym) = &clause.imported_symbol {
+                                    pkg_scope
+                                        .declarations
+                                        .iter()
+                                        .filter(|d| d.name.eq_ignore_ascii_case(sym))
+                                        .cloned()
+                                        .collect()
+                                } else {
+                                    vec![]
+                                };
+                                for decl in declarations {
+                                    items.push(declaration_to_completion(&decl));
+                                }
+                            }
                         }
                     }
                 }

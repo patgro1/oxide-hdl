@@ -1164,3 +1164,158 @@ fn test_instantiation_snippet_tab_stop_numbering() {
     assert!(snippet.contains("${4:P2}"), "Second port should be tab 4");
     assert!(snippet.contains("${5:P3}"), "Third port should be tab 5");
 }
+
+// =============================================================================
+// Package symbol completion tests
+// =============================================================================
+
+/// Helper: build a two-file analysis map (package + architecture), parse the
+/// architecture text and return the completion items at the given position.
+fn complete_in_arch(pkg_code: &str, arch_code: &str, pos: Position) -> Vec<CompletionItem> {
+    use crate::backend::test_utils::parse_text;
+    use crate::backend::AnalysisMap;
+    use tower_lsp::lsp_types::Url;
+
+    let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+    let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+    let pkg_tree = parse_text(pkg_code);
+    let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
+        pkg_code,
+        pkg_tree.root_node(),
+    );
+
+    let arch_tree = parse_text(arch_code);
+    let arch_root = arch_tree.root_node();
+    let arch_analysis =
+        crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+    let mut analysis_map = AnalysisMap::new();
+    analysis_map.insert(pkg_uri, pkg_analysis);
+    analysis_map.insert(arch_uri.clone(), arch_analysis);
+
+    let ctx = get_completion_context(arch_code, arch_root, pos);
+    complete_scope(&analysis_map, &arch_uri, &ctx, pos, arch_code, arch_root)
+}
+
+/// Convenience: collect item labels from completions.
+fn labels(items: &[CompletionItem]) -> Vec<&str> {
+    items.iter().map(|i| i.label.as_str()).collect()
+}
+
+#[test]
+fn test_package_constant_appears_in_arch_completion() {
+    let pkg_code = r#"
+package my_pkg is
+    constant C_WIDTH : integer := 8;
+    constant C_DEPTH : integer := 1024;
+end package;
+"#;
+    let arch_code = r#"
+use work.my_pkg.all;
+
+architecture rtl of test is
+    signal s : integer;
+begin
+    s <= C_WIDTH;
+end architecture;
+"#;
+    // Cursor inside the architecture declarative region (after `signal s : integer;`)
+    let pos = Position { line: 4, character: 4 };
+    let items = complete_in_arch(pkg_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"C_WIDTH"),
+        "Package constant C_WIDTH should appear in completions. Got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"C_DEPTH"),
+        "Package constant C_DEPTH should appear in completions. Got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_package_function_appears_in_completion() {
+    let pkg_code = r#"
+package my_pkg is
+    function to_slv(x : integer; width : integer) return std_logic_vector;
+end package;
+"#;
+    let arch_code = r#"
+use work.my_pkg.all;
+
+architecture rtl of test is
+    signal result : std_logic_vector(7 downto 0);
+begin
+    result <= to_slv(42, 8);
+end architecture;
+"#;
+    let pos = Position { line: 4, character: 4 };
+    let items = complete_in_arch(pkg_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"to_slv"),
+        "Package function to_slv should appear in completions. Got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_package_procedure_appears_in_completion() {
+    let pkg_code = r#"
+package my_pkg is
+    procedure log_msg(msg : string);
+end package;
+"#;
+    let arch_code = r#"
+use work.my_pkg.all;
+
+architecture rtl of test is
+begin
+    process
+    begin
+        log_msg("hello");
+    end process;
+end architecture;
+"#;
+    // Cursor inside process body
+    let pos = Position { line: 7, character: 8 };
+    let items = complete_in_arch(pkg_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"log_msg"),
+        "Package procedure log_msg should appear in completions. Got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_package_type_appears_in_completion() {
+    let pkg_code = r#"
+package my_pkg is
+    type t_state is (IDLE, RUN, STOP);
+end package;
+"#;
+    let arch_code = r#"
+use work.my_pkg.all;
+
+architecture rtl of test is
+    signal state : t_state;
+begin
+end architecture;
+"#;
+    let pos = Position { line: 4, character: 4 };
+    let items = complete_in_arch(pkg_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"t_state"),
+        "Package type t_state should appear in completions. Got: {:?}",
+        names
+    );
+}
