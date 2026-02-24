@@ -12,12 +12,14 @@ use crate::backend::features::lookup;
 use crate::config::{DiagnosticTrigger, OxideConfig};
 use features::hover;
 use syntax::utils::get_word_at_pos;
-use tokio::time::Instant;
+use tokio::task::AbortHandle;
+use tokio::time::{Instant, sleep};
 
 use crate::analysis::{Analysis, BuiltinManager, OxideSymbolKind, Symbol};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, watch};
 use tower_lsp::jsonrpc::Result;
 use tree_sitter::Parser;
@@ -57,6 +59,25 @@ pub struct Backend {
     root_uri: Arc<RwLock<Option<Url>>>,
     indexing_tx: Arc<watch::Sender<bool>>,
     indexing_rx: watch::Receiver<bool>,
+    /// Tracks pending debounced diagnostic tasks (one per open document).
+    /// When a new change arrives, the previous task is aborted and replaced.
+    diagnostic_debounce: Arc<Mutex<HashMap<Url, AbortHandle>>>,
+}
+
+impl Clone for Backend {
+    fn clone(&self) -> Self {
+        Backend {
+            client: self.client.clone(),
+            config: self.config.clone(),
+            document_map: self.document_map.clone(),
+            parser: self.parser.clone(),
+            analysis_map: self.analysis_map.clone(),
+            root_uri: self.root_uri.clone(),
+            indexing_tx: self.indexing_tx.clone(),
+            indexing_rx: self.indexing_rx.clone(),
+            diagnostic_debounce: self.diagnostic_debounce.clone(),
+        }
+    }
 }
 
 /// Recursively dumps a symbol hierarchy to a string for debugging purposes.
@@ -96,6 +117,7 @@ impl Backend {
             root_uri: Arc::new(RwLock::new(None)),
             indexing_tx: Arc::new(indexing_tx),
             indexing_rx,
+            diagnostic_debounce: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -405,7 +427,26 @@ impl LanguageServer for Backend {
                 .as_ref()
                 .map(|c| c.diagnostics == DiagnosticTrigger::OnChange)
                 .unwrap_or(false);
-            self.on_change(uri, text, should_publish).await;
+            drop(config_guard);
+
+            if should_publish {
+                // Debounce: cancel the previous pending diagnostic task for this URI
+                // and schedule a new one 300 ms in the future. This prevents every
+                // keystroke from publishing diagnostics with partially-typed identifiers.
+                let mut debounce = self.diagnostic_debounce.lock().await;
+                if let Some(handle) = debounce.remove(&uri) {
+                    handle.abort();
+                }
+                let backend = self.clone();
+                let debounce_uri = uri.clone();
+                let task = tokio::spawn(async move {
+                    sleep(Duration::from_millis(300)).await;
+                    backend.on_change(debounce_uri, text, true).await;
+                });
+                debounce.insert(uri, task.abort_handle());
+            } else {
+                self.on_change(uri, text, false).await;
+            }
         }
     }
 
