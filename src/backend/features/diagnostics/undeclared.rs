@@ -1879,6 +1879,40 @@ end architecture;
     }
 
     #[test]
+    fn test_for_loop_variables_in_procedure_not_flagged() {
+        // Regression: two sequential for loops inside a procedure declared in an architecture.
+        // Both loop variables (idx, idx_2) should be visible inside their respective loop bodies.
+        let code = r#"
+architecture rtl of test is
+    signal count: std_logic_vector(8-1 downto 0);
+
+    procedure gen_a_second_toto is
+    begin
+        for idx in 0 to 7 loop
+            count(idx) <= '1';
+        end loop;
+        for idx_2 in 0 to 7 loop
+            count(idx_2) <= '0';
+        end loop;
+    end procedure;
+begin
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let loop_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.message.to_lowercase().contains("idx")
+            })
+            .collect();
+        assert!(
+            loop_diags.is_empty(),
+            "For-loop variables 'idx' and 'idx_2' inside a procedure should not be flagged. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
     fn test_byte_remainder_regression() {
         let code = r#"
 architecture rtl of top is

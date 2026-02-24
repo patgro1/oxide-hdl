@@ -1181,12 +1181,7 @@ pub fn build_subprogram_scope_tree(subprogram_node: Node, text: &str) -> ScopeTr
     }
     for child in subprogram_node.children(&mut subprogram_node.walk()) {
         if child.kind() == "sequential_block" {
-            collect_identifiers_recursive(
-                child,
-                text,
-                UsageContext::Behavioral,
-                &mut tree.local_usage,
-            );
+            process_sequential_statements(child, text, &mut tree);
             break;
         }
     }
