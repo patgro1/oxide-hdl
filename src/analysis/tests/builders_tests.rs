@@ -990,7 +990,10 @@ end package;
 
     let proc_decl = &pkg.declarations[0];
     assert_eq!(proc_decl.name, "do_reset");
-    assert!(matches!(proc_decl.decl_type, DeclType::ProcedureDeclaration));
+    assert!(matches!(
+        proc_decl.decl_type,
+        DeclType::ProcedureDeclaration
+    ));
 }
 
 #[test]

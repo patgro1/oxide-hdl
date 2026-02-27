@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend::test_utils::{parse_text, SHARED_PARSER_LOCK};
+use crate::backend::test_utils::{SHARED_PARSER_LOCK, parse_text};
 use tower_lsp::lsp_types::Url;
 use tree_sitter::Parser;
 
@@ -58,7 +58,10 @@ end architecture;
         prepare_rename(&code, &pos, &analysis, &mut parser).await
     };
 
-    assert!(result.is_some(), "Should be able to rename signal declaration");
+    assert!(
+        result.is_some(),
+        "Should be able to rename signal declaration"
+    );
 }
 
 #[tokio::test]
@@ -192,7 +195,10 @@ end architecture;
         rename_symbol(&code, &pos, "123invalid", &analysis, &uri, &mut parser).await
     };
 
-    assert!(result.is_none(), "Should reject invalid identifier starting with digit");
+    assert!(
+        result.is_none(),
+        "Should reject invalid identifier starting with digit"
+    );
 }
 
 // =============================================================================
@@ -300,7 +306,10 @@ end architecture;
     let edits = changes.get(&uri).unwrap();
 
     // Should rename declaration + usages in process
-    assert!(edits.len() >= 2, "Should rename port declaration and usages");
+    assert!(
+        edits.len() >= 2,
+        "Should rename port declaration and usages"
+    );
 }
 
 #[tokio::test]

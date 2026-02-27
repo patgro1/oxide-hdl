@@ -1457,11 +1457,19 @@ end architecture;
 
         // Verify the package scope tree has the protected type
         assert!(
-            pkg_analysis.package_declaration_scope_trees.contains_key("my_pkg"),
+            pkg_analysis
+                .package_declaration_scope_trees
+                .contains_key("my_pkg"),
             "Package scope tree should exist. Keys: {:?}",
-            pkg_analysis.package_declaration_scope_trees.keys().collect::<Vec<_>>()
+            pkg_analysis
+                .package_declaration_scope_trees
+                .keys()
+                .collect::<Vec<_>>()
         );
-        let pkg_scope = pkg_analysis.package_declaration_scope_trees.get("my_pkg").unwrap();
+        let pkg_scope = pkg_analysis
+            .package_declaration_scope_trees
+            .get("my_pkg")
+            .unwrap();
         let has_t_counter = pkg_scope
             .declarations
             .iter()
@@ -1867,10 +1875,7 @@ begin
 end architecture;
 "#;
         let diags = check_undeclared(code);
-        let i_diags: Vec<_> = diags
-            .iter()
-            .filter(|d| d.message.contains(" i"))
-            .collect();
+        let i_diags: Vec<_> = diags.iter().filter(|d| d.message.contains(" i")).collect();
         assert!(
             i_diags.is_empty(),
             "Loop variable 'i' should not be flagged. Got: {:?}",
@@ -1901,9 +1906,7 @@ end architecture;
         let diags = check_undeclared(code);
         let loop_diags: Vec<_> = diags
             .iter()
-            .filter(|d| {
-                d.message.to_lowercase().contains("idx")
-            })
+            .filter(|d| d.message.to_lowercase().contains("idx"))
             .collect();
         assert!(
             loop_diags.is_empty(),

@@ -69,7 +69,10 @@ pub fn missing_sensitivity(process_node: &Node, action_data: MissingSensitivityD
     Diagnostic {
         range: node_to_range(*process_node),
         severity: Some(DiagnosticSeverity::WARNING),
-        message: format!("Signal '{}' is read but not in sensitivity list", action_data.signal),
+        message: format!(
+            "Signal '{}' is read but not in sensitivity list",
+            action_data.signal
+        ),
         source: Some("oxide-hdl-sensitivity".to_string()),
         data: serde_json::to_value(action_data).ok(),
         ..Default::default()
@@ -89,11 +92,17 @@ pub fn missing_sensitivity(process_node: &Node, action_data: MissingSensitivityD
 /// # Returns
 ///
 /// Diagnostic pointing to the specific signal in the sensitivity list with action data attached
-pub fn unnecessary_sensitivity(range: &Range, action_data: UnnecessarySensitivityData) -> Diagnostic {
+pub fn unnecessary_sensitivity(
+    range: &Range,
+    action_data: UnnecessarySensitivityData,
+) -> Diagnostic {
     Diagnostic {
         range: *range,
         severity: Some(DiagnosticSeverity::HINT),
-        message: format!("Signal '{}' is not needed in sensitivity list", action_data.signal),
+        message: format!(
+            "Signal '{}' is not needed in sensitivity list",
+            action_data.signal
+        ),
         source: Some("oxide-hdl-sensitivity".to_string()),
         tags: vec![DiagnosticTag::UNNECESSARY].into(),
         data: serde_json::to_value(action_data).ok(),

@@ -295,8 +295,7 @@ fn process_sequential_statements(sequential_node: Node, text: &str, parent_tree:
                 // Extract loop variable from for_loop if present.
                 // _iteration_scheme is a hidden rule; the actual child is for_loop or while_loop.
                 if let Some(for_loop) = find_child(child, "for_loop")
-                    && let Some(parameter_spec) =
-                        find_child(for_loop, "parameter_specification")
+                    && let Some(parameter_spec) = find_child(for_loop, "parameter_specification")
                     && let Some(identifier) = find_child(parameter_spec, "identifier")
                 {
                     loop_tree.declarations.push(Declaration {
@@ -1098,7 +1097,9 @@ fn create_subprogram_declaration_from_node(
         match decl_type {
             DeclType::Function | DeclType::FunctionDeclaration => "function",
             DeclType::Procedure | DeclType::ProcedureDeclaration => "procedure",
-            _ => panic!("We should not get here with other decl_type than Function or Procedure variants"),
+            _ => panic!(
+                "We should not get here with other decl_type than Function or Procedure variants"
+            ),
         }
     };
     if let Some(name_node) = node.child_by_field_name(name_node_id) {

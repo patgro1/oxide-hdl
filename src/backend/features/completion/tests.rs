@@ -1172,18 +1172,16 @@ fn test_instantiation_snippet_tab_stop_numbering() {
 /// Helper: build a two-file analysis map (package + architecture), parse the
 /// architecture text and return the completion items at the given position.
 fn complete_in_arch(pkg_code: &str, arch_code: &str, pos: Position) -> Vec<CompletionItem> {
-    use crate::backend::test_utils::parse_text;
     use crate::backend::AnalysisMap;
+    use crate::backend::test_utils::parse_text;
     use tower_lsp::lsp_types::Url;
 
     let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
     let arch_uri = Url::parse("file:///arch.vhd").unwrap();
 
     let pkg_tree = parse_text(pkg_code);
-    let pkg_analysis = crate::backend::syntax::parser::extract_document_symbols(
-        pkg_code,
-        pkg_tree.root_node(),
-    );
+    let pkg_analysis =
+        crate::backend::syntax::parser::extract_document_symbols(pkg_code, pkg_tree.root_node());
 
     let arch_tree = parse_text(arch_code);
     let arch_root = arch_tree.root_node();
@@ -1221,7 +1219,10 @@ begin
 end architecture;
 "#;
     // Cursor inside the architecture declarative region (after `signal s : integer;`)
-    let pos = Position { line: 4, character: 4 };
+    let pos = Position {
+        line: 4,
+        character: 4,
+    };
     let items = complete_in_arch(pkg_code, arch_code, pos);
     let names = labels(&items);
 
@@ -1253,7 +1254,10 @@ begin
     result <= to_slv(42, 8);
 end architecture;
 "#;
-    let pos = Position { line: 4, character: 4 };
+    let pos = Position {
+        line: 4,
+        character: 4,
+    };
     let items = complete_in_arch(pkg_code, arch_code, pos);
     let names = labels(&items);
 
@@ -1283,7 +1287,10 @@ begin
 end architecture;
 "#;
     // Cursor inside process body
-    let pos = Position { line: 7, character: 8 };
+    let pos = Position {
+        line: 7,
+        character: 8,
+    };
     let items = complete_in_arch(pkg_code, arch_code, pos);
     let names = labels(&items);
 
@@ -1309,7 +1316,10 @@ architecture rtl of test is
 begin
 end architecture;
 "#;
-    let pos = Position { line: 4, character: 4 };
+    let pos = Position {
+        line: 4,
+        character: 4,
+    };
     let items = complete_in_arch(pkg_code, arch_code, pos);
     let names = labels(&items);
 

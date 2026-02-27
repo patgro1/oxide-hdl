@@ -51,42 +51,99 @@ pub async fn index_workspace(
 
     let matcher = config.build_globset();
 
-    let is_ignored = |entry: &walkdir::DirEntry| -> bool {
-        let name = entry.file_name().to_string_lossy();
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
 
-        // A. HARDCODED SAFETY NET (The Guard Rails)
-        // These are checked via string comparison which is faster than Glob matching.
-        // It prevents the LSP from crashing even if config is broken/empty.
-        if name == ".git" || name == "target" {
-            return true;
-        }
+    // Process main workspace
+    {
+        let is_ignored = |entry: &walkdir::DirEntry| -> bool {
+            let name = entry.file_name().to_string_lossy();
 
-        // B. USER CONFIG (The Flexibility)
-        // Check relative path against oxide.toml patterns
-        if let Ok(relative) = entry.path().strip_prefix(&root_path) {
-            return matcher.is_match(relative);
-        }
-        false
-    };
+            // A. HARDCODED SAFETY NET (The Guard Rails)
+            if name == ".git" || name == "target" {
+                return true;
+            }
 
-    let paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
-        .into_iter()
-        .filter_entry(|e| !is_ignored(e))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            if let Some(ext) = e.path().extension() {
-                let ext_str = ext.to_string_lossy().to_string();
-                if !config.extensions.contains(&ext_str) {
+            // B. USER CONFIG (The Flexibility)
+            if let Ok(relative) = entry.path().strip_prefix(&root_path) {
+                return matcher.is_match(relative);
+            }
+            false
+        };
+
+        let root_paths: Vec<std::path::PathBuf> = WalkDir::new(&root_path)
+            .into_iter()
+            .filter_entry(|e| !is_ignored(e))
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                if let Some(ext) = e.path().extension() {
+                    let ext_str = ext.to_string_lossy().to_string();
+                    if !config.extensions.contains(&ext_str) {
+                        return false;
+                    }
+                } else {
                     return false;
                 }
-            } else {
-                return false;
+                true
+            })
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        paths.extend(root_paths);
+    }
+
+    // Process included workspaces
+    for inc in &config.include_workspace {
+        let inc_path = root_path.join(inc);
+        let is_ignored = |entry: &walkdir::DirEntry| -> bool {
+            let name = entry.file_name().to_string_lossy();
+
+            if name == ".git" || name == "target" {
+                return true;
             }
-            true
-        })
-        .map(|e| e.path().to_path_buf())
-        .collect();
+
+            if let Ok(relative) = entry.path().strip_prefix(&inc_path) {
+                return matcher.is_match(relative);
+            }
+            false
+        };
+
+        let inc_paths: Vec<std::path::PathBuf> = WalkDir::new(&inc_path)
+            .into_iter()
+            .filter_entry(|e| !is_ignored(e))
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                if let Some(ext) = e.path().extension() {
+                    let ext_str = ext.to_string_lossy().to_string();
+                    if !config.extensions.contains(&ext_str) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+                true
+            })
+            .map(|e| e.path().to_path_buf())
+            .collect();
+
+        if inc_paths.is_empty() {
+            client
+                .log_message(
+                    MessageType::WARNING,
+                    format!(
+                        "Included workspace folder '{}' did not resolve to any indexed files",
+                        inc
+                    ),
+                )
+                .await;
+        } else {
+            paths.extend(inc_paths);
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+
     client
         .log_message(
             MessageType::WARNING,
@@ -346,11 +403,14 @@ fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
     let name_lc = name.to_lowercase();
     for (uri, analysis) in map.iter() {
         if let Some(symbol) = analysis.symbols.get(&name_lc)
-            && (symbol.kind == OxideSymbolKind::Package || symbol.kind == OxideSymbolKind::PackageBody)
+            && (symbol.kind == OxideSymbolKind::Package
+                || symbol.kind == OxideSymbolKind::PackageBody)
         {
             return Some(uri.clone());
         }
-        if analysis.package_declaration_scope_trees.contains_key(&name_lc)
+        if analysis
+            .package_declaration_scope_trees
+            .contains_key(&name_lc)
             || analysis.package_body_scope_trees.contains_key(&name_lc)
         {
             return Some(uri.clone());

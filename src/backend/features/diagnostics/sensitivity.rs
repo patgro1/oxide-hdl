@@ -185,8 +185,7 @@ impl<'a> SignalExtractionContext<'a> {
                                         self.extract(args, false);
                                     }
                                 }
-                                DeclType::Procedure
-                                | DeclType::ProcedureDeclaration => {
+                                DeclType::Procedure | DeclType::ProcedureDeclaration => {
                                     if let Some(args) = args_node {
                                         self.analyze_procedure_arguments(args, declaration);
                                     }
@@ -414,9 +413,8 @@ pub fn check_process_sensitivity(
                 .collect();
 
             // ── Gather shared context for code-action data ────────────────
-            let sensitivity_spec_range =
-                find_descendant(process_node, "sensitivity_specification")
-                    .map(|n| node_to_range(n));
+            let sensitivity_spec_range = find_descendant(process_node, "sensitivity_specification")
+                .map(|n| node_to_range(n));
 
             let process_kw_end = find_process_keyword_end(process_node);
 
@@ -424,7 +422,12 @@ pub fn check_process_sensitivity(
             // left-to-right order in the file, regardless of HashSet iteration order.
             let mut existing_signals_ordered: Vec<(&str, (u32, u32))> = sensitivity_list
                 .iter()
-                .map(|u| (u.name.as_str(), (u.range.start.line, u.range.start.character)))
+                .map(|u| {
+                    (
+                        u.name.as_str(),
+                        (u.range.start.line, u.range.start.character),
+                    )
+                })
                 .collect();
             existing_signals_ordered.sort_by_key(|(_, pos)| *pos);
             let existing_signals: Vec<String> = existing_signals_ordered
@@ -495,8 +498,7 @@ pub fn check_process_sensitivity(
                         &signal_usage.range,
                         UnnecessarySensitivityData {
                             signal: signal_usage.name.clone(),
-                            sensitivity_spec_range: sensitivity_spec_range
-                                .unwrap_or_default(),
+                            sensitivity_spec_range: sensitivity_spec_range.unwrap_or_default(),
                             existing_signals: existing_signals.clone(),
                             all_unnecessary: all_unnecessary.clone(),
                         },

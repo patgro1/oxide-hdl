@@ -104,18 +104,23 @@ pub fn sensitivity_actions(params: &CodeActionParams, _text: &str) -> Vec<CodeAc
         };
         if let Ok(data) = serde_json::from_value::<MissingSensitivityData>(raw.clone()) {
             missing_data.push(data);
-        } else if let Ok(data) =
-            serde_json::from_value::<UnnecessarySensitivityData>(raw.clone())
-        {
+        } else if let Ok(data) = serde_json::from_value::<UnnecessarySensitivityData>(raw.clone()) {
             unnecessary_data.push(data);
         }
     }
 
     // 1. Combined fix — only when both kinds are present.
-    if !missing_data.is_empty() && !unnecessary_data.is_empty()
+    if !missing_data.is_empty()
+        && !unnecessary_data.is_empty()
         && let Some(edit) = compute_fix_all(&missing_data[0], &unnecessary_data[0])
     {
-        push_action(&mut combined, &mut seen, "Fix sensitivity list".to_string(), uri, edit);
+        push_action(
+            &mut combined,
+            &mut seen,
+            "Fix sensitivity list".to_string(),
+            uri,
+            edit,
+        );
     }
 
     // 2. Remove-all unnecessary (when more than one unnecessary signal).
