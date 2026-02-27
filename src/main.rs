@@ -23,11 +23,22 @@ mod backend;
 mod config;
 mod logging;
 mod utils;
-use tree_sitter::{Language, Parser};
+use tree_sitter::{Language, Parser as TsParser};
 
+use clap::Parser;
 use tower_lsp::{LspService, Server};
 
 use crate::backend::Backend;
+
+#[derive(Parser)]
+#[command(name = "oxide-hdl", about = "VHDL Language Server")]
+struct Cli {
+    /// Record a Chrome-format performance trace to /tmp/oxide_trace.json.
+    /// Open the file in chrome://tracing or https://ui.perfetto.dev after
+    /// the server exits to analyse where time is being spent.
+    #[arg(long)]
+    record_trace: bool,
+}
 
 unsafe extern "C" {
     /// External declaration for the tree-sitter-vhdl language function.
@@ -95,10 +106,26 @@ pub fn setup_panic_hook() {
 #[tokio::main]
 async fn main() {
     setup_panic_hook();
+    let args = Cli::parse();
+
+    // Hold the guard for the entire lifetime of the process.  It flushes the
+    // trace file to disk on drop, which happens when the LSP server exits.
+    let _trace_guard = if args.record_trace {
+        let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+            .file("/tmp/oxide_trace.json")
+            .build();
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry().with(chrome_layer).init();
+        eprintln!("oxide-hdl: tracing enabled → /tmp/oxide_trace.json");
+        Some(guard)
+    } else {
+        None
+    };
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let mut parser = Parser::new();
+    let mut parser = TsParser::new();
     let language = unsafe { tree_sitter_vhdl() };
 
     parser

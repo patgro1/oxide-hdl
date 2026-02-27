@@ -1,8 +1,56 @@
 use crate::analysis::{ScopeTree, UsageContext};
 use crate::backend::features::diagnostics::{DiagnosticCollectors, DiagnosticContext, messages};
 use crate::backend::features::lookup::lookup_symbol;
+use crate::backend::AnalysisMap;
 use std::collections::HashMap;
 use tree_sitter::Node;
+
+/// Builds a pre-populated lookup cache from all globally known names.
+///
+/// The normal `lookup_symbol` path re-scans the entire analysis map (4,000+
+/// files) for every unique name encountered during undeclared-identifier
+/// checking.  That's O(unique_names × files) = seconds.
+///
+/// This function does a single O(files × symbols_per_file) pass over the map
+/// upfront and seeds the cache with `true` for every entity, package, and
+/// package-exported declaration visible workspace-wide.  All subsequent
+/// per-name checks become O(1) cache hits for globally known names.
+/// Local-scope names (signals, variables, constants in the current arch) are
+/// not included here — they still fall through to `lookup_symbol`, which finds
+/// them quickly via the local scope tree without touching the global map.
+pub fn build_global_name_cache(global_map: &AnalysisMap) -> HashMap<String, bool> {
+    let mut cache: HashMap<String, bool> = HashMap::new();
+
+    for analysis in global_map.values() {
+        // Shallow-indexed top-level names (entities, packages from regex scan)
+        for name in analysis.symbols.keys() {
+            cache.insert(name.clone(), true);
+        }
+
+        // Deep-parsed entity scope trees
+        for name in analysis.entity_scope_trees.keys() {
+            cache.insert(name.clone(), true);
+        }
+
+        // Package declarations + every symbol they export
+        for (name, scope) in &analysis.package_declaration_scope_trees {
+            cache.insert(name.clone(), true);
+            for decl in &scope.declarations {
+                cache.insert(decl.name.to_lowercase(), true);
+            }
+        }
+
+        // Package bodies + every symbol they export
+        for (name, scope) in &analysis.package_body_scope_trees {
+            cache.insert(name.clone(), true);
+            for decl in &scope.declarations {
+                cache.insert(decl.name.to_lowercase(), true);
+            }
+        }
+    }
+
+    cache
+}
 
 /// Checks all identifier usages in a scope tree for undeclared references.
 ///
@@ -33,17 +81,32 @@ pub fn check_undeclared_identifiers(
             continue;
         }
 
+        // Normalise to lowercase for all cache operations — lookup_symbol lowercases
+        // internally, and build_global_name_cache inserts lowercase keys, so using the
+        // original case as the key caused every uppercase identifier (VHDL constants,
+        // generics, etc.) to miss the pre-built cache entirely.
+        let name_lc = usage.name.to_lowercase();
+
+        // Fast path: name already resolved as found on a previous occurrence — no diagnostic
+        // possible regardless of filter outcome, so skip the expensive tree traversal entirely.
+        if lookup_cache.get(&name_lc) == Some(&true) {
+            continue;
+        }
+
         // 1. Get the AST node using root
-        let node_opt = root.descendant_for_point_range(
-            tree_sitter::Point {
-                row: usage.range.start.line as usize,
-                column: usage.range.start.character as usize,
-            },
-            tree_sitter::Point {
-                row: usage.range.end.line as usize,
-                column: usage.range.end.character as usize,
-            },
-        );
+        let node_opt = {
+            let _s = tracing::info_span!("descendant_for_point_range").entered();
+            root.descendant_for_point_range(
+                tree_sitter::Point {
+                    row: usage.range.start.line as usize,
+                    column: usage.range.start.character as usize,
+                },
+                tree_sitter::Point {
+                    row: usage.range.end.line as usize,
+                    column: usage.range.end.character as usize,
+                },
+            )
+        };
 
         if let Some(node) = node_opt {
             if is_declaration_context(node) {
@@ -66,8 +129,8 @@ pub fn check_undeclared_identifiers(
             }
         }
 
-        let is_found = *lookup_cache.entry(usage.name.clone()).or_insert_with(|| {
-            // Use ctx.current_uri and ctx.global_map
+        let is_found = *lookup_cache.entry(name_lc.clone()).or_insert_with(|| {
+            let _s = tracing::info_span!("lookup_symbol", name = %usage.name).entered();
             let results = lookup_symbol(
                 &usage.name,
                 ctx.current_uri,
@@ -77,6 +140,7 @@ pub fn check_undeclared_identifiers(
             );
             !results.is_empty()
         });
+
 
         if !is_found {
             match usage.context {

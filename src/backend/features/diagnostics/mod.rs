@@ -22,7 +22,7 @@ use crate::{
     backend::AnalysisMap,
 };
 use regex::Regex;
-use std::{cmp::Ordering, collections::HashMap};
+use std::cmp::Ordering;
 use tower_lsp::lsp_types::{Diagnostic, Range, Url};
 use tree_sitter::Node;
 
@@ -192,6 +192,7 @@ pub fn collect_all_diagnostics(
     current_uri: &Url,
     config: &crate::config::OxideConfig,
 ) -> Vec<Diagnostic> {
+    let _span = tracing::info_span!("collect_all_diagnostics", uri = %current_uri).entered();
     let mut collectors = DiagnosticCollectors::new();
 
     if root.kind() == ERROR_NODE_KIND {
@@ -340,20 +341,31 @@ fn check_node(node: Node, ctx: &DiagnosticContext, collectors: &mut DiagnosticCo
     match node.kind() {
         "architecture_definition" => {
             if let Some(scope_tree) = ctx.scope_tree {
-                unused::check_unused_signals(scope_tree, collectors);
-                let mut lookup_cache: HashMap<String, bool> = HashMap::new();
-                undeclared::check_undeclared_identifiers(
-                    node,
-                    ctx,
-                    scope_tree,
-                    collectors,
-                    &mut lookup_cache,
-                );
+                {
+                    let _span = tracing::info_span!("check_unused_signals").entered();
+                    unused::check_unused_signals(scope_tree, collectors);
+                }
+                {
+                    let _span = tracing::info_span!("check_undeclared_identifiers",
+                        kind = "architecture")
+                    .entered();
+                    let mut lookup_cache = undeclared::build_global_name_cache(ctx.global_map);
+                    undeclared::check_undeclared_identifiers(
+                        node,
+                        ctx,
+                        scope_tree,
+                        collectors,
+                        &mut lookup_cache,
+                    );
+                }
             }
         }
         "entity_declaration" => {
             if let Some(scope_tree) = ctx.scope_tree {
-                let mut lookup_cache: HashMap<String, bool> = HashMap::new();
+                let _span = tracing::info_span!("check_undeclared_identifiers",
+                    kind = "entity")
+                .entered();
+                let mut lookup_cache = undeclared::build_global_name_cache(ctx.global_map);
                 undeclared::check_undeclared_identifiers(
                     node,
                     ctx,
@@ -373,6 +385,7 @@ fn check_node(node: Node, ctx: &DiagnosticContext, collectors: &mut DiagnosticCo
             )
         }
         "process_statement" => {
+            let _span = tracing::info_span!("check_process_sensitivity").entered();
             sensitivity::check_process_sensitivity(node, ctx, collectors);
         }
         "interface_declaration" => {

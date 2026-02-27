@@ -33,6 +33,7 @@ use walkdir::WalkDir;
 /// * `analysis_map` - The global symbol table to populate.
 /// * `root_uri` - The workspace root directory.
 /// * `config` - Configuration for file extensions and ignore patterns.
+#[tracing::instrument(skip_all)]
 pub async fn index_workspace(
     client: Client,
     analysis_map: Arc<RwLock<HashMap<Url, Analysis>>>,
@@ -249,6 +250,7 @@ async fn insert_batch(
 ///
 /// # Returns
 /// A Vector containing all collected diagnostics.
+#[tracing::instrument(skip_all, fields(uri = %uri, get_diagnostics))]
 pub async fn parse_and_update_document(
     client: &Client,
     analysis_map: Arc<RwLock<AnalysisMap>>,
@@ -265,7 +267,9 @@ pub async fn parse_and_update_document(
     // Phase 1: Parse current file, extract analysis and needed packages
     let phase1_result = {
         let parser = parser.clone();
+        let phase1_span = tracing::info_span!("phase1_tree_sitter_parse");
         tokio::task::spawn_blocking(move || {
+            let _enter = phase1_span.enter();
             let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
             let thread_result = builder
                 .spawn(move || {
@@ -345,7 +349,9 @@ pub async fn parse_and_update_document(
         let analysis_for_diag = analysis;
         let map_ref = analysis_map.clone();
         let uri = uri.clone();
+        let phase4_span = tracing::info_span!("phase4_diagnostics");
         tokio::task::spawn_blocking(move || {
+            let _enter = phase4_span.enter();
             let builder = std::thread::Builder::new().stack_size(128 * 1024 * 1024);
             let thread_result = builder
                 .spawn(move || {
@@ -442,6 +448,7 @@ fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
 /// * `analysis_map` - The global symbol table to check and update.
 /// * `parser` - The shared, mutex-protected Tree-sitter parser instance.
 /// * `uri` - The URI of the file that needs to be checked and potentially upgraded.
+#[tracing::instrument(skip_all, fields(uri = %uri))]
 pub async fn ensure_fully_parsed(
     client: &Client,
     analysis_map: &Arc<RwLock<AnalysisMap>>,
@@ -470,7 +477,9 @@ pub async fn ensure_fully_parsed(
     };
 
     let parser_arc = parser.clone();
+    let jit_span = tracing::info_span!("jit_tree_sitter_parse");
     let result = tokio::task::spawn_blocking(move || {
+        let _enter = jit_span.enter();
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(_) => return None,

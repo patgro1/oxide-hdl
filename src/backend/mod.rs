@@ -146,6 +146,7 @@ impl Backend {
     /// * `uri` - The URI of the document being updated.
     /// * `text` - The full text content of the document.
     /// * `publish_diagnostics` - If true, will send the collected diagnostics
+    #[tracing::instrument(skip(self, text), fields(%uri, publish_diagnostics))]
     async fn on_change(&self, uri: Url, text: String, publish_diagnostics: bool) {
         let config_guard = self.config.read().await;
         let config = config_guard.clone().unwrap_or_else(OxideConfig::default);
@@ -194,6 +195,7 @@ impl Backend {
     ///
     /// # Arguments
     /// * `uri` - The URI of the file whose dependencies should be checked.
+    #[tracing::instrument(skip(self), fields(%uri))]
     async fn ensure_dependencies_loaded(&self, uri: &Url) {
         // 1. Get the analysis of the current file to find what it "uses"
         let deps_to_load = {
@@ -368,6 +370,7 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(uri = %params.text_document.uri))]
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let start_time = Instant::now();
         {
@@ -454,6 +457,7 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(uri = %params.text_document.uri))]
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Ok(path) = uri.to_file_path() {
