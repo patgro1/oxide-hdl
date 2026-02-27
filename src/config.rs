@@ -45,6 +45,11 @@ pub struct OxideConfig {
     /// Example: ["^REG_.*", "^AUTO_.*", "BUILD_ID"]
     #[serde(default)]
     pub ignored_identifiers: Vec<String>,
+
+    /// List of external workspace directories to include for indexing.
+    /// This is useful when a repository depends on another repository.
+    #[serde(default)]
+    pub include_workspace: Vec<String>,
 }
 
 fn default_ignores() -> Vec<String> {
@@ -98,6 +103,7 @@ impl OxideConfig {
             extensions: default_extensions(),
             diagnostics: DiagnosticTrigger::default(),
             ignored_identifiers: vec![],
+            include_workspace: vec![],
         }
     }
 

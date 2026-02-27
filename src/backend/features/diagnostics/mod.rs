@@ -298,11 +298,7 @@ pub fn collect_all_diagnostics(
 /// * `node` - The Tree-sitter node to walk
 /// * `ctx` - Diagnostic context containing all read-only validation parameters
 /// * `collectors` - Mutable reference to diagnostic collectors
-fn walk_node(
-    node: Node,
-    ctx: &DiagnosticContext,
-    collectors: &mut DiagnosticCollectors,
-) {
+fn walk_node(node: Node, ctx: &DiagnosticContext, collectors: &mut DiagnosticCollectors) {
     check_node(node, ctx, collectors);
 
     let mut cursor = node.walk();
@@ -333,11 +329,7 @@ fn walk_node(
 /// - `label_declaration` - Valid label target
 /// - `sensitivity_specification` - Matching parentheses
 /// - `association_list` - Matching parentheses in port maps
-fn check_node(
-    node: Node,
-    ctx: &DiagnosticContext,
-    collectors: &mut DiagnosticCollectors,
-) {
+fn check_node(node: Node, ctx: &DiagnosticContext, collectors: &mut DiagnosticCollectors) {
     if node.kind() == ERROR_NODE_KIND {
         syntax::check_syntax_error(node, collectors);
     }

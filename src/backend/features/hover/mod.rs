@@ -476,7 +476,10 @@ fn format_data_declaration(decl: &Declaration) -> String {
 /// Helper to format Functions and Procedures with parameters
 fn format_subprogram_signature(decl: &Declaration) -> String {
     let mut out = String::new();
-    let keyword = if matches!(decl.decl_type, DeclType::Function | DeclType::FunctionDeclaration) {
+    let keyword = if matches!(
+        decl.decl_type,
+        DeclType::Function | DeclType::FunctionDeclaration
+    ) {
         "function"
     } else {
         "procedure"
@@ -502,7 +505,10 @@ fn format_subprogram_signature(decl: &Declaration) -> String {
     }
 
     // Return type (only for functions)
-    if matches!(decl.decl_type, DeclType::Function | DeclType::FunctionDeclaration) {
+    if matches!(
+        decl.decl_type,
+        DeclType::Function | DeclType::FunctionDeclaration
+    ) {
         let ret_type = format_type_info(&decl.type_info);
         out.push_str(&format!("\nreturn {};", ret_type));
     } else {

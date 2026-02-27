@@ -1,15 +1,15 @@
 use crate::analysis::{DeclType, OxideSymbolKind, ScopeKind};
-use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, LookupResult};
+use crate::backend::features::lookup::{LookupResult, ResolvedItem, lookup_symbol};
 use crate::backend::{AnalysisMap, Location};
 use tower_lsp::lsp_types::{Position, Url};
 
 /// Resolves the definition location(s) for a given symbol.
 ///
-/// This function implements the "Go to Definition" logic, prioritizing the 
+/// This function implements the "Go to Definition" logic, prioritizing the
 /// implementation (body) over the interface (declaration).
 ///
 /// # Logic
-/// 1.  **Prioritization:** 
+/// 1.  **Prioritization:**
 ///     *   Subprograms: Favors implementation bodies (`DeclType::Function`) over signatures.
 ///     *   Entities: Favors the Entity declaration over a Component declaration.
 /// 2.  **Fallback:** If the preferred implementation isn't found, it returns available declarations.
@@ -31,7 +31,9 @@ pub fn lookup_definition(
             ResolvedItem::Symbol(s) => match s.kind {
                 OxideSymbolKind::Entity => entities.push(res),
                 OxideSymbolKind::Component => components.push(res),
-                OxideSymbolKind::PackageBody | OxideSymbolKind::Architecture => subprogram_bodies.push(res),
+                OxideSymbolKind::PackageBody | OxideSymbolKind::Architecture => {
+                    subprogram_bodies.push(res)
+                }
                 _ => others.push(res),
             },
             ResolvedItem::Declaration(d) => match d.decl_type {
@@ -58,7 +60,11 @@ pub fn lookup_definition(
     };
 
     // If we have multiple results, try to prioritize the one in the current file
-    if final_results.len() > 1 && final_results.iter().any(|res| res.source_uri == *current_uri) {
+    if final_results.len() > 1
+        && final_results
+            .iter()
+            .any(|res| res.source_uri == *current_uri)
+    {
         final_results.retain(|res| res.source_uri == *current_uri);
     }
 
@@ -73,14 +79,14 @@ pub fn lookup_definition(
 
 /// Resolves the declaration location(s) for a given symbol.
 ///
-/// This function implements the "Go to Declaration" logic, prioritizing the 
+/// This function implements the "Go to Declaration" logic, prioritizing the
 /// interface/specification over the implementation body.
 ///
 /// # Logic
-/// 1.  **Prioritization:** 
+/// 1.  **Prioritization:**
 ///     *   Subprograms: Favors signatures (`DeclType::FunctionDeclaration`) over bodies.
 ///     *   Components: Favors Component declarations over Entity declarations.
-/// 2.  **Fallback:** If the preferred declaration isn't found (e.g. no component defined), 
+/// 2.  **Fallback:** If the preferred declaration isn't found (e.g. no component defined),
 ///     it falls back to the Entity declaration.
 pub fn lookup_declaration(
     target: &str,
@@ -126,7 +132,11 @@ pub fn lookup_declaration(
         others
     };
 
-    if final_results.len() > 1 && final_results.iter().any(|res| res.source_uri == *current_uri) {
+    if final_results.len() > 1
+        && final_results
+            .iter()
+            .any(|res| res.source_uri == *current_uri)
+    {
         final_results.retain(|res| res.source_uri == *current_uri);
     }
 
@@ -141,12 +151,12 @@ pub fn lookup_declaration(
 
 /// Resolves the implementation location(s) for a given symbol.
 ///
-/// This function implements the "Go to Implementation" logic, specifically 
+/// This function implements the "Go to Implementation" logic, specifically
 /// targeting Architecture bodies and subprogram bodies.
 ///
 /// # Logic
 /// 1.  **Direct Match:** Searches for `Architecture`, `PackageBody`, or subprogram implementations (`DeclType::Function`).
-/// 2.  **Entity-to-Architecture:** If the target is an Entity name, it performs a 
+/// 2.  **Entity-to-Architecture:** If the target is an Entity name, it performs a
 ///     global search to find all Architectures associated with that Entity.
 pub fn lookup_implementation(
     target: &str,
@@ -196,7 +206,11 @@ pub fn lookup_implementation(
                 // A. Check Deep-Parsed Architectures
                 for scope in &analysis.scope_trees {
                     if scope.kind == ScopeKind::Architecture
-                        && scope.entity.as_deref().unwrap_or_default().eq_ignore_ascii_case(ent_name)
+                        && scope
+                            .entity
+                            .as_deref()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case(ent_name)
                     {
                         implementations.push(LookupResult {
                             item: ResolvedItem::Symbol(crate::analysis::Symbol {
@@ -216,15 +230,16 @@ pub fn lookup_implementation(
                     let target_detail = format!("Architecture of {}", ent_name).to_lowercase();
                     for sym in analysis.symbols.values() {
                         if sym.kind == OxideSymbolKind::Architecture
-                            && let Some(detail) = &sym.detail {
-                                // Detail is "Architecture of <entity_name>"
-                                if detail.to_lowercase() == target_detail {
-                                    implementations.push(LookupResult {
-                                        item: ResolvedItem::Symbol(sym.clone()),
-                                        source_uri: uri.clone(),
-                                    });
-                                }
+                            && let Some(detail) = &sym.detail
+                        {
+                            // Detail is "Architecture of <entity_name>"
+                            if detail.to_lowercase() == target_detail {
+                                implementations.push(LookupResult {
+                                    item: ResolvedItem::Symbol(sym.clone()),
+                                    source_uri: uri.clone(),
+                                });
                             }
+                        }
                     }
                 }
             }

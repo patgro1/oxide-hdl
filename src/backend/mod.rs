@@ -304,9 +304,13 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 // Goto declaration
-                declaration_provider: Some(tower_lsp::lsp_types::DeclarationCapability::Simple(true)),
+                declaration_provider: Some(tower_lsp::lsp_types::DeclarationCapability::Simple(
+                    true,
+                )),
                 // Goto implementation
-                implementation_provider: Some(tower_lsp::lsp_types::ImplementationProviderCapability::Simple(true)),
+                implementation_provider: Some(
+                    tower_lsp::lsp_types::ImplementationProviderCapability::Simple(true),
+                ),
                 // References
                 references_provider: Some(OneOf::Left(true)),
                 // Code actions (quick fixes)
@@ -547,9 +551,7 @@ impl LanguageServer for Backend {
             let target = &word.to_lowercase();
             let locations = features::goto::lookup_declaration(target, &uri, &map, position);
             if !locations.is_empty() {
-                return Ok(Some(GotoDefinitionResponse::Array(
-                    locations,
-                )));
+                return Ok(Some(GotoDefinitionResponse::Array(locations)));
             }
         }
 
@@ -576,9 +578,7 @@ impl LanguageServer for Backend {
             let target = &word.to_lowercase();
             let locations = features::goto::lookup_implementation(target, &uri, &map, position);
             if !locations.is_empty() {
-                return Ok(Some(GotoDefinitionResponse::Array(
-                    locations,
-                )));
+                return Ok(Some(GotoDefinitionResponse::Array(locations)));
             }
         }
 
@@ -849,10 +849,7 @@ impl LanguageServer for Backend {
         Ok(workspace_edit)
     }
 
-    async fn references(
-        &self,
-        params: ReferenceParams,
-    ) -> Result<Option<Vec<Location>>> {
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = params.text_document_position.text_document.uri.clone();
         let position = params.text_document_position.position;
 
@@ -867,7 +864,8 @@ impl LanguageServer for Backend {
         if let Some(word) = get_word_at_pos(&rope, position) {
             let map = self.analysis_map.read().await;
             if let Some(analysis) = map.get(&uri) {
-                let locations = features::references::find_references(&params, analysis, &uri, &word);
+                let locations =
+                    features::references::find_references(&params, analysis, &uri, &word);
                 if !locations.is_empty() {
                     return Ok(Some(locations));
                 }

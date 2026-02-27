@@ -62,7 +62,7 @@ pub struct LookupResult {
 /// * `current_uri` - The URI of the file containing the cursor.
 /// * `analysis_map` - The global analysis map for cross-file lookups.
 /// * `pos` - The cursor position for scope resolution.
-/// * `find_all` - If true, continues searching all files even if local matches are found. 
+/// * `find_all` - If true, continues searching all files even if local matches are found.
 ///   Useful for prioritization logic in navigation.
 ///
 /// # Returns
@@ -87,12 +87,11 @@ pub fn lookup_symbol(
                 .as_ref()
                 .and_then(|name| analysis.entity_scope_trees.get(&name.to_lowercase()))
                 .or_else(|| {
-                    root_scope
-                        .package
-                        .as_ref()
-                        .and_then(|name| {
-                            analysis.package_declaration_scope_trees.get(&name.to_lowercase())
-                        })
+                    root_scope.package.as_ref().and_then(|name| {
+                        analysis
+                            .package_declaration_scope_trees
+                            .get(&name.to_lowercase())
+                    })
                 });
             if let Some(locals) =
                 root_scope.collect_visible_declarations(&innermost.range, header_scope)
@@ -225,8 +224,8 @@ pub fn lookup_all_procedure_declarations(
 /// Resolves a symbol through imported packages from `use` clauses.
 ///
 /// For each `use` clause in the current file's analysis, searches the referenced
-/// package for matching symbols. 
-/// 
+/// package for matching symbols.
+///
 /// VHDL Rule: Only Package DECLARATIONS (Headers) are searched for imported symbols.
 ///
 /// # Arguments
@@ -265,9 +264,10 @@ fn resolve_imports_for_symbol(
                     check_scope_decls(pkg_scope, results);
                 }
             } else if let Some(pkg_sym) = global_analysis.symbols.get(&pkg_name.to_lowercase())
-                && (pkg_sym.kind == OxideSymbolKind::Package || pkg_sym.kind == OxideSymbolKind::PackageBody)
+                && (pkg_sym.kind == OxideSymbolKind::Package
+                    || pkg_sym.kind == OxideSymbolKind::PackageBody)
             {
-                // Shallow Fallback: If we found the package (or body) via regex, 
+                // Shallow Fallback: If we found the package (or body) via regex,
                 // check if the target symbol exists anywhere in that file's flat symbol map.
                 let find_and_push = |t: &str, output: &mut Vec<LookupResult>| {
                     if let Some(sym) = global_analysis.symbols.get(&t.to_lowercase()) {
@@ -307,8 +307,7 @@ fn resolve_global_toplevel_symbols(
     results: &mut Vec<LookupResult>,
 ) {
     for (uri, analysis) in map.iter() {
-        if let Some(sym) = analysis.symbols.get(target)
-        {
+        if let Some(sym) = analysis.symbols.get(target) {
             results.push(LookupResult {
                 item: ResolvedItem::Symbol(sym.clone()),
                 source_uri: uri.clone(),
@@ -353,7 +352,7 @@ fn resolve_global_toplevel_symbols(
                 source_uri: uri.clone(),
             });
         }
-        
+
         // Broad search for subprograms inside packages (Deep Parse fallback)
         for scope in analysis.package_declaration_scope_trees.values() {
             for decl in &scope.declarations {
