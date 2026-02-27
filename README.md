@@ -200,6 +200,7 @@ Place an `oxide.toml` file in your project root to configure the server. All fie
 - Ignore: `**/build/**`, `**/sim/**`, `**/target/**`, `**/.git/**`, `**/work/**`
 - Diagnostics: `on_save`
 - Ignored identifiers: none
+- Included workspaces: none
 
 ```toml
 # File extensions recognized as VHDL source files.
@@ -232,6 +233,11 @@ ignored_identifiers = [
     "^REG_.*",       # auto-generated register map constants
     "^BUILD_ID$",    # injected by build system
 ]
+
+# List of external workspace directories to include for indexing.
+# This is useful when a repository depends on another repository.
+# Default: []
+include_workspace = []
 ```
 
 ### Configuration Reference
@@ -242,6 +248,7 @@ ignored_identifiers = [
 | `ignore` | `[string]` | see above | Glob patterns for paths to exclude |
 | `diagnostics` | `string` | `"on_save"` | When to publish diagnostics: `"on_save"` runs after every save; `"on_change"` runs 300 ms after the last keystroke (debounced). |
 | `ignored_identifiers` | `[string]` | `[]` | Regex patterns for identifiers to ignore in undeclared checks |
+| `include_workspace` | `[string]` | `[]` | List of external workspace directories to include for indexing |
 
 ## Known Limitations
 
