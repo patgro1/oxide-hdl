@@ -260,6 +260,8 @@ include_workspace = []
 
 **Single-workspace.** Multi-root workspaces are not supported. If your editor opens multiple folders simultaneously, only the first root will be indexed.
 
+**No unnecessary-signal detection in synchronous processes.** The sensitivity list checker can detect missing signals but does not flag signals that are present in the list but logically unnecessary. In a clocked process gated on `rising_edge(clk)`, only `clk` (and an async reset, if used) is needed — extra signals in the list are redundant but will not be reported.
+
 ## Architecture
 
 Oxide HDL uses a two-pass analysis pipeline:
