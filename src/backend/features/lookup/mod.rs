@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 use crate::{
-    analysis::{Analysis, DeclType, Declaration, OxideSymbolKind, ScopeTree, Symbol, TypeInfo},
+    analysis::{DeclType, Declaration, OxideSymbolKind, ScopeTree, Symbol, TypeInfo, UseClause},
     backend::AnalysisMap,
 };
 
@@ -79,6 +79,8 @@ pub fn lookup_symbol(
     let analysis = analysis_map.get(current_uri);
 
     if let Some(analysis) = analysis {
+        let mut effective_clauses: Vec<UseClause> = analysis.use_clauses.clone();
+
         // 1. Local lookup
         if let Some(root_scope) = analysis.find_scope_tree_at(pos) {
             let innermost = root_scope.find_innermost_scope(pos);
@@ -106,6 +108,10 @@ pub fn lookup_symbol(
                 }
             }
             let chain = root_scope.collect_scope_chain(pos);
+            // Augment effective clauses with use_clauses from innermost-scope chain
+            for scope in &chain {
+                effective_clauses.extend_from_slice(&scope.use_clauses);
+            }
             for s in chain.iter().rev() {
                 if let Some(inst) = s
                     .instantiations
@@ -138,7 +144,7 @@ pub fn lookup_symbol(
         }
 
         // 2. Imports (Strict: Headers only)
-        resolve_imports_for_symbol(analysis, &target_lc, analysis_map, &mut results);
+        resolve_imports_for_symbol(&effective_clauses, &target_lc, analysis_map, &mut results);
         if !results.is_empty() && !find_all {
             return results;
         }
@@ -234,12 +240,12 @@ pub fn lookup_all_procedure_declarations(
 /// * `map` - The global analysis map to search packages in.
 /// * `results` - Mutable vector to append found results to.
 fn resolve_imports_for_symbol(
-    analysis: &Analysis,
+    clauses: &[UseClause],
     target: &str,
     map: &AnalysisMap,
     results: &mut Vec<LookupResult>,
 ) {
-    for clause in &analysis.use_clauses {
+    for clause in clauses {
         let pkg_name = &clause.name;
         for (uri, global_analysis) in map.iter() {
             if let Some(pkg_scope) = global_analysis

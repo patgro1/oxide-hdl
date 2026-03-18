@@ -4,7 +4,7 @@
 //! signals, variables, ports, and other VHDL identifiers.
 
 use crate::analysis::Instance;
-use crate::analysis::types::{DeclType, Declaration, ScopeKind, Usage, UsageContext};
+use crate::analysis::types::{DeclType, Declaration, ScopeKind, Usage, UsageContext, UseClause};
 use crate::utils::{node_to_range, position_in_range};
 use std::collections::{HashMap, HashSet};
 use tower_lsp::lsp_types::{Position, Range};
@@ -53,6 +53,9 @@ pub struct ScopeTree {
 
     /// List of the instantiation in the current scope
     pub instantiations: Vec<Instance>,
+
+    /// Use clauses declared directly in this scope (for generate/block declarative regions)
+    pub use_clauses: Vec<UseClause>,
 }
 
 /// Enum specifying the type of region we are in.
@@ -90,6 +93,7 @@ impl ScopeTree {
             children: Vec::new(),
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         }
     }
 
@@ -275,6 +279,18 @@ impl ScopeTree {
     /// True if the position is in the scope tree range
     fn scope_tree_contains_pos(&self, pos: &Position) -> bool {
         position_in_range(*pos, self.range)
+    }
+
+    /// Recursively collects all use_clauses from this scope and all descendants.
+    ///
+    /// Used for JIT-parsing packages referenced inside generate/block scopes without
+    /// polluting the top-level `analysis.use_clauses`.
+    pub fn collect_all_use_clauses(&self) -> Vec<UseClause> {
+        let mut clauses = self.use_clauses.clone();
+        for child in &self.children {
+            clauses.extend(child.collect_all_use_clauses());
+        }
+        clauses
     }
 
     /// Recursively scan to find the innermost scope and returns the list of scope containing the

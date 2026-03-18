@@ -997,6 +997,7 @@ fn make_scope_tree(generics: Vec<Declaration>, ports: Vec<Declaration>) -> Scope
         children: Vec::new(),
         decl_index: HashMap::new(),
         instantiations: Vec::new(),
+            use_clauses: Vec::new(),
     }
 }
 

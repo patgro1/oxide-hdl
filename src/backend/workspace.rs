@@ -327,6 +327,28 @@ pub async fn parse_and_update_document(
             ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri).await;
         }
     }
+
+    // JIT parse packages referenced in inner scope use_clauses (generates, blocks)
+    let inner_clauses: Vec<crate::analysis::UseClause> = analysis
+        .scope_trees
+        .iter()
+        .flat_map(|t| t.collect_all_use_clauses())
+        .collect();
+    for clause in &inner_clauses {
+        let package_name = &clause.name;
+        let library = &clause.library;
+        let mut pkg_uri = {
+            let map = analysis_map.read().await;
+            find_package_file(package_name, &map)
+        };
+        if pkg_uri.is_none() {
+            pkg_uri = crate::backend::features::lookup::resolve_import_uri(library, package_name);
+        }
+        if let Some(pkg_uri) = pkg_uri {
+            ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri).await;
+        }
+    }
+
     // for pkg_name in &needed_packages {
     //     let pkg_uri = {
     //         let map = analysis_map.read().await;

@@ -1006,6 +1006,7 @@ pub mod test_utils {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
         scope.rebuild_index();
         scope

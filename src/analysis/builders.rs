@@ -6,7 +6,7 @@
 use crate::{
     analysis::{
         DeclType, Declaration, Instance, ParameterClass, PortDirection, RegionType, ScopeKind,
-        ScopeTree, TypeInfo, Usage, UsageContext, collect_identifiers_recursive,
+        ScopeTree, TypeInfo, Usage, UsageContext, UseClause, collect_identifiers_recursive,
     },
     utils::{
         ast::{collect_children, collect_descendants, find_child, find_descendant, navigate_path},
@@ -447,6 +447,13 @@ pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTre
                 RegionType::Concurrent,
                 &mut tree.local_usage,
             );
+            // Collect use_clauses declared in the generate declarative region
+            for child in head_node.children(&mut head_node.walk()) {
+                if child.kind() == "use_clause" {
+                    tree.use_clauses
+                        .extend(extract_use_clauses_from_node(child, text));
+                }
+            }
             // Special case here for subprogram_declaration (implementation)
             for subprogram_node in collect_children(head_node, "subprogram_definition") {
                 tree.children
@@ -563,6 +570,13 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                 RegionType::Concurrent,
                 &mut tree.local_usage,
             ));
+            // Collect use_clauses declared in the generate declarative region
+            for child in head_node.children(&mut head_node.walk()) {
+                if child.kind() == "use_clause" {
+                    tree.use_clauses
+                        .extend(extract_use_clauses_from_node(child, text));
+                }
+            }
             // Special case here for subprogram_declaration (implementation)
             for subprogram_node in collect_children(head_node, "subprogram_definition") {
                 tree.children
@@ -649,6 +663,13 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        // Collect use_clauses declared in the block declarative region
+        for child in head_node.children(&mut head_node.walk()) {
+            if child.kind() == "use_clause" {
+                tree.use_clauses
+                    .extend(extract_use_clauses_from_node(child, text));
+            }
+        }
         // Special case here for subprogram_declaration (implementation)
         for subprogram_node in collect_children(head_node, "subprogram_definition") {
             tree.children
@@ -707,6 +728,50 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
     }
     tree.rebuild_index();
     tree
+}
+
+/// Extracts UseClause items from a single `use_clause` AST node.
+///
+/// Mirrors the logic in `parser.rs::extract_imported_packages_from_node` but
+/// is exposed as a public function so generate/block builders can call it when
+/// populating `ScopeTree::use_clauses`.
+///
+/// # Arguments
+/// * `use_clause_node` - Tree-sitter node of kind `use_clause`
+/// * `text` - Full source text
+///
+/// # Returns
+/// Vector of `UseClause` items parsed from this node
+pub fn extract_use_clauses_from_node(use_clause_node: Node, text: &str) -> Vec<UseClause> {
+    let mut packages = Vec::new();
+    if let Some(use_list) = find_child(use_clause_node, "selected_name_list") {
+        for import in collect_children(use_list, "selected_name") {
+            if let Some(library_node) = import.child_by_field_name("library")
+                && let Some(package_node) = import.child_by_field_name("package")
+            {
+                if find_child(import, "ALL").is_some() {
+                    packages.push(UseClause {
+                        range: node_to_range(import),
+                        library: text[library_node.byte_range()].to_string(),
+                        name: text[package_node.byte_range()].to_string(),
+                        all_import: true,
+                        imported_symbol: None,
+                    });
+                } else if let Some(name_node) =
+                    import.named_child(import.named_child_count() - 1)
+                {
+                    packages.push(UseClause {
+                        range: node_to_range(import),
+                        library: text[library_node.byte_range()].to_string(),
+                        name: text[package_node.byte_range()].to_string(),
+                        all_import: false,
+                        imported_symbol: Some(text[name_node.byte_range()].to_string()),
+                    });
+                }
+            }
+        }
+    }
+    packages
 }
 
 /// Build scope tree for a package definition

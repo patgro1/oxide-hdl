@@ -4,7 +4,7 @@ use tower_lsp::lsp_types::{
 };
 use tree_sitter::{Node, Point};
 
-use crate::analysis::{Analysis, DeclType, Declaration, ScopeTree};
+use crate::analysis::{Analysis, DeclType, Declaration, ScopeTree, UseClause};
 use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
 use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain};
@@ -1743,8 +1743,15 @@ pub fn complete_scope(
                             items.push(declaration_to_completion(&decl));
                         }
                     }
-                    // Now we add public symbols from include packages
-                    for clause in &current_analysis.use_clauses {
+                    // Build effective use_clauses: top-level + any from innermost scope chain
+                    let mut effective_clauses: Vec<UseClause> =
+                        current_analysis.use_clauses.clone();
+                    let chain = tree.collect_scope_chain(&position);
+                    for scope in &chain {
+                        effective_clauses.extend_from_slice(&scope.use_clauses);
+                    }
+                    // Now we add public symbols from imported packages (scope-chain-aware)
+                    for clause in &effective_clauses {
                         let pkg_name = &clause.name;
                         for (_, analysis) in analysis_map.iter() {
                             if let Some(pkg_scope) = analysis

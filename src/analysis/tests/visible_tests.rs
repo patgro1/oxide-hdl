@@ -20,6 +20,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(0, 10);
@@ -49,6 +50,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let arch = ScopeTree {
@@ -66,6 +68,7 @@ mod collect_visible_tests {
             children: vec![process],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(5, 15);
@@ -96,6 +99,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let generate = ScopeTree {
@@ -113,6 +117,7 @@ mod collect_visible_tests {
             children: vec![process],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let arch = ScopeTree {
@@ -130,6 +135,7 @@ mod collect_visible_tests {
             children: vec![generate],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(10, 20);
@@ -160,6 +166,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(50, 60);
@@ -181,6 +188,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let gen1 = ScopeTree {
@@ -198,6 +206,7 @@ mod collect_visible_tests {
             children: vec![process],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let gen2 = ScopeTree {
@@ -215,6 +224,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let arch = ScopeTree {
@@ -232,6 +242,7 @@ mod collect_visible_tests {
             children: vec![gen1, gen2],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(8, 12);
@@ -258,6 +269,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(0, 10);
@@ -285,6 +297,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let gen1 = ScopeTree {
@@ -302,6 +315,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let gen2 = ScopeTree {
@@ -319,6 +333,7 @@ mod collect_visible_tests {
             children: vec![process],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let gen3 = ScopeTree {
@@ -336,6 +351,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let arch = ScopeTree {
@@ -353,6 +369,7 @@ mod collect_visible_tests {
             children: vec![gen1, gen2, gen3],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(18, 22);
@@ -387,6 +404,7 @@ mod collect_visible_tests {
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let arch = ScopeTree {
@@ -404,6 +422,7 @@ mod collect_visible_tests {
             children: vec![process],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(5, 15);
@@ -564,6 +583,7 @@ end architecture;
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let pkg_body = ScopeTree {
@@ -581,6 +601,7 @@ end architecture;
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(15, 30);
@@ -619,6 +640,7 @@ end architecture;
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let pkg_body = ScopeTree {
@@ -636,6 +658,7 @@ end architecture;
             children: vec![func_scope],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let pkg_header = ScopeTree {
@@ -653,6 +676,7 @@ end architecture;
             children: vec![],
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
+            use_clauses: Vec::new(),
         };
 
         let target = make_line_range(20, 25); // Function range

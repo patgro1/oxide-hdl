@@ -2015,4 +2015,177 @@ end architecture;
             diag_messages(&diags)
         );
     }
+
+    // =========================================================================
+    // use clauses inside generate / block scopes
+    // =========================================================================
+
+    /// Build a two-file analysis map (package + architecture) and run undeclared checks.
+    fn check_undeclared_with_pkg(pkg_code: &str, arch_code: &str) -> Vec<Diagnostic> {
+        let pkg_tree = parse_text(pkg_code);
+        let arch_tree = parse_text(arch_code);
+        let pkg_root = pkg_tree.root_node();
+        let arch_root = arch_tree.root_node();
+
+        let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+        let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+        let pkg_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(pkg_code, pkg_root);
+        let arch_analysis =
+            crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+        let mut analysis_map = crate::backend::AnalysisMap::new();
+        analysis_map.insert(pkg_uri, pkg_analysis);
+        analysis_map.insert(arch_uri.clone(), arch_analysis.clone());
+
+        let mut collectors = crate::backend::features::diagnostics::DiagnosticCollectors::new();
+        let mut lookup_cache = HashMap::new();
+
+        let ctx = super::super::DiagnosticContext {
+            text: arch_code,
+            scope_tree: None,
+            analysis: &arch_analysis,
+            global_map: &analysis_map,
+            current_uri: &arch_uri,
+            ignored_patterns: &[],
+        };
+
+        for scope_tree in &arch_analysis.scope_trees {
+            super::check_undeclared_identifiers(
+                arch_root,
+                &ctx,
+                scope_tree,
+                &mut collectors,
+                &mut lookup_cache,
+            );
+        }
+
+        collectors.undefined
+    }
+
+    #[test]
+    fn test_use_clause_inside_if_generate_resolves_type() {
+        // A type imported via a use clause *inside* a generate should be
+        // resolvable for declarations in that same generate.
+        let pkg_code = r#"
+package mypkg is
+    type my_type is (A, B, C);
+end package;
+"#;
+        let arch_code = r#"
+architecture rtl of dut is
+begin
+    gen: if true generate
+        use work.mypkg.all;
+        signal s : my_type;
+    begin
+        s <= A;
+    end generate;
+end architecture;
+"#;
+        let diags = check_undeclared_with_pkg(pkg_code, arch_code);
+        let my_type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("my_type"))
+            .collect();
+        assert!(
+            my_type_diags.is_empty(),
+            "my_type should resolve via generate-local use clause. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_use_clause_inside_for_generate_resolves_type() {
+        let pkg_code = r#"
+package mypkg is
+    type my_type is (A, B, C);
+end package;
+"#;
+        let arch_code = r#"
+architecture rtl of dut is
+begin
+    gen: for i in 0 to 3 generate
+        use work.mypkg.all;
+        signal s : my_type;
+    begin
+        s <= A;
+    end generate;
+end architecture;
+"#;
+        let diags = check_undeclared_with_pkg(pkg_code, arch_code);
+        let my_type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("my_type"))
+            .collect();
+        assert!(
+            my_type_diags.is_empty(),
+            "my_type should resolve via for-generate-local use clause. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_use_clause_inside_block_resolves_type() {
+        let pkg_code = r#"
+package mypkg is
+    type my_type is (A, B, C);
+end package;
+"#;
+        let arch_code = r#"
+architecture rtl of dut is
+begin
+    blk: block is
+        use work.mypkg.all;
+        signal s : my_type;
+    begin
+        s <= A;
+    end block;
+end architecture;
+"#;
+        let diags = check_undeclared_with_pkg(pkg_code, arch_code);
+        let my_type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("my_type"))
+            .collect();
+        assert!(
+            my_type_diags.is_empty(),
+            "my_type should resolve via block-local use clause. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_generate_use_clause_does_not_flag_inside_generate() {
+        // When the use clause is inside the generate, my_type must resolve there.
+        // (Arch-level isolation is not tested here because the global fallback
+        //  in lookup_symbol finds package exports regardless of use clauses.)
+        let pkg_code = r#"
+package mypkg is
+    type my_type is (A, B, C);
+end package;
+"#;
+        let arch_code = r#"
+architecture rtl of dut is
+begin
+    gen: if true generate
+        use work.mypkg.all;
+        signal s : my_type;
+    begin
+        s <= A;
+    end generate;
+end architecture;
+"#;
+        let diags = check_undeclared_with_pkg(pkg_code, arch_code);
+        let gen_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("my_type"))
+            .collect();
+        assert!(
+            gen_diags.is_empty(),
+            "my_type inside generate should resolve via generate-local use clause. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
 }
