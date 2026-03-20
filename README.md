@@ -36,6 +36,20 @@ A [nightly build](https://github.com/patgro1/oxide-hdl/releases/tag/nightly) is 
 
 ### From Source
 
+> **Note:** Oxide HDL requires Rust with `edition2024` support (Rust 1.85+). The `cargo`/`rustc` packages shipped by most Linux distributions are too old and will produce an error like `feature 'edition2024' is required`. Install Rust via [rustup](https://rustup.rs/) instead:
+>
+> ```bash
+> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+> ```
+>
+> If you previously installed Rust via `apt`, remove it first:
+>
+> ```bash
+> sudo apt remove rustc cargo
+> ```
+>
+> After the installer finishes, restart your shell (or run `source ~/.cargo/env`) so that `~/.cargo/bin` is on your `PATH`.
+
 ```bash
 git clone https://github.com/patgro1/oxide-hdl.git
 cd oxide-hdl
@@ -83,7 +97,7 @@ Install the [LSP](https://packagecontrol.io/packages/LSP) package via Package Co
     "oxide-hdl": {
       "enabled": true,
       "command": ["/path/to/oxide-hdl", "--stdio"],
-      "selector": "source.vhdl",
+      "selector": "source.vhdl | source.vhd",
       "initializationOptions": {}
     }
   }
