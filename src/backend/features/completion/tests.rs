@@ -1197,6 +1197,46 @@ fn complete_in_arch(pkg_code: &str, arch_code: &str, pos: Position) -> Vec<Compl
     complete_scope(&analysis_map, &arch_uri, &ctx, pos, arch_code, arch_root)
 }
 
+/// Helper: three-file analysis map (package + entity + architecture), where entity
+/// and architecture live in separate files. Returns completion items at `pos` in the arch file.
+fn complete_in_arch_cross_file(
+    pkg_code: &str,
+    entity_code: &str,
+    arch_code: &str,
+    pos: Position,
+) -> Vec<CompletionItem> {
+    use crate::backend::AnalysisMap;
+    use crate::backend::test_utils::parse_text;
+    use tower_lsp::lsp_types::Url;
+
+    let pkg_uri = Url::parse("file:///pkg.vhd").unwrap();
+    let entity_uri = Url::parse("file:///entity.vhd").unwrap();
+    let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+
+    let pkg_tree = parse_text(pkg_code);
+    let pkg_analysis =
+        crate::backend::syntax::parser::extract_document_symbols(pkg_code, pkg_tree.root_node());
+
+    let entity_tree = parse_text(entity_code);
+    let entity_analysis = crate::backend::syntax::parser::extract_document_symbols(
+        entity_code,
+        entity_tree.root_node(),
+    );
+
+    let arch_tree = parse_text(arch_code);
+    let arch_root = arch_tree.root_node();
+    let arch_analysis =
+        crate::backend::syntax::parser::extract_document_symbols(arch_code, arch_root);
+
+    let mut analysis_map = AnalysisMap::new();
+    analysis_map.insert(pkg_uri, pkg_analysis);
+    analysis_map.insert(entity_uri, entity_analysis);
+    analysis_map.insert(arch_uri.clone(), arch_analysis);
+
+    let ctx = get_completion_context(arch_code, arch_root, pos);
+    complete_scope(&analysis_map, &arch_uri, &ctx, pos, arch_code, arch_root)
+}
+
 /// Convenience: collect item labels from completions.
 fn labels(items: &[CompletionItem]) -> Vec<&str> {
     items.iter().map(|i| i.label.as_str()).collect()
@@ -1327,6 +1367,130 @@ end architecture;
     assert!(
         names.contains(&"t_state"),
         "Package type t_state should appear in completions. Got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_entity_context_clause_visible_in_same_file_architecture() {
+    // Regression: context clauses (use statements at top of file) that precede an entity
+    // must remain visible in architectures in the same file. Tests the common case.
+    let pkg_code = r#"
+package my_pkg is
+    constant C_MAGIC : integer := 42;
+end package;
+"#;
+    // use clause is the context clause for the entity, at the top of the file.
+    // The architecture in the same file must see C_MAGIC without its own use clause.
+    let arch_code = r#"
+use work.my_pkg.all;
+
+entity my_ent is
+    port (clk : in std_logic);
+end entity;
+
+architecture rtl of my_ent is
+    signal s : integer;
+begin
+end architecture;
+"#;
+    // line 8 = "    signal s : integer;" — inside arch declarative region
+    let pos = Position {
+        line: 8,
+        character: 4,
+    };
+    let items = complete_in_arch(pkg_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"C_MAGIC"),
+        "Symbols from entity file context clause should be visible in same-file architecture. Got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_entity_context_clause_visible_in_cross_file_architecture() {
+    // The entity's file has a context clause (use work.my_pkg.all).
+    // The architecture is in a separate file with no use clause of its own.
+    // The arch must still see my_pkg symbols — the entity's context clause is
+    // inherited by all implementing architectures.
+    let pkg_code = r#"
+package my_pkg is
+    constant C_CROSS : integer := 99;
+end package;
+"#;
+    // entity_code has the use clause at the top — context clause for this design unit.
+    let entity_code = r#"
+use work.my_pkg.all;
+
+entity my_ent is
+    port (clk : in std_logic);
+end entity;
+"#;
+    // arch_code has no use clause — relies on inheriting the entity's context.
+    let arch_code = r#"
+architecture rtl of my_ent is
+    signal s : integer;
+begin
+end architecture;
+"#;
+    // line 2 = "    signal s : integer;" — inside arch declarative region
+    let pos = Position {
+        line: 2,
+        character: 4,
+    };
+    let items = complete_in_arch_cross_file(pkg_code, entity_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"C_CROSS"),
+        "Symbols from entity file context clause should be visible in arch in a separate file. Got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_entity_ports_and_generics_visible_in_arch_cross_file() {
+    // Validates that ports and generics declared in an entity are visible inside
+    // an architecture that lives in a separate file.
+    let entity_code = r#"
+entity my_ent is
+    generic (
+        G_WIDTH : integer := 8
+    );
+    port (
+        clk  : in std_logic;
+        data : out std_logic
+    );
+end entity;
+"#;
+    // Architecture in its own file — no redeclaration of ports/generics.
+    let arch_code = r#"
+architecture rtl of my_ent is
+begin
+    process(clk) is
+    begin
+    end process;
+end architecture;
+"#;
+    // Cursor inside the process body where ports/generics should be in scope.
+    // line 4 = "    begin"  (inside process)
+    let pos = Position {
+        line: 4,
+        character: 4,
+    };
+    let items = complete_in_arch_cross_file("", entity_code, arch_code, pos);
+    let names = labels(&items);
+
+    assert!(
+        names.contains(&"clk"),
+        "Entity port 'clk' should be visible inside arch body when entity is in a separate file. Got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"G_WIDTH"),
+        "Entity generic 'G_WIDTH' should be visible inside arch body when entity is in a separate file. Got: {:?}",
         names
     );
 }

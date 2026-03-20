@@ -1651,11 +1651,21 @@ pub fn complete_scope(
                 // We need to check local scope because of direct instantiation
                 if let Some(tree) = local_scope_tree {
                     let innermost = tree.find_innermost_scope(&position);
-                    // Resolve implicit context (Entity or Package head)
+                    // Resolve implicit context (Entity or Package head).
+                    // Check current file first, then fall back to analysis_map for cross-file.
                     let header = tree
                         .entity
                         .as_ref()
-                        .and_then(|n| current_analysis.entity_scope_trees.get(n))
+                        .and_then(|n| {
+                            current_analysis
+                                .entity_scope_trees
+                                .get(n)
+                                .or_else(|| {
+                                    analysis_map
+                                        .values()
+                                        .find_map(|a| a.entity_scope_trees.get(n))
+                                })
+                        })
                         .or_else(|| {
                             tree.package.as_ref().and_then(|n| {
                                 current_analysis
@@ -1723,10 +1733,21 @@ pub fn complete_scope(
             _ => {
                 if let Some(tree) = local_scope_tree {
                     let innermost = tree.find_innermost_scope(&position);
+                    // Resolve entity/package header — check current file first, then
+                    // fall back to analysis_map so cross-file entity+arch works.
                     let header = tree
                         .entity
                         .as_ref()
-                        .and_then(|n| current_analysis.entity_scope_trees.get(n))
+                        .and_then(|n| {
+                            current_analysis
+                                .entity_scope_trees
+                                .get(n)
+                                .or_else(|| {
+                                    analysis_map
+                                        .values()
+                                        .find_map(|a| a.entity_scope_trees.get(n))
+                                })
+                        })
                         .or_else(|| {
                             tree.package.as_ref().and_then(|n| {
                                 current_analysis
@@ -1743,9 +1764,40 @@ pub fn complete_scope(
                             items.push(declaration_to_completion(&decl));
                         }
                     }
-                    // Build effective use_clauses: top-level + any from innermost scope chain
+                    // Build effective use_clauses:
+                    //   1. Context clauses for this specific design unit (not the whole file)
+                    //   2. Entity's context clauses when arch and entity are in separate files
+                    //      (Rule 3: entity context is inherited by all implementing architectures)
+                    //   3. Inner-scope use clauses from the scope chain (generate, block, etc.)
                     let mut effective_clauses: Vec<UseClause> =
-                        current_analysis.use_clauses.clone();
+                        current_analysis.context_clauses_for(tree).to_vec();
+                    if let Some(entity_name) = &tree.entity {
+                        let entity_key = entity_name.to_lowercase();
+                        // Same-file (90% case): entity's context clauses are already correct
+                        // via context_clauses_for on the entity's design unit — but we need
+                        // to look them up from the entity's own design unit, not the arch's.
+                        if let Some(entity_tree) =
+                            current_analysis.entity_scope_trees.get(&entity_key)
+                        {
+                            effective_clauses.extend_from_slice(
+                                current_analysis.context_clauses_for(entity_tree),
+                            );
+                        } else {
+                            // Cross-file: find the entity's analysis and inherit its context.
+                            for (other_uri, other_analysis) in analysis_map.iter() {
+                                if other_uri != current_uri {
+                                    if let Some(entity_tree) =
+                                        other_analysis.entity_scope_trees.get(&entity_key)
+                                    {
+                                        effective_clauses.extend_from_slice(
+                                            other_analysis.context_clauses_for(entity_tree),
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let chain = tree.collect_scope_chain(&position);
                     for scope in &chain {
                         effective_clauses.extend_from_slice(&scope.use_clauses);

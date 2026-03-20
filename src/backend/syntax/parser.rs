@@ -1,7 +1,7 @@
 // src/backend/syntax/parser.rs
 
 use crate::analysis::{
-    Analysis, ParseLevel, build_arch_scope_tree, build_entity_scope_tree,
+    Analysis, DesignUnit, ParseLevel, UseClause, build_arch_scope_tree, build_entity_scope_tree,
     build_package_body_scope_tree, build_package_scope_tree, extract_use_clauses_from_node,
 };
 use tree_sitter::Node;
@@ -27,44 +27,67 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
     let mut analysis = Analysis::new();
     analysis.parse_level = ParseLevel::Deep;
 
+    // Per the tree-sitter VHDL grammar, use_clause nodes live in their own
+    // `design_unit` node (separate from the library unit's `design_unit`).
+    // We therefore accumulate pending context clauses ACROSS design_unit nodes
+    // and flush them when we encounter a library unit.
+    let mut pending_context: Vec<UseClause> = Vec::new();
     let mut cursor = root_node.walk();
     for node in root_node.children(&mut cursor) {
-        if node.kind() == "design_unit" {
-            for child in node.children(&mut node.walk()) {
-                if child.kind() == "use_clause" {
-                    analysis
-                        .use_clauses
-                        .extend(extract_use_clauses_from_node(child, text));
-                }
-                if child.kind() == "entity_declaration" {
-                    let scope_tree = build_entity_scope_tree(child, text);
-                    if let Some(ref name) = scope_tree.name {
-                        analysis
-                            .entity_scope_trees
-                            .insert(name.to_lowercase(), scope_tree);
-                    }
-                }
-                if child.kind() == "architecture_definition" {
-                    let scope_tree = build_arch_scope_tree(child, text);
-                    analysis.scope_trees.push(scope_tree);
-                }
-                if child.kind() == "package_declaration" {
-                    let scope_tree = build_package_scope_tree(child, text);
-                    if let Some(ref name) = scope_tree.name {
-                        analysis
-                            .package_declaration_scope_trees
-                            .insert(name.to_lowercase(), scope_tree);
-                    }
-                }
-                if child.kind() == "package_definition" {
-                    let scope_tree = build_package_body_scope_tree(child, text);
-                    if let Some(ref name) = scope_tree.name {
-                        analysis
-                            .package_body_scope_trees
-                            .insert(name.to_lowercase(), scope_tree);
-                    }
-                }
+        if node.kind() != "design_unit" {
+            continue;
+        }
+
+        // Accumulate use_clauses from this design_unit node into pending_context.
+        for child in node.children(&mut node.walk()) {
+            if child.kind() == "use_clause" {
+                let clauses = extract_use_clauses_from_node(child, text);
+                // Keep a flat union in analysis.use_clauses for JIT package loading.
+                analysis.use_clauses.extend(clauses.clone());
+                pending_context.extend(clauses);
             }
+        }
+
+        // Find a library unit in this design_unit node. If found, flush
+        // pending_context (all context clauses accumulated since the last
+        // library unit) into this DesignUnit.
+        for child in node.children(&mut node.walk()) {
+            let scope_tree = if child.kind() == "entity_declaration" {
+                let scope_tree = build_entity_scope_tree(child, text);
+                if let Some(ref name) = scope_tree.name {
+                    analysis
+                        .entity_scope_trees
+                        .insert(name.to_lowercase(), scope_tree.clone());
+                }
+                scope_tree
+            } else if child.kind() == "architecture_definition" {
+                let scope_tree = build_arch_scope_tree(child, text);
+                analysis.scope_trees.push(scope_tree.clone());
+                scope_tree
+            } else if child.kind() == "package_declaration" {
+                let scope_tree = build_package_scope_tree(child, text);
+                if let Some(ref name) = scope_tree.name {
+                    analysis
+                        .package_declaration_scope_trees
+                        .insert(name.to_lowercase(), scope_tree.clone());
+                }
+                scope_tree
+            } else if child.kind() == "package_definition" {
+                let scope_tree = build_package_body_scope_tree(child, text);
+                if let Some(ref name) = scope_tree.name {
+                    analysis
+                        .package_body_scope_trees
+                        .insert(name.to_lowercase(), scope_tree.clone());
+                }
+                scope_tree
+            } else {
+                continue;
+            };
+
+            analysis.design_units.push(DesignUnit {
+                context_clauses: pending_context.drain(..).collect(),
+                scope_tree,
+            });
         }
     }
     analysis

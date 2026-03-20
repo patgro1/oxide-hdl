@@ -79,10 +79,36 @@ pub fn lookup_symbol(
     let analysis = analysis_map.get(current_uri);
 
     if let Some(analysis) = analysis {
-        let mut effective_clauses: Vec<UseClause> = analysis.use_clauses.clone();
+        // Effective clauses built inside the root_scope block but needed afterward too.
+        let mut effective_clauses: Vec<UseClause> = Vec::new();
 
         // 1. Local lookup
         if let Some(root_scope) = analysis.find_scope_tree_at(pos) {
+            // Start from this design unit's own context clauses (Rule 1: per-unit, no leakage).
+            effective_clauses = analysis.context_clauses_for(root_scope).to_vec();
+
+            // Rule 3: inherit entity's context clauses in all implementing architectures.
+            if let Some(entity_name) = &root_scope.entity {
+                let entity_key = entity_name.to_lowercase();
+                if let Some(entity_tree) = analysis.entity_scope_trees.get(&entity_key) {
+                    effective_clauses
+                        .extend_from_slice(analysis.context_clauses_for(entity_tree));
+                } else {
+                    for (other_uri, other_analysis) in analysis_map.iter() {
+                        if other_uri != current_uri {
+                            if let Some(entity_tree) =
+                                other_analysis.entity_scope_trees.get(&entity_key)
+                            {
+                                effective_clauses.extend_from_slice(
+                                    other_analysis.context_clauses_for(entity_tree),
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             let innermost = root_scope.find_innermost_scope(pos);
             let header_scope = root_scope
                 .entity
@@ -108,7 +134,7 @@ pub fn lookup_symbol(
                 }
             }
             let chain = root_scope.collect_scope_chain(pos);
-            // Augment effective clauses with use_clauses from innermost-scope chain
+            // Augment with inner-scope use clauses (generate, block, process).
             for scope in &chain {
                 effective_clauses.extend_from_slice(&scope.use_clauses);
             }
@@ -359,10 +385,21 @@ fn resolve_global_toplevel_symbols(
             });
         }
 
-        // Broad search for subprograms inside packages (Deep Parse fallback)
+        // Broad search for subprograms inside packages (Deep Parse fallback).
+        // Restricted to functions/procedures only — types, signals, and other
+        // declarations require an explicit use clause and must NOT be resolved here.
+        let is_subprogram = |decl: &Declaration| {
+            matches!(
+                decl.decl_type,
+                DeclType::Function
+                    | DeclType::Procedure
+                    | DeclType::FunctionDeclaration
+                    | DeclType::ProcedureDeclaration
+            )
+        };
         for scope in analysis.package_declaration_scope_trees.values() {
             for decl in &scope.declarations {
-                if decl.name.eq_ignore_ascii_case(target) {
+                if decl.name.eq_ignore_ascii_case(target) && is_subprogram(decl) {
                     results.push(LookupResult {
                         item: ResolvedItem::Declaration(decl.clone()),
                         source_uri: uri.clone(),
@@ -372,7 +409,7 @@ fn resolve_global_toplevel_symbols(
         }
         for scope in analysis.package_body_scope_trees.values() {
             for decl in &scope.declarations {
-                if decl.name.eq_ignore_ascii_case(target) {
+                if decl.name.eq_ignore_ascii_case(target) && is_subprogram(decl) {
                     results.push(LookupResult {
                         item: ResolvedItem::Declaration(decl.clone()),
                         source_uri: uri.clone(),

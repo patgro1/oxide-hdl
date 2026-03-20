@@ -40,7 +40,14 @@ pub struct Analysis {
     /// preserves the original display name.
     pub symbols: HashMap<String, Symbol>,
 
-    /// List of all the use clause found in the file
+    /// All design units in file order, each paired with its own context clause.
+    /// This is the authoritative per-unit view; `use_clauses` below is kept as
+    /// a flat union for JIT package loading only.
+    pub design_units: Vec<DesignUnit>,
+
+    /// Flat union of all context clauses in the file — used only for JIT package
+    /// loading in workspace.rs. Do NOT use this for symbol resolution; use
+    /// `design_units[i].context_clauses` for the correct per-unit scope.
     pub use_clauses: Vec<UseClause>,
 
     /// How the file was parsed
@@ -72,12 +79,26 @@ impl Analysis {
         Self {
             symbols: HashMap::new(),
             parse_level: ParseLevel::Shallow,
+            design_units: Vec::new(),
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),
             package_declaration_scope_trees: HashMap::new(),
             package_body_scope_trees: HashMap::new(),
             use_clauses: vec![implicit_standard],
         }
+    }
+
+    /// Returns the context clauses that apply to the design unit containing `scope_tree`.
+    ///
+    /// Searches `design_units` for an entry whose scope tree covers the same range.
+    /// Falls back to an empty slice when not found (inner scopes like process/generate
+    /// are not top-level design units and carry no context clause of their own).
+    pub fn context_clauses_for(&self, scope_tree: &ScopeTree) -> &[UseClause] {
+        self.design_units
+            .iter()
+            .find(|du| du.scope_tree.range == scope_tree.range)
+            .map(|du| du.context_clauses.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Gives the list of visible declaration from a node.

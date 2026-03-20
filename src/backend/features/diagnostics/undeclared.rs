@@ -2017,6 +2017,95 @@ end architecture;
     }
 
     // =========================================================================
+    // Rule 1 — context clauses are per design unit
+    // =========================================================================
+
+    #[test]
+    fn test_context_clause_applies_only_to_immediately_following_design_unit() {
+        // Rule 1 (valid): each design unit has its own context clause.
+        // pkg1 symbols visible in ent1/arch1; pkg2 symbols visible in ent2/arch2.
+        // Neither leaks into the other's scope.
+        let pkg_code = r#"
+package pkg1 is
+    type t_pkg1 is (A1, B1);
+end package;
+
+package pkg2 is
+    type t_pkg2 is (A2, B2);
+end package;
+"#;
+        let design_units_code = r#"
+use work.pkg1.all;
+
+entity ent1 is port (dummy : bit); end entity;
+
+architecture rtl of ent1 is
+    signal s : t_pkg1;
+begin
+end architecture;
+
+use work.pkg2.all;
+
+entity ent2 is port (dummy : bit); end entity;
+
+architecture rtl of ent2 is
+    signal s : t_pkg2;
+begin
+end architecture;
+"#;
+        let diags = check_undeclared_with_pkg(pkg_code, design_units_code);
+        let canary_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.message.to_lowercase().contains("t_pkg1")
+                    || d.message.to_lowercase().contains("t_pkg2")
+            })
+            .collect();
+        assert!(
+            canary_diags.is_empty(),
+            "Each design unit should resolve its own use clause. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_context_clause_does_not_leak_to_subsequent_design_unit() {
+        // Rule 1 (invalid): the use clause before ent1 must NOT be visible in ent2's
+        // architecture. t_pkg1 used in arch2 should be flagged as undeclared.
+        let pkg_code = r#"
+package pkg1 is
+    type t_pkg1 is (A1, B1);
+end package;
+"#;
+        let design_units_code = r#"
+use work.pkg1.all;
+
+entity ent1 is port (dummy : bit); end entity;
+
+architecture rtl of ent1 is
+begin
+end architecture;
+
+-- No use clause here — t_pkg1 must NOT be visible below.
+entity ent2 is port (dummy : bit); end entity;
+
+architecture rtl of ent2 is
+    signal s : t_pkg1;  -- Rule 1 violation: context clause did not apply to this unit
+begin
+end architecture;
+"#;
+        let diags = check_undeclared_with_pkg(pkg_code, design_units_code);
+        let leakage_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("t_pkg1"))
+            .collect();
+        assert!(
+            !leakage_diags.is_empty(),
+            "t_pkg1 should be undeclared in ent2's arch — context clause must not leak. Got no diagnostic."
+        );
+    }
+
+    // =========================================================================
     // use clauses inside generate / block scopes
     // =========================================================================
 

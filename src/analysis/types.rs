@@ -453,3 +453,22 @@ pub struct UseClause {
     /// Symbol imported from the package (if not all)
     pub imported_symbol: Option<String>,
 }
+
+/// A VHDL design unit: a context clause paired with the library unit it governs.
+///
+/// In VHDL, every design unit in a file is preceded by an optional context clause
+/// (library/use statements). Those clauses apply *only* to the immediately following
+/// library unit — they do not leak to subsequent design units in the same file.
+///
+/// This struct captures that pairing so that lookup and completion can use exactly
+/// the right context for each unit, rather than a file-wide flat list.
+#[derive(Debug, Clone)]
+pub struct DesignUnit {
+    /// Context clauses (use/library) that immediately precede this design unit.
+    /// Visible within this unit and, for entities, inherited by all implementing
+    /// architectures regardless of file location.
+    pub context_clauses: Vec<UseClause>,
+
+    /// The scope tree for this design unit (entity, architecture, package, or package body).
+    pub scope_tree: crate::analysis::ScopeTree,
+}
