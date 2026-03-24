@@ -217,9 +217,9 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
                     "process_statement" => tree
                         .children
                         .push(build_process_scope_tree(inner_child, text)),
-                    "if_generate_statement" => tree
-                        .children
-                        .push(build_if_generate_scope_tree(inner_child, text)),
+                    "if_generate_statement" => {
+                        build_if_generate_scope_tree(inner_child, text, &mut tree)
+                    }
                     "for_generate_statement" => tree
                         .children
                         .push(build_for_generate_scope_tree(inner_child, text)),
@@ -395,119 +395,209 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
     tree
 }
 
-/// Builds a scope tree for an if-generate statement.
+/// Populates a `Generate` scope tree from a `generate_body` node.
 ///
-/// If-generates can declare signals and constants, and can contain
-/// nested processes, generates, and blocks.
+/// Handles both grammar forms:
+/// - `generate [generate_block]`                       (no declarative region)
+/// - `generate [generate_head] begin [generate_block]` (with declarative region)
 ///
-/// # Arguments
-///
-/// * `generate_node` - Tree-sitter node of type `if_generate_statement`
-/// * `text` - Full source text
-///
-/// # Returns
-///
-/// Scope tree node representing the generate block
-pub fn build_if_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTree {
-    let mut tree = ScopeTree::new(ScopeKind::Generate, &generate_node);
-
-    if let Some(label_decl) = find_child(generate_node, "label_declaration")
-        && let Some(label) = find_child(label_decl, "label")
-    {
-        let name = text[label.byte_range()].to_string();
-        tree.name = Some(name);
+/// Declarations, use_clauses, instantiations, child scopes, and identifier
+/// usages are all added directly to `tree`. Since each branch scope is freshly
+/// created before this is called, assignment (`=`) is used for declarations.
+fn process_generate_body(body_node: Node, text: &str, tree: &mut ScopeTree) {
+    if let Some(head_node) = find_child(body_node, "generate_head") {
+        tree.declarations = extract_declaration_from_node(
+            head_node,
+            text,
+            RegionType::Concurrent,
+            &mut tree.local_usage,
+        );
+        for child in head_node.children(&mut head_node.walk()) {
+            if child.kind() == "use_clause" {
+                tree.use_clauses
+                    .extend(extract_use_clauses_from_node(child, text));
+            }
+        }
+        for subprogram_node in collect_children(head_node, "subprogram_definition") {
+            tree.children
+                .push(build_subprogram_scope_tree(subprogram_node, text));
+        }
     }
-
-    // Find the generate_body nested inside if_generate
-    let mut body_node: Option<Node> = None;
-    let if_generate_node = generate_node
-        .children(&mut generate_node.walk())
-        .find(|c| c.kind() == "if_generate");
-    if let Some(if_generate_node) = if_generate_node {
-        // Find everything that was used in the if statement
-        for inner in if_generate_node.children(&mut if_generate_node.walk()) {
-            if inner.kind() == "generate_body" {
-                body_node = Some(inner);
-            } else {
-                collect_identifiers_recursive(
-                    inner,
+    if let Some(block_node) = find_child(body_node, "generate_block") {
+        for child in block_node.children(&mut block_node.walk()) {
+            match child.kind() {
+                "process_statement" => {
+                    tree.children.push(build_process_scope_tree(child, text))
+                }
+                "if_generate_statement" => {
+                    build_if_generate_scope_tree(child, text, tree)
+                }
+                "for_generate_statement" => tree
+                    .children
+                    .push(build_for_generate_scope_tree(child, text)),
+                "block_statement" => tree.children.push(build_block_scope_tree(child, text)),
+                "component_instantiation_statement" => {
+                    tree.instantiations
+                        .push(create_instance_from_node(child, text));
+                    if let Some(generic_aspect) = find_child(child, "generic_map_aspect") {
+                        crate::analysis::collect_identifiers_from_map_aspect(
+                            generic_aspect,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        );
+                    }
+                    if let Some(port_aspect) = find_child(child, "port_map_aspect") {
+                        crate::analysis::collect_identifiers_from_map_aspect(
+                            port_aspect,
+                            text,
+                            UsageContext::Behavioral,
+                            &mut tree.local_usage,
+                        );
+                    }
+                }
+                "subprogram_definition" => {
+                    tree.children.push(build_subprogram_scope_tree(child, text))
+                }
+                _ => collect_identifiers_recursive(
+                    child,
                     text,
                     UsageContext::Behavioral,
                     &mut tree.local_usage,
+                ),
+            }
+        }
+    }
+}
+
+/// Recursively walks an `if_generate`, `elsif_generate`, or `else_generate`
+/// node, creating one `Generate` scope per `generate_body` and pushing each
+/// as a sibling child of `parent`.
+///
+/// Called by [`build_if_generate_scope_tree`]. See that function's doc for the
+/// full explanation of why this is recursive (grammar "Russian doll" nesting)
+/// and what to change if the grammar is ever fixed to use flat siblings.
+///
+/// Condition expressions (the `cond1` in `if cond1 generate`, etc.) are not
+/// inside any `generate_body` — they fall through to `collect_identifiers_recursive`
+/// and are recorded as usages in `parent` (the enclosing architecture or generate
+/// scope), which is correct because they reference generics/constants declared there.
+///
+/// # Arguments
+/// * `node` — an `if_generate`, `elsif_generate`, or `else_generate` tree-sitter node
+/// * `parent` — the enclosing scope; branch scopes are pushed as its children
+/// * `label` — the `if_generate_statement` label; applied to the first branch only
+/// * `is_first` — mutable flag tracking whether the label has been assigned yet;
+///   set to `false` after the first `generate_body` is processed
+fn build_if_generate_branches<'a>(
+    node: Node<'a>,
+    text: &str,
+    parent: &mut ScopeTree,
+    label: Option<&str>,
+    is_first: &mut bool,
+) {
+    for child in node.children(&mut node.walk()) {
+        match child.kind() {
+            "generate_body" => {
+                let mut scope = ScopeTree::new(ScopeKind::Generate, &child);
+                if *is_first {
+                    scope.name = label.map(|s| s.to_string());
+                    *is_first = false;
+                }
+                process_generate_body(child, text, &mut scope);
+                scope.rebuild_index();
+                parent.children.push(scope);
+            }
+            "elsif_generate" | "else_generate" => {
+                build_if_generate_branches(child, text, parent, label, is_first);
+            }
+            _ => {
+                // Condition expressions and keywords — usages belong to the enclosing scope
+                collect_identifiers_recursive(
+                    child,
+                    text,
+                    UsageContext::Behavioral,
+                    &mut parent.local_usage,
                 );
             }
         }
     }
+}
 
-    if let Some(body_node) = body_node {
-        if let Some(head_node) = find_child(body_node, "generate_head") {
-            tree.declarations = extract_declaration_from_node(
-                head_node,
-                text,
-                RegionType::Concurrent,
-                &mut tree.local_usage,
-            );
-            // Collect use_clauses declared in the generate declarative region
-            for child in head_node.children(&mut head_node.walk()) {
-                if child.kind() == "use_clause" {
-                    tree.use_clauses
-                        .extend(extract_use_clauses_from_node(child, text));
-                }
-            }
-            // Special case here for subprogram_declaration (implementation)
-            for subprogram_node in collect_children(head_node, "subprogram_definition") {
-                tree.children
-                    .push(build_subprogram_scope_tree(subprogram_node, text));
-            }
-        }
-        if let Some(block_node) = find_child(body_node, "generate_block") {
-            for child in block_node.children(&mut block_node.walk()) {
-                match child.kind() {
-                    "process_statement" => {
-                        tree.children.push(build_process_scope_tree(child, text))
-                    }
-                    "if_generate_statement" => tree
-                        .children
-                        .push(build_if_generate_scope_tree(child, text)),
-                    "for_generate_statement" => tree
-                        .children
-                        .push(build_for_generate_scope_tree(child, text)),
-                    "block_statement" => tree.children.push(build_block_scope_tree(child, text)),
-                    "component_instantiation_statement" => {
-                        tree.instantiations
-                            .push(create_instance_from_node(child, text));
-                        if let Some(generic_aspect) = find_child(child, "generic_map_aspect") {
-                            crate::analysis::collect_identifiers_from_map_aspect(
-                                generic_aspect,
-                                text,
-                                UsageContext::Behavioral,
-                                &mut tree.local_usage,
-                            );
-                        }
-                        if let Some(port_aspect) = find_child(child, "port_map_aspect") {
-                            crate::analysis::collect_identifiers_from_map_aspect(
-                                port_aspect,
-                                text,
-                                UsageContext::Behavioral,
-                                &mut tree.local_usage,
-                            );
-                        }
-                    }
-                    "subprogram_definition" => {
-                        tree.children.push(build_subprogram_scope_tree(child, text))
-                    }
-                    _ => collect_identifiers_recursive(
-                        child,
-                        text,
-                        UsageContext::Behavioral,
-                        &mut tree.local_usage,
-                    ),
-                }
-            }
-        }
+/// Builds `Generate` scope trees for an if-generate statement, pushing one
+/// sibling scope per branch directly into `parent`.
+///
+/// # Why `parent: &mut ScopeTree` instead of returning a single `ScopeTree`
+///
+/// A VHDL if-generate statement can have multiple branches (`if`, `elsif`,
+/// `else`), each with its own independent declarative region. A signal declared
+/// in the if-branch is **not** visible in the else-branch and vice-versa.
+/// Merging all branches into a single scope would make every signal visible
+/// everywhere inside the generate statement, producing false positives in
+/// undeclared-identifier diagnostics and incorrect completions.
+///
+/// Each branch therefore gets its own `Generate` scope, scoped precisely to
+/// its `generate_body` byte range. Because a single `if_generate_statement`
+/// maps to N scopes (one per branch), returning a single `ScopeTree` is not
+/// possible — instead we push directly into `parent`.
+///
+/// # Grammar note — "Russian doll" nesting (tree-sitter-vhdl)
+///
+/// As of the current tree-sitter-vhdl grammar, alternate branches are **not**
+/// flat siblings of the if-branch inside `if_generate_statement`. They are
+/// nested recursively:
+///
+/// ```text
+/// if_generate_statement
+///   if_generate
+///     generate_body          ← if-branch
+///     elsif_generate         ← child of if_generate
+///       generate_body        ← elsif-branch
+///       else_generate        ← child of elsif_generate (the inner doll)
+///         generate_body      ← else-branch
+/// ```
+///
+/// `_elsif_else_generate` (the hidden rule that produces `elsif_generate` or
+/// `else_generate`) is an optional tail of both `if_generate` and
+/// `elsif_generate`, so a plain `if/else` (no elsif) looks like:
+///
+/// ```text
+/// if_generate
+///   generate_body
+///   else_generate            ← direct child, no elsif wrapper
+///     generate_body
+/// ```
+///
+/// This nesting is arguably a grammar bug — conceptually all branches are
+/// siblings. If it is ever fixed and the grammar produces flat siblings instead,
+/// [`build_if_generate_branches`] is the only place that needs to change: the
+/// `"elsif_generate" | "else_generate"` recurse arm would become unnecessary
+/// and the `"generate_body"` arm alone would suffice.
+///
+/// # Label assignment
+///
+/// The `if_generate_statement` label (e.g. `gen_cond :`) belongs conceptually
+/// to the whole statement, but is attached only to the **first** (if) branch
+/// scope so that symbol-table lookups return exactly one result.
+pub fn build_if_generate_scope_tree(generate_node: Node, text: &str, parent: &mut ScopeTree) {
+    let label = find_child(generate_node, "label_declaration")
+        .and_then(|ld| find_child(ld, "label"))
+        .map(|l| text[l.byte_range()].to_string());
+
+    let if_generate_node = generate_node
+        .children(&mut generate_node.walk())
+        .find(|c| c.kind() == "if_generate");
+
+    if let Some(if_generate_node) = if_generate_node {
+        let mut is_first = true;
+        build_if_generate_branches(
+            if_generate_node,
+            text,
+            parent,
+            label.as_deref(),
+            &mut is_first,
+        );
     }
-    tree.rebuild_index();
-    tree
 }
 
 /// Builds a scope tree for a for-generate statement.
@@ -589,9 +679,9 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                     "process_statement" => {
                         tree.children.push(build_process_scope_tree(child, text))
                     }
-                    "if_generate_statement" => tree
-                        .children
-                        .push(build_if_generate_scope_tree(child, text)),
+                    "if_generate_statement" => {
+                        build_if_generate_scope_tree(child, text, &mut tree)
+                    }
                     "for_generate_statement" => tree
                         .children
                         .push(build_for_generate_scope_tree(child, text)),
@@ -685,9 +775,9 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
                 "process_statement" => tree
                     .children
                     .push(build_process_scope_tree(inner_child, text)),
-                "if_generate_statement" => tree
-                    .children
-                    .push(build_if_generate_scope_tree(inner_child, text)),
+                "if_generate_statement" => {
+                    build_if_generate_scope_tree(inner_child, text, &mut tree)
+                }
                 "for_generate_statement" => tree
                     .children
                     .push(build_for_generate_scope_tree(inner_child, text)),

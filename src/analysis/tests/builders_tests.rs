@@ -683,6 +683,140 @@ end architecture;
 }
 
 // =========================================================================
+// If-generate branch signal tests
+// =========================================================================
+
+#[test]
+fn test_if_generate_else_branch_signal() {
+    let code = r#"
+architecture rtl of test is
+begin
+    g_label1 : if true generate
+        signal signal1 : std_logic;
+    begin
+        signal1 <= '0';
+    else generate
+        signal signal2 : std_logic;
+    begin
+        signal2 <= '1';
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let arch_scope = &analysis.scope_trees[0];
+    // Two sibling Generate scopes — one per branch
+    assert_eq!(arch_scope.children.len(), 2, "expected one scope per branch");
+    assert!(
+        arch_scope.children[0].get_declaration("signal1").is_some(),
+        "signal1 should be in if-branch scope"
+    );
+    assert!(
+        arch_scope.children[1].get_declaration("signal2").is_some(),
+        "signal2 should be in else-branch scope"
+    );
+    // Signals must not leak across branches
+    assert!(
+        arch_scope.children[0].get_declaration("signal2").is_none(),
+        "signal2 must not appear in if-branch scope"
+    );
+    assert!(
+        arch_scope.children[1].get_declaration("signal1").is_none(),
+        "signal1 must not appear in else-branch scope"
+    );
+}
+
+#[test]
+fn test_if_generate_elsif_else_branch_signals() {
+    // Russian-doll nesting: elsif_generate contains else_generate as a child;
+    // signal3 (else) is two levels deep — if_generate > elsif_generate > else_generate
+    let code = r#"
+architecture rtl of test is
+begin
+    g_label1 : if true generate
+        signal signal1 : std_logic;
+    begin
+        signal1 <= '0';
+    elsif false generate
+        signal signal2 : std_logic;
+    begin
+        signal2 <= '1';
+    else generate
+        signal signal3 : std_logic;
+    begin
+        signal3 <= '0';
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let arch_scope = &analysis.scope_trees[0];
+    // Three sibling Generate scopes — if / elsif / else
+    assert_eq!(arch_scope.children.len(), 3, "expected one scope per branch");
+    assert!(arch_scope.children[0].get_declaration("signal1").is_some(), "if-branch");
+    assert!(arch_scope.children[1].get_declaration("signal2").is_some(), "elsif-branch");
+    assert!(arch_scope.children[2].get_declaration("signal3").is_some(), "else-branch");
+}
+
+#[test]
+fn test_if_generate_elsif_no_else() {
+    let code = r#"
+architecture rtl of test is
+begin
+    g_label1 : if true generate
+        signal signal1 : std_logic;
+    begin
+        signal1 <= '0';
+    elsif false generate
+        signal signal2 : std_logic;
+    begin
+        signal2 <= '1';
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let arch_scope = &analysis.scope_trees[0];
+    assert_eq!(arch_scope.children.len(), 2, "expected one scope per branch");
+    assert!(arch_scope.children[0].get_declaration("signal1").is_some());
+    assert!(arch_scope.children[1].get_declaration("signal2").is_some());
+}
+
+#[test]
+fn test_if_generate_else_no_declarative_region() {
+    // else branch with no generate_head — just a concurrent statement
+    let code = r#"
+architecture rtl of test is
+    signal arch_sig : std_logic;
+begin
+    g_label1 : if true generate
+        signal signal1 : std_logic;
+    begin
+        signal1 <= '0';
+    else generate
+    begin
+        arch_sig <= '1';
+    end generate;
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let arch_scope = &analysis.scope_trees[0];
+    assert_eq!(arch_scope.children.len(), 2, "expected one scope per branch");
+    // if-branch still has its signal; else-branch exists but has no declarations
+    assert!(arch_scope.children[0].get_declaration("signal1").is_some());
+    assert!(arch_scope.children[1].declarations.is_empty());
+}
+
+// =========================================================================
 // Instantiation extraction tests
 // =========================================================================
 
@@ -1700,3 +1834,4 @@ end architecture;
         }
     }
 }
+
