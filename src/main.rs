@@ -34,7 +34,7 @@ use crate::backend::Backend;
 #[command(name = "oxide-hdl", about = "VHDL Language Server")]
 struct Cli {
     /// Record a Chrome-format performance trace to /tmp/oxide_trace.json.
-    /// Open the file in chrome://tracing or https://ui.perfetto.dev after
+    /// Open the file in chrome://tracing or <https://ui.perfetto.dev> after
     /// the server exits to analyse where time is being spent.
     #[arg(long)]
     record_trace: bool,
