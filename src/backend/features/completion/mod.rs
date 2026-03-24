@@ -1305,7 +1305,7 @@ pub fn create_block_snippet() -> CompletionItem {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// // Entity with generics and ports:
 /// // uart_tx
 /// //     generic map (
@@ -1397,7 +1397,7 @@ pub fn generate_instantiation_snippet(name: &str, scope_tree: &ScopeTree) -> Str
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// // Component declaration with generics and ports in parameters:
 /// // uart_tx
 /// //     generic map (

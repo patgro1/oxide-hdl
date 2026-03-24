@@ -303,7 +303,7 @@ fn build_sensitivity_spec(range: Range, signals: &[String]) -> TextEdit {
 ///
 /// # Examples
 ///
-/// ```
+/// ```text
 /// // col = 7, signals fit on one line:
 /// // "(clk, rst)"
 ///
