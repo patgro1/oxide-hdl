@@ -96,7 +96,7 @@ Install the [LSP](https://packagecontrol.io/packages/LSP) package via Package Co
   "clients": {
     "oxide-hdl": {
       "enabled": true,
-      "command": ["/path/to/oxide-hdl", "--stdio"],
+      "command": ["/path/to/oxide-hdl"],
       "selector": "source.vhdl | source.vhd",
       "initializationOptions": {}
     }
@@ -106,7 +106,7 @@ Install the [LSP](https://packagecontrol.io/packages/LSP) package via Package Co
 
 You will also need a VHDL syntax definition. [VHDL](https://packagecontrol.io/packages/VHDL) from Package Control works well and provides the `source.vhdl` scope.
 
-Any editor with standard LSP client support should work with the oxide-hdl binary and `--stdio` transport.
+Any editor with standard LSP client support should work with the oxide-hdl binary.
 
 ## Features
 
