@@ -337,3 +337,58 @@ impl ScopeTree {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_scope(attr_name: &str, entity_names: &[&str]) -> ScopeTree {
+        let mut attr_specs = HashMap::new();
+        let names: HashSet<String> = entity_names.iter().map(|s| s.to_string()).collect();
+        attr_specs.insert(attr_name.to_lowercase(), names);
+        ScopeTree {
+            kind: ScopeKind::Architecture,
+            range: Range::default(),
+            name: None,
+            entity: None,
+            package: None,
+            declarations: vec![],
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+            instantiations: vec![],
+            use_clauses: vec![],
+            attr_specs,
+        }
+    }
+
+    #[test]
+    fn is_attr_applied_basic_match() {
+        let scope = make_test_scope("mark_debug", &["my_sig"]);
+        assert!(scope.is_attr_applied("mark_debug", "my_sig"));
+    }
+
+    #[test]
+    fn is_attr_applied_no_match() {
+        let scope = make_test_scope("mark_debug", &["my_sig"]);
+        assert!(!scope.is_attr_applied("mark_debug", "other_sig"));
+    }
+
+    #[test]
+    fn is_attr_applied_wildcard() {
+        let scope = make_test_scope("mark_debug", &["*"]);
+        assert!(scope.is_attr_applied("mark_debug", "anything_at_all"));
+    }
+
+    #[test]
+    fn is_attr_applied_case_insensitive() {
+        let scope = make_test_scope("mark_debug", &["my_sig"]);
+        assert!(scope.is_attr_applied("MARK_DEBUG", "MY_SIG"));
+    }
+
+    #[test]
+    fn is_attr_applied_no_attr() {
+        let scope = make_test_scope("other_attr", &["my_sig"]);
+        assert!(!scope.is_attr_applied("mark_debug", "my_sig"));
+    }
+}

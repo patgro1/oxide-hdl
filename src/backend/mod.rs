@@ -1007,6 +1007,7 @@ pub mod test_utils {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
         scope.rebuild_index();
         scope
