@@ -56,6 +56,10 @@ pub struct ScopeTree {
 
     /// Use clauses declared directly in this scope (for generate/block declarative regions)
     pub use_clauses: Vec<UseClause>,
+
+    /// Maps attribute name (lowercase) → set of entity names (lowercase) the attribute
+    /// has been applied to in this scope. `"*"` means `all` or `others`.
+    pub attr_specs: HashMap<String, HashSet<String>>,
 }
 
 /// Enum specifying the type of region we are in.
@@ -94,6 +98,7 @@ impl ScopeTree {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         }
     }
 
@@ -319,5 +324,16 @@ impl ScopeTree {
         }
 
         scope_chain
+    }
+
+    /// Returns true if `attr_name` has been applied to `entity_name` in this scope.
+    /// Respects the `"*"` sentinel which means `all` or `others`.
+    pub fn is_attr_applied(&self, attr_name: &str, entity_name: &str) -> bool {
+        match self.attr_specs.get(&attr_name.to_lowercase()) {
+            None => false,
+            Some(names) => {
+                names.contains("*") || names.contains(&entity_name.to_lowercase())
+            }
+        }
     }
 }
