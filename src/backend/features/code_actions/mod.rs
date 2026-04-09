@@ -15,6 +15,7 @@
 //! the first signal in the list.
 
 pub mod mark_debug;
+pub use mark_debug::mark_debug_actions;
 
 use std::collections::{HashMap, HashSet};
 

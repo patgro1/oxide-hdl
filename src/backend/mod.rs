@@ -885,16 +885,21 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<CodeActionOrCommand>>> {
         let uri = &params.text_document.uri;
 
-        let text = {
+        let (text, rope) = {
             let map = self.document_map.read().await;
             match map.get(uri) {
-                Some(r) => r.to_string(),
+                Some(r) => (r.to_string(), r.clone()),
                 None => return Ok(None),
             }
         };
 
         let mut actions = Vec::new();
         actions.extend(features::code_actions::sensitivity_actions(&params, &text));
+
+        {
+            let map = self.analysis_map.read().await;
+            actions.extend(features::code_actions::mark_debug_actions(&params, &rope, &map));
+        }
 
         if actions.is_empty() {
             Ok(None)
