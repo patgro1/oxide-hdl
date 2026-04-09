@@ -1835,3 +1835,74 @@ end architecture;
     }
 }
 
+#[test]
+fn test_attr_specs_single_name() {
+    let code = r#"
+architecture rtl of test is
+    signal my_sig : std_logic;
+    attribute mark_debug : string;
+    attribute mark_debug of my_sig : signal is "true";
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+    let scope = &analysis.scope_trees[0];
+    assert!(scope.is_attr_applied("mark_debug", "my_sig"));
+    assert!(!scope.is_attr_applied("mark_debug", "other_sig"));
+}
+
+#[test]
+fn test_attr_specs_multi_name() {
+    let code = r#"
+architecture rtl of test is
+    signal sig_a : std_logic;
+    signal sig_b : std_logic;
+    attribute mark_debug : string;
+    attribute mark_debug of sig_a, sig_b : signal is "true";
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+    let scope = &analysis.scope_trees[0];
+    assert!(scope.is_attr_applied("mark_debug", "sig_a"));
+    assert!(scope.is_attr_applied("mark_debug", "sig_b"));
+    assert!(!scope.is_attr_applied("mark_debug", "sig_c"));
+}
+
+#[test]
+fn test_attr_specs_all_sentinel() {
+    let code = r#"
+architecture rtl of test is
+    signal my_sig : std_logic;
+    attribute mark_debug : string;
+    attribute mark_debug of all : signal is "true";
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+    let scope = &analysis.scope_trees[0];
+    assert!(scope.is_attr_applied("mark_debug", "my_sig"));
+    assert!(scope.is_attr_applied("mark_debug", "anything"));
+}
+
+#[test]
+fn test_attr_specs_empty_when_no_specs() {
+    let code = r#"
+architecture rtl of test is
+    signal my_sig : std_logic;
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+    let scope = &analysis.scope_trees[0];
+    assert!(!scope.is_attr_applied("mark_debug", "my_sig"));
+}
+
