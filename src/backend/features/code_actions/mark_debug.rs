@@ -31,7 +31,7 @@ use crate::{
 /// Produces mark_debug code actions for the cursor position or selection.
 ///
 /// Single cursor: resolves the word at cursor, checks eligibility, emits one action.
-/// Multi-line selection: handled in the multi-line path (Task 4 — not yet implemented).
+/// Multi-line selection: collect eligible signals in the selected range and offer a batch action.
 pub fn mark_debug_actions(
     params: &CodeActionParams,
     rope: &Rope,
@@ -263,17 +263,15 @@ fn multi_line_actions(
 
     let mut all_edits: Vec<TextEdit> = Vec::new();
 
-    // Arch decl edit (at most once — check the first candidate's arch scope)
-    let needs_decl = if let Some((_, pos)) = candidates.first() {
+    // Arch decl edit (at most once — check all candidates' arch scopes)
+    let needs_decl = candidates.iter().any(|(_, pos)| {
         find_arch_scope_for_pos(pos, &analysis.scope_trees).map_or(true, |arch| {
             !arch.declarations.iter().any(|d| {
                 matches!(d.decl_type, DeclType::Attribute)
                     && d.name.eq_ignore_ascii_case("mark_debug")
             })
         })
-    } else {
-        false
-    };
+    });
 
     if needs_decl {
         if let Some((_, pos)) = candidates.first() {
