@@ -45,8 +45,9 @@ pub fn mark_debug_actions(
 
     if !is_multi {
         single_cursor_actions(params, rope, analysis_map, uri, &mut actions);
+    } else {
+        multi_line_actions(params, rope, analysis_map, uri, &mut actions);
     }
-    // Multi-line path implemented in Task 4.
 
     actions
 }
@@ -222,6 +223,161 @@ pub(crate) fn indent_for_scope(scope: &ScopeTree, rope: &Rope) -> String {
     "    ".to_string()
 }
 
+// ── Multi-line selection ──────────────────────────────────────────────────────
+
+fn multi_line_actions(
+    params: &CodeActionParams,
+    rope: &Rope,
+    analysis_map: &AnalysisMap,
+    uri: &Url,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let sel = params.range;
+    let Some(analysis) = analysis_map.get(uri) else { return };
+
+    let mut candidates: Vec<(String, Position)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Source A — signal/port declarations whose range falls within the selection
+    for root in &analysis.scope_trees {
+        collect_decls_in_range(root, sel, &mut candidates, &mut seen);
+    }
+
+    // Source B — usages within the selection, resolved to Signal/Port declarations
+    for root in &analysis.scope_trees {
+        collect_usages_in_range(root, sel, uri, analysis_map, &mut candidates, &mut seen);
+    }
+
+    // Filter out already-marked signals
+    candidates.retain(|(name, pos)| {
+        let scope = find_scope_containing_pos(pos, &analysis.scope_trees);
+        !scope.map_or(false, |s| s.is_attr_applied("mark_debug", name))
+    });
+
+    if candidates.is_empty() {
+        return;
+    }
+
+    let count = candidates.len();
+    let title = format!("Add mark_debug to all signals in selection ({count} signals)");
+
+    let mut all_edits: Vec<TextEdit> = Vec::new();
+
+    // Arch decl edit (at most once — check the first candidate's arch scope)
+    let needs_decl = if let Some((_, pos)) = candidates.first() {
+        find_arch_scope_for_pos(pos, &analysis.scope_trees).map_or(true, |arch| {
+            !arch.declarations.iter().any(|d| {
+                matches!(d.decl_type, DeclType::Attribute)
+                    && d.name.eq_ignore_ascii_case("mark_debug")
+            })
+        })
+    } else {
+        false
+    };
+
+    if needs_decl {
+        if let Some((_, pos)) = candidates.first() {
+            if let Some(arch) = find_arch_scope_for_pos(pos, &analysis.scope_trees) {
+                let decl_indent = indent_for_scope(arch, rope);
+                if let Some(decl_pos) = insertion_point(arch) {
+                    all_edits.push(TextEdit {
+                        range: Range { start: decl_pos, end: decl_pos },
+                        new_text: format!("{}attribute mark_debug : string;\n", decl_indent),
+                    });
+                }
+            }
+        }
+    }
+
+    // Group specs by containing scope (keyed by scope range start line)
+    let mut scope_specs: std::collections::HashMap<u32, (Position, String, Vec<String>)> =
+        std::collections::HashMap::new();
+    for (name, pos) in &candidates {
+        if let Some(scope) = find_scope_containing_pos(pos, &analysis.scope_trees) {
+            let key = scope.range.start.line;
+            let entry = scope_specs.entry(key).or_insert_with(|| {
+                let insert_pos = insertion_point(scope)
+                    .unwrap_or(Position { line: scope.range.end.line, character: 0 });
+                let indent = indent_for_scope(scope, rope);
+                (insert_pos, indent, Vec::new())
+            });
+            entry.2.push(name.clone());
+        }
+    }
+
+    for (_, (insert_pos, indent, names)) in scope_specs {
+        let spec_text: String = names
+            .iter()
+            .map(|n| format!("{}attribute mark_debug of {} : signal is \"true\";\n", indent, n))
+            .collect();
+        all_edits.push(TextEdit {
+            range: Range { start: insert_pos, end: insert_pos },
+            new_text: spec_text,
+        });
+    }
+
+    if !all_edits.is_empty() {
+        push_action(actions, title, uri, all_edits);
+    }
+}
+
+fn collect_decls_in_range(
+    scope: &ScopeTree,
+    sel: Range,
+    candidates: &mut Vec<(String, Position)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for decl in &scope.declarations {
+        if matches!(decl.decl_type, DeclType::Signal | DeclType::Port(_))
+            && range_contains_pos(sel, decl.range.start)
+            && seen.insert(decl.name.to_lowercase())
+        {
+            candidates.push((decl.name.clone(), decl.range.start));
+        }
+    }
+    for child in &scope.children {
+        collect_decls_in_range(child, sel, candidates, seen);
+    }
+}
+
+fn collect_usages_in_range(
+    scope: &ScopeTree,
+    sel: Range,
+    uri: &Url,
+    analysis_map: &AnalysisMap,
+    candidates: &mut Vec<(String, Position)>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for usage in &scope.local_usage {
+        if !range_contains_pos(sel, usage.range.start) {
+            continue;
+        }
+        let name_lc = usage.name.to_lowercase();
+        if seen.contains(&name_lc) {
+            continue;
+        }
+        let results = lookup_symbol(&usage.name, uri, analysis_map, &usage.range.start, false);
+        if let Some(result) = results.into_iter().next() {
+            if let ResolvedItem::Declaration(decl) = result.item {
+                if matches!(decl.decl_type, DeclType::Signal | DeclType::Port(_)) {
+                    seen.insert(name_lc);
+                    candidates.push((decl.name.clone(), decl.range.start));
+                }
+            }
+        }
+    }
+    for child in &scope.children {
+        collect_usages_in_range(child, sel, uri, analysis_map, candidates, seen);
+    }
+}
+
+fn range_contains_pos(range: Range, pos: Position) -> bool {
+    (pos.line > range.start.line
+        || (pos.line == range.start.line && pos.character >= range.start.character))
+        && (pos.line < range.end.line
+            || (pos.line == range.end.line && pos.character < range.end.character))
+}
+
 // ── Port-map LHS detection ────────────────────────────────────────────────────
 
 /// Returns true if the word at `pos` is the formal (LHS) side of a port map association.
@@ -308,6 +464,19 @@ mod tests {
         }
     }
 
+    fn make_range_params(uri: &Url, start_line: u32, start_col: u32, end_line: u32, end_col: u32) -> CodeActionParams {
+        CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range {
+                start: Position { line: start_line, character: start_col },
+                end: Position { line: end_line, character: end_col },
+            },
+            context: CodeActionContext { diagnostics: vec![], only: None, trigger_kind: None },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        }
+    }
+
     // ── Single cursor tests ───────────────────────────────────────────────────
 
     #[test]
@@ -378,6 +547,59 @@ mod tests {
             assert!(combined.contains("attribute mark_debug : string"), "should include declaration");
             assert!(combined.contains("of my_sig"), "should include specification");
         }
+    }
+
+    // ── Multi-line tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn multi_line_declaration_block_offers_batch_action() {
+        // Code has 2 signals + 1 constant. Select lines 2-4 (0-indexed), expect 1 action mentioning 2 signals.
+        // line 0: entity foo is end entity;
+        // line 1: architecture rtl of foo is
+        // line 2:     signal sig_a : std_logic;
+        // line 3:     signal sig_b : std_logic_vector(7 downto 0);
+        // line 4:     constant C : integer := 0;
+        let code = "entity foo is end entity;\narchitecture rtl of foo is\n    signal sig_a : std_logic;\n    signal sig_b : std_logic_vector(7 downto 0);\n    constant C : integer := 0;\nbegin\nend architecture;\n";
+        let uri = Url::parse("file:///test.vhd").unwrap();
+        let (rope, map) = parse_and_build(code, &uri);
+        // Select lines 2-4 (both signals and the constant line)
+        let params = make_range_params(&uri, 2, 0, 4, 0);
+        let actions = mark_debug_actions(&params, &rope, &map);
+        assert_eq!(actions.len(), 1, "expected 1 batch action");
+        let title = match &actions[0] {
+            CodeActionOrCommand::CodeAction(ca) => &ca.title,
+            _ => panic!("expected CodeAction"),
+        };
+        assert!(title.contains("2"), "expected 2 signals in title: {title}");
+    }
+
+    #[test]
+    fn multi_line_process_offers_batch_action_from_usages() {
+        // Process uses clk, data, valid — all declared in arch. Select the process body.
+        let code = "entity foo is end entity;\narchitecture rtl of foo is\n    signal clk   : std_logic;\n    signal data  : std_logic_vector(7 downto 0);\n    signal valid : std_logic;\nbegin\n    process(clk)\n    begin\n        if clk = '1' then\n            valid <= data(0);\n        end if;\n    end process;\nend architecture;\n";
+        let uri = Url::parse("file:///test.vhd").unwrap();
+        let (rope, map) = parse_and_build(code, &uri);
+        // Select the process: lines 6-12
+        let params = make_range_params(&uri, 6, 0, 12, 0);
+        let actions = mark_debug_actions(&params, &rope, &map);
+        assert_eq!(actions.len(), 1, "expected 1 batch action from usages");
+        let title = match &actions[0] {
+            CodeActionOrCommand::CodeAction(ca) => &ca.title,
+            _ => panic!("expected CodeAction"),
+        };
+        assert!(title.to_lowercase().contains("mark_debug"), "title: {title}");
+    }
+
+    #[test]
+    fn multi_line_all_marked_no_action() {
+        // Both signals already have mark_debug — no action expected.
+        let code = "entity foo is end entity;\narchitecture rtl of foo is\n    signal sig_a : std_logic;\n    signal sig_b : std_logic;\n    attribute mark_debug : string;\n    attribute mark_debug of sig_a, sig_b : signal is \"true\";\nbegin\nend architecture;\n";
+        let uri = Url::parse("file:///test.vhd").unwrap();
+        let (rope, map) = parse_and_build(code, &uri);
+        // Select lines 2-4 (both signal declarations)
+        let params = make_range_params(&uri, 2, 0, 4, 0);
+        let actions = mark_debug_actions(&params, &rope, &map);
+        assert!(actions.is_empty(), "all signals already marked — no action expected");
     }
 
     #[test]
