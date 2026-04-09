@@ -13,7 +13,7 @@ use crate::{
         node_to_range,
     },
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;
 
@@ -1829,12 +1829,15 @@ fn extract_parameters_from_subprogram(node: Node, text: &str) -> Vec<Declaration
 /// attribute name (lowercase) → set of entity names (lowercase) the attribute applies to.
 ///
 /// Uses `"*"` as a sentinel for `all` and `others`.
+///
+/// Note: entity class (`:signal`, `:port`, etc.) is not filtered here — the consumer
+/// is responsible for checking whether an attribute applies to a given entity class.
 pub(crate) fn extract_attr_specs_from_node(
     node: Node,
     text: &str,
-) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-    let mut result: std::collections::HashMap<String, std::collections::HashSet<String>> =
-        std::collections::HashMap::new();
+) -> HashMap<String, HashSet<String>> {
+    let mut result: HashMap<String, HashSet<String>> =
+        HashMap::new();
 
     for attr_spec in collect_descendants(node, "attribute_specification") {
         let Some(attr_node) = attr_spec.child_by_field_name("attribute") else {

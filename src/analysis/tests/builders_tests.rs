@@ -1892,6 +1892,24 @@ end architecture;
 }
 
 #[test]
+fn test_attr_specs_others_sentinel() {
+    let code = r#"
+architecture rtl of test is
+    signal my_sig : std_logic;
+    attribute mark_debug : string;
+    attribute mark_debug of others : signal is "true";
+begin
+end architecture;
+"#;
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+    let scope = &analysis.scope_trees[0];
+    assert!(scope.is_attr_applied("mark_debug", "my_sig"));
+    assert!(scope.is_attr_applied("mark_debug", "anything_else"));
+}
+
+#[test]
 fn test_attr_specs_empty_when_no_specs() {
     let code = r#"
 architecture rtl of test is
