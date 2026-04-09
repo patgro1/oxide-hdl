@@ -231,11 +231,21 @@ pub(crate) fn indent_for_scope(scope: &ScopeTree, rope: &Rope) -> String {
 fn is_port_map_lhs(rope: &Rope, pos: Position, word: &str) -> bool {
     let line_idx = pos.line as usize;
     let Ok(line_char_idx) = rope.try_line_to_char(line_idx) else { return false };
-    let word_end_col = pos.character as usize + word.len();
-    let rest: String = rope
-        .chars_at(line_char_idx + word_end_col)
-        .take(20)
-        .collect();
+    // Walk back from cursor to find the true word start (cursor may be anywhere inside the word).
+    let cursor_abs = line_char_idx + pos.character as usize;
+    let mut start_abs = cursor_abs;
+    while start_abs > line_char_idx {
+        let c = rope.char(start_abs - 1);
+        if !c.is_alphanumeric() && c != '_' {
+            break;
+        }
+        start_abs -= 1;
+    }
+    let word_end_abs = start_abs + word.len();
+    if word_end_abs > rope.len_chars() {
+        return false;
+    }
+    let rest: String = rope.chars_at(word_end_abs).take(20).collect();
     rest.trim_start().starts_with("=>")
 }
 
@@ -372,12 +382,24 @@ mod tests {
 
     #[test]
     fn port_map_lhs_no_action() {
-        // Cursor on "clk" that is followed by " =>" (LHS of port map)
-        let code = "entity foo is end entity;\narchitecture rtl of foo is\n    signal my_clk : std_logic;\nbegin\n    -- clk => my_clk\nend architecture;\n";
-        let _uri = Url::parse("file:///test.vhd").unwrap();
-        let rope = Rope::from_str(code);
-        // Line 4 is "    -- clk => my_clk" — cursor on "clk" at col 7
-        // We test is_port_map_lhs directly since we can't easily set up a full port-map scenario
-        assert!(is_port_map_lhs(&rope, Position { line: 4, character: 7 }, "clk"));
+        // "clk" on the LHS of a port map (formal port) should not offer mark_debug.
+        // The signal on the RHS (my_clk) is fine but we're not testing that here.
+        let code = concat!(
+            "entity child is port (clk : in std_logic); end entity;\n",
+            "entity foo is end entity;\n",
+            "architecture rtl of foo is\n",
+            "    signal my_clk : std_logic;\n",
+            "    component child is port (clk : in std_logic); end component;\n",
+            "begin\n",
+            "    U1 : child port map (clk => my_clk);\n",
+            "end architecture;\n",
+        );
+        let uri = Url::parse("file:///test.vhd").unwrap();
+        let (rope, map) = parse_and_build(code, &uri);
+        // Line 6: "    U1 : child port map (clk => my_clk);"
+        // "clk" starts at col 25
+        let params = make_cursor_params(&uri, 6, 25);
+        let actions = mark_debug_actions(&params, &rope, &map);
+        assert!(actions.is_empty(), "LHS of port map should not offer mark_debug, got: {actions:?}");
     }
 }

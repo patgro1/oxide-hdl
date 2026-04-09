@@ -1133,6 +1133,9 @@ fn extract_default_value(decl_node: Node, text: &str) -> Option<String> {
 /// An option containing the doc comment if any
 fn extract_doc_comment(decl_node: Node, text: &str) -> Option<String> {
     let decl_start_line = decl_node.start_position().row;
+    if decl_start_line == 0 {
+        return None;
+    }
     let mut comments = Vec::new();
     let mut expected_line = decl_start_line - 1;
 
