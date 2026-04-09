@@ -14,6 +14,8 @@
 //! word-wrapped at [`MAX_LINE_LEN`] characters, aligning continuation lines with
 //! the first signal in the list.
 
+pub mod mark_debug;
+
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
