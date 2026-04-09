@@ -13,7 +13,7 @@ use crate::{
         node_to_range,
     },
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;
 
@@ -200,6 +200,9 @@ pub fn build_arch_scope_tree(arch_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        for (attr, names) in extract_attr_specs_from_node(architecture_head, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
         // Special case here for subprogram_declaration (implementation)
         for subprogram_node in collect_children(architecture_head, "subprogram_definition") {
             tree.children
@@ -372,6 +375,9 @@ pub fn build_process_scope_tree(process_node: Node, text: &str) -> ScopeTree {
             RegionType::Sequential,
             &mut tree.local_usage,
         );
+        for (attr, names) in extract_attr_specs_from_node(proc_head, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
     }
 
     // Collect usage from sensitivity list and sequential block
@@ -412,6 +418,9 @@ fn process_generate_body(body_node: Node, text: &str, tree: &mut ScopeTree) {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        for (attr, names) in extract_attr_specs_from_node(head_node, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
         for child in head_node.children(&mut head_node.walk()) {
             if child.kind() == "use_clause" {
                 tree.use_clauses
@@ -660,6 +669,9 @@ pub fn build_for_generate_scope_tree(generate_node: Node, text: &str) -> ScopeTr
                 RegionType::Concurrent,
                 &mut tree.local_usage,
             ));
+            for (attr, names) in extract_attr_specs_from_node(head_node, text) {
+                tree.attr_specs.entry(attr).or_default().extend(names);
+            }
             // Collect use_clauses declared in the generate declarative region
             for child in head_node.children(&mut head_node.walk()) {
                 if child.kind() == "use_clause" {
@@ -753,6 +765,9 @@ pub fn build_block_scope_tree(block_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        for (attr, names) in extract_attr_specs_from_node(head_node, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
         // Collect use_clauses declared in the block declarative region
         for child in head_node.children(&mut head_node.walk()) {
             if child.kind() == "use_clause" {
@@ -886,6 +901,9 @@ pub fn build_package_scope_tree(package_node: Node, text: &str) -> ScopeTree {
             RegionType::Concurrent,
             &mut tree.local_usage,
         );
+        for (attr, names) in extract_attr_specs_from_node(decl_body, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
     }
     tree
 }
@@ -911,6 +929,9 @@ pub fn build_package_body_scope_tree(package_node: Node, text: &str) -> ScopeTre
             RegionType::Implementation,
             &mut tree.local_usage,
         );
+        for (attr, names) in extract_attr_specs_from_node(decl_body, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
 
         for child in decl_body.children(&mut decl_body.walk()) {
             match child.kind() {
@@ -1112,6 +1133,9 @@ fn extract_default_value(decl_node: Node, text: &str) -> Option<String> {
 /// An option containing the doc comment if any
 fn extract_doc_comment(decl_node: Node, text: &str) -> Option<String> {
     let decl_start_line = decl_node.start_position().row;
+    if decl_start_line == 0 {
+        return None;
+    }
     let mut comments = Vec::new();
     let mut expected_line = decl_start_line - 1;
 
@@ -1333,7 +1357,10 @@ pub fn build_subprogram_scope_tree(subprogram_node: Node, text: &str) -> ScopeTr
             text,
             RegionType::Sequential,
             &mut tree.local_usage,
-        ))
+        ));
+        for (attr, names) in extract_attr_specs_from_node(header_node, text) {
+            tree.attr_specs.entry(attr).or_default().extend(names);
+        }
     }
     for child in subprogram_node.children(&mut subprogram_node.walk()) {
         if child.kind() == "sequential_block" {
@@ -1799,4 +1826,51 @@ fn extract_parameters_from_subprogram(node: Node, text: &str) -> Vec<Declaration
     }
 
     params
+}
+
+/// Parses all `attribute_specification` nodes under `node` and returns a map of
+/// attribute name (lowercase) → set of entity names (lowercase) the attribute applies to.
+///
+/// Uses `"*"` as a sentinel for `all` and `others`.
+///
+/// Note: entity class (`:signal`, `:port`, etc.) is not filtered here — the consumer
+/// is responsible for checking whether an attribute applies to a given entity class.
+pub(crate) fn extract_attr_specs_from_node(
+    node: Node,
+    text: &str,
+) -> HashMap<String, HashSet<String>> {
+    let mut result: HashMap<String, HashSet<String>> =
+        HashMap::new();
+
+    for attr_spec in collect_descendants(node, "attribute_specification") {
+        let Some(attr_node) = attr_spec.child_by_field_name("attribute") else {
+            continue;
+        };
+        let attr_name = text[attr_node.byte_range()].to_lowercase();
+
+        let Some(entity_spec) = find_child(attr_spec, "entity_specification") else {
+            continue;
+        };
+        let Some(name_list) = find_child(entity_spec, "entity_name_list") else {
+            continue;
+        };
+
+        let entry = result.entry(attr_name).or_default();
+        let mut cursor = name_list.walk();
+        for child in name_list.children(&mut cursor) {
+            match child.kind() {
+                "ALL" | "OTHERS" => {
+                    entry.insert("*".to_string());
+                }
+                "entity_designator" => {
+                    if let Some(id) = find_child(child, "identifier") {
+                        entry.insert(text[id.byte_range()].to_lowercase());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    result
 }

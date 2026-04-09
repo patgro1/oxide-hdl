@@ -56,6 +56,10 @@ pub struct ScopeTree {
 
     /// Use clauses declared directly in this scope (for generate/block declarative regions)
     pub use_clauses: Vec<UseClause>,
+
+    /// Maps attribute name (lowercase) → set of entity names (lowercase) the attribute
+    /// has been applied to in this scope. `"*"` means `all` or `others`.
+    pub attr_specs: HashMap<String, HashSet<String>>,
 }
 
 /// Enum specifying the type of region we are in.
@@ -94,6 +98,7 @@ impl ScopeTree {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         }
     }
 
@@ -319,5 +324,71 @@ impl ScopeTree {
         }
 
         scope_chain
+    }
+
+    /// Returns true if `attr_name` has been applied to `entity_name` in this scope.
+    /// Respects the `"*"` sentinel which means `all` or `others`.
+    pub fn is_attr_applied(&self, attr_name: &str, entity_name: &str) -> bool {
+        match self.attr_specs.get(&attr_name.to_lowercase()) {
+            None => false,
+            Some(names) => {
+                names.contains("*") || names.contains(&entity_name.to_lowercase())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_scope(attr_name: &str, entity_names: &[&str]) -> ScopeTree {
+        let mut attr_specs = HashMap::new();
+        let names: HashSet<String> = entity_names.iter().map(|s| s.to_string()).collect();
+        attr_specs.insert(attr_name.to_lowercase(), names);
+        ScopeTree {
+            kind: ScopeKind::Architecture,
+            range: Range::default(),
+            name: None,
+            entity: None,
+            package: None,
+            declarations: vec![],
+            local_usage: HashSet::new(),
+            children: vec![],
+            decl_index: HashMap::new(),
+            instantiations: vec![],
+            use_clauses: vec![],
+            attr_specs,
+        }
+    }
+
+    #[test]
+    fn is_attr_applied_basic_match() {
+        let scope = make_test_scope("mark_debug", &["my_sig"]);
+        assert!(scope.is_attr_applied("mark_debug", "my_sig"));
+    }
+
+    #[test]
+    fn is_attr_applied_no_match() {
+        let scope = make_test_scope("mark_debug", &["my_sig"]);
+        assert!(!scope.is_attr_applied("mark_debug", "other_sig"));
+    }
+
+    #[test]
+    fn is_attr_applied_wildcard() {
+        let scope = make_test_scope("mark_debug", &["*"]);
+        assert!(scope.is_attr_applied("mark_debug", "anything_at_all"));
+    }
+
+    #[test]
+    fn is_attr_applied_case_insensitive() {
+        let scope = make_test_scope("mark_debug", &["my_sig"]);
+        assert!(scope.is_attr_applied("MARK_DEBUG", "MY_SIG"));
+    }
+
+    #[test]
+    fn is_attr_applied_no_attr() {
+        let scope = make_test_scope("other_attr", &["my_sig"]);
+        assert!(!scope.is_attr_applied("mark_debug", "my_sig"));
     }
 }

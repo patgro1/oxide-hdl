@@ -21,6 +21,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(0, 10);
@@ -51,6 +52,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let arch = ScopeTree {
@@ -69,6 +71,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(5, 15);
@@ -100,6 +103,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let generate = ScopeTree {
@@ -118,6 +122,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let arch = ScopeTree {
@@ -136,6 +141,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(10, 20);
@@ -167,6 +173,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(50, 60);
@@ -189,6 +196,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let gen1 = ScopeTree {
@@ -207,6 +215,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let gen2 = ScopeTree {
@@ -225,6 +234,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let arch = ScopeTree {
@@ -243,6 +253,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(8, 12);
@@ -270,6 +281,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(0, 10);
@@ -298,6 +310,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let gen1 = ScopeTree {
@@ -316,6 +329,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let gen2 = ScopeTree {
@@ -334,6 +348,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let gen3 = ScopeTree {
@@ -352,6 +367,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let arch = ScopeTree {
@@ -370,6 +386,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(18, 22);
@@ -405,6 +422,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let arch = ScopeTree {
@@ -423,6 +441,7 @@ mod collect_visible_tests {
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(5, 15);
@@ -584,6 +603,7 @@ end architecture;
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let pkg_body = ScopeTree {
@@ -602,6 +622,7 @@ end architecture;
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(15, 30);
@@ -641,6 +662,7 @@ end architecture;
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let pkg_body = ScopeTree {
@@ -659,6 +681,7 @@ end architecture;
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let pkg_header = ScopeTree {
@@ -677,6 +700,7 @@ end architecture;
             decl_index: HashMap::new(),
             instantiations: Vec::new(),
             use_clauses: Vec::new(),
+            attr_specs: HashMap::new(),
         };
 
         let target = make_line_range(20, 25); // Function range
