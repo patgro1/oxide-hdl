@@ -1863,6 +1863,38 @@ pub fn generate_entity_completions(
 // Completion Item Generation
 // =============================================================================
 
+/// Scans backward from `cursor_offset` to find the byte offset of the `(`
+/// that opens the current call's or map's argument list.
+///
+/// Tracks paren depth: the first unmatched `(` found scanning backward is the opener.
+///
+/// # Arguments
+/// * `text` - Full source text.
+/// * `cursor_offset` - Byte offset of the cursor.
+///
+/// # Returns
+/// `Some(offset)` of the `(`, or `None` if not found.
+fn find_call_open_paren(text: &str, cursor_offset: usize) -> Option<usize> {
+    let limit = cursor_offset.min(text.len());
+    let bytes = text.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = limit;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Generates completion items based on the detected context.
 ///
 /// # Arguments
@@ -1886,6 +1918,67 @@ pub fn complete_scope(
 
     if let Some(current_analysis) = analysis_map.get(current_uri) {
         let local_scope_tree = current_analysis.find_scope_tree_at(&position);
+
+        // --- Subprogram Call LHS: offer filtered parameter names ---
+        // Runs before the match so SubprogramCallBoth falls through to the _ arm for RHS items too.
+        if let CompletionContext::SubprogramCallLhs(name) | CompletionContext::SubprogramCallBoth(name) =
+            context
+        {
+            let cursor_offset = position_to_offset(text, position);
+            let open_paren = find_call_open_paren(text, cursor_offset).unwrap_or(0);
+            let used = collect_used_param_names(text, open_paren, cursor_offset);
+
+            if let Some(tree) = &local_scope_tree {
+                let innermost = tree.find_innermost_scope(&position);
+                let header = tree
+                    .entity
+                    .as_ref()
+                    .and_then(|n| {
+                        current_analysis
+                            .entity_scope_trees
+                            .get(n)
+                            .or_else(|| analysis_map.values().find_map(|a| a.entity_scope_trees.get(n)))
+                    })
+                    .or_else(|| {
+                        tree.package.as_ref().and_then(|n| {
+                            current_analysis
+                                .package_declaration_scope_trees
+                                .get(n)
+                                .or_else(|| current_analysis.package_body_scope_trees.get(n))
+                        })
+                    });
+
+                if let Some(declarations) = tree.collect_visible_declarations(&innermost.range, header) {
+                    for decl in &declarations {
+                        if decl.name.eq_ignore_ascii_case(name)
+                            && matches!(
+                                decl.decl_type,
+                                DeclType::Function
+                                    | DeclType::FunctionDeclaration
+                                    | DeclType::Procedure
+                                    | DeclType::ProcedureDeclaration
+                            )
+                        {
+                            if let Some(params) = &decl.parameters {
+                                for param in params {
+                                    if !used.contains(&param.name.to_ascii_lowercase()) {
+                                        items.push(declaration_to_completion(param));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // SubprogramCallLhs: return param names only (no scope items)
+            // SubprogramCallBoth: fall through to the match `_` arm which adds scope items
+            if matches!(context, CompletionContext::SubprogramCallLhs(_)) {
+                items.sort_by(|a, b| a.label.cmp(&b.label));
+                items.dedup_by(|a, b| a.label == b.label);
+                return items;
+            }
+        }
 
         if *context == CompletionContext::Architecture && is_after_label(text, position, tree_root)
         {

@@ -1813,3 +1813,141 @@ end architecture;"#,
         CompletionContext::SubprogramCallLhs("my_proc".to_string()),
     );
 }
+
+// =============================================================================
+// Subprogram Call Completion (Resolution) Tests
+// =============================================================================
+
+/// Helper for subprogram call completion tests.
+/// Returns completion labels at the cursor position in the given arch code.
+fn complete_subprogram_call(arch_code: &str) -> Vec<String> {
+    use crate::backend::AnalysisMap;
+    use crate::backend::test_utils::parse_text;
+    use tower_lsp::lsp_types::Url;
+
+    let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+    let (code, pos) = extract_cursor(arch_code);
+
+    // parse_text acquires SHARED_PARSER_LOCK internally — do NOT hold it here.
+    let arch_tree = parse_text(&code);
+    let arch_root = arch_tree.root_node();
+    let arch_analysis =
+        crate::backend::syntax::parser::extract_document_symbols(&code, arch_root);
+
+    let mut analysis_map = AnalysisMap::new();
+    analysis_map.insert(arch_uri.clone(), arch_analysis);
+
+    let ctx = get_completion_context(&code, arch_root, pos);
+    let items = complete_scope(&analysis_map, &arch_uri, &ctx, pos, &code, arch_root);
+    labels(&items).iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn test_subprogram_lhs_offers_all_params_when_empty() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(|);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(names.contains(&"a".to_string()), "param 'a' should appear. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "param 'b' should appear. Got: {:?}", names);
+    assert!(names.contains(&"c".to_string()), "param 'c' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_already_supplied_param() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered out. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "param 'b' should appear. Got: {:?}", names);
+    assert!(names.contains(&"c".to_string()), "param 'c' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_multiple_supplied_params() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, b => 1, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"b".to_string()), "'b' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"c".to_string()), "param 'c' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_all_params_filtered_when_all_supplied() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, b => 1, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"b".to_string()), "'b' should be filtered. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_aggregate_rhs_does_not_filter_wrong_param() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => (0 + 1), |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "'b' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_positional_offers_no_param_names() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return 0; end function;
+    signal s : integer;
+begin
+    process is variable v : integer; begin
+        v := my_func(0, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    // In positional mode, param names should not appear as completions
+    assert!(!names.contains(&"a".to_string()), "'a' should not appear in positional mode. Got: {:?}", names);
+    assert!(!names.contains(&"b".to_string()), "'b' should not appear in positional mode. Got: {:?}", names);
+    // But in-scope signals/variables should appear
+    assert!(names.contains(&"s".to_string()) || names.contains(&"v".to_string()),
+        "in-scope items should appear in positional mode. Got: {:?}", names);
+}
