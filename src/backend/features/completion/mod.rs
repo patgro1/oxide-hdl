@@ -28,6 +28,7 @@ mod node_kinds {
     pub const SIGNAL_ASSIGNMENT: &str = "concurrent_simple_signal_assignment";
     pub const ASSOCIATION_LIST: &str = "association_list";
     pub const ASSOCIATION_ELEMENT: &str = "association_element";
+    #[allow(dead_code)]
     pub const FUNCTION_CALL: &str = "function_call";
     pub const PARENTHESIS_GROUP: &str = "parenthesis_group";
     pub const ASSOCIATION_OR_RANGE_LIST: &str = "association_or_range_list";
@@ -271,6 +272,120 @@ fn classify_call_args(
     } else {
         CompletionContext::SubprogramCallRhs
     }
+}
+
+/// Extracts the subprogram name from a `name` node that is the callee of a call expression.
+///
+/// In the VHDL tree-sitter grammar, a function call is represented as a `name` node
+/// whose first `identifier` child holds the callee name and whose `parenthesis_group`
+/// child holds the argument list. This function extracts the callee name — the last
+/// dot-separated segment of the `name` node's text (lowercased).
+///
+/// For example, `pkg.my_func(...)` yields `"my_func"`.
+///
+/// # Arguments
+/// * `name_node` - The `name` tree-sitter node that is the callee.
+/// * `text` - The full source text.
+fn extract_subprogram_name(name_node: Node, text: &str) -> String {
+    // Extract the text of the name node up to (but not including) the parenthesis_group.
+    // We grab the first identifier child, since selected_name nodes also have identifiers.
+    let mut cursor = name_node.walk();
+    for child in name_node.children(&mut cursor) {
+        if child.kind() == IDENTIFIER || child.kind() == SELECTED_NAME {
+            let name_text = &text[child.start_byte()..child.end_byte()];
+            return name_text
+                .split('.')
+                .last()
+                .unwrap_or(name_text)
+                .trim()
+                .to_ascii_lowercase();
+        }
+    }
+    // Fallback: use the full name node text before any '('
+    let name_text = &text[name_node.start_byte()..name_node.end_byte()];
+    let before_paren = name_text.split('(').next().unwrap_or(name_text);
+    before_paren
+        .split('.')
+        .last()
+        .unwrap_or(before_paren)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Walks up from `node` looking for a `parenthesis_group` whose parent is `name`.
+///
+/// In the VHDL tree-sitter grammar, a subprogram call is represented as:
+/// ```text
+/// name
+///   identifier  ("my_func")
+///   parenthesis_group
+///     association_or_range_list
+///       association_element ...
+/// ```
+///
+/// Returns `Some(CompletionContext)` if a subprogram call context is found.
+/// Returns `None` if `port_map_aspect` or `generic_map_aspect` is encountered first
+/// (meaning we are inside an instantiation map, not a subprogram call).
+///
+/// # Arguments
+/// * `node` - Starting node (the current node in the upward traversal).
+/// * `text` - Full source text.
+/// * `cursor_offset` - Byte offset of the cursor.
+fn try_subprogram_call_context(
+    node: Node,
+    text: &str,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        let kind = n.kind();
+        // Stop — this is an instantiation map, not a subprogram call
+        if kind == PORT_MAP_ASPECT || kind == GENERIC_MAP_ASPECT {
+            return None;
+        }
+        if kind == PARENTHESIS_GROUP {
+            if let Some(parent) = n.parent() {
+                if parent.kind() == NAME {
+                    let name = extract_subprogram_name(parent, text);
+                    let open_paren_offset = n.start_byte();
+                    let ctx = classify_call_args(name.clone(), text, open_paren_offset, cursor_offset);
+                    // Edge case: cursor is right after '(' with no text before it, so
+                    // classify_call_args returns Both. But if the AST shows named
+                    // associations exist in the full arg list, the user is on an LHS.
+                    if matches!(ctx, CompletionContext::SubprogramCallBoth(_))
+                        && parenthesis_group_has_named_assoc(n)
+                    {
+                        return Some(CompletionContext::SubprogramCallLhs(name));
+                    }
+                    return Some(ctx);
+                }
+            }
+        }
+        current = n.parent();
+    }
+    None
+}
+
+/// Returns `true` if the `parenthesis_group` node contains at least one `association_element`
+/// with an arrow (`=>`), indicating named association mode.
+fn parenthesis_group_has_named_assoc(paren_group: Node) -> bool {
+    let mut cursor = paren_group.walk();
+    for child in paren_group.children(&mut cursor) {
+        if child.kind() == ASSOCIATION_OR_RANGE_LIST || child.kind() == ASSOCIATION_LIST {
+            let mut list_cursor = child.walk();
+            for elem in child.children(&mut list_cursor) {
+                if elem.kind() == ASSOCIATION_ELEMENT {
+                    let mut elem_cursor = elem.walk();
+                    for token in elem.children(&mut elem_cursor) {
+                        if token.kind() == ARROW {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Builds the appropriate `CompletionContext` for a map association.
@@ -894,6 +1009,15 @@ fn handle_upward_traversal(
     while let Some(n) = current {
         let kind = n.kind();
 
+        // Check for subprogram call context before sequential scope, because
+        // name-with-parenthesis_group nodes are nested inside process_statement
+        // and would otherwise be shadowed by the Process context.
+        if kind == PARENTHESIS_GROUP || kind == NAME {
+            if let Some(ctx) = try_subprogram_call_context(n, text, cursor_offset) {
+                return ctx;
+            }
+        }
+
         // Check for sequential scope (process, subprogram)
         if is_sequential_scope(kind) {
             return CompletionContext::Process;
@@ -932,6 +1056,18 @@ fn handle_map_node(
     cursor_offset: usize,
 ) -> Option<CompletionContext> {
     let kind = node.kind();
+
+    // Check for subprogram call context first.
+    // This must precede association_element / association_list handling because those
+    // nodes appear inside function_call argument lists too.
+    if matches!(
+        kind,
+        ASSOCIATION_ELEMENT | ASSOCIATION_LIST | ASSOCIATION_OR_RANGE_LIST | PARENTHESIS_GROUP
+    ) {
+        if let Some(ctx) = try_subprogram_call_context(node, text, cursor_offset) {
+            return Some(ctx);
+        }
+    }
 
     match kind {
         ERROR | SIGNAL_ASSIGNMENT => handle_error_or_assignment_node(node, text, cursor_offset),

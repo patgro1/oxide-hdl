@@ -1675,3 +1675,141 @@ end architecture;
         names
     );
 }
+
+// --- Context Detection Tests: Subprogram Call ---
+
+// Each test below is a self-contained VHDL snippet with | as the cursor marker.
+
+#[test]
+fn test_context_subprogram_call_empty() {
+    // Empty parens — offer both LHS and RHS
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(|);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallBoth("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_named_lhs_first_arg() {
+    // Before => on the first arg
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(|a => 0, b => 1);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_named_rhs() {
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallRhs,
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_named_lhs_after_comma() {
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_positional() {
+    // Positional args — no => at top level → RHS only
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(0, |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallRhs,
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_aggregate_in_named_rhs_then_lhs() {
+    // Aggregate value for first arg — cursor is on LHS of second arg
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => (0 + 1), |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_nested_inner_wins() {
+    // Cursor inside inner call — context should be for inner call, not outer
+    check_context(
+        r#"
+architecture rtl of e is
+    function outer(x : integer) return integer is begin return x; end function;
+    function inner(p : integer) return integer is begin return p; end function;
+begin
+    process is variable v : integer; begin
+        v := outer(inner(|));
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallBoth("inner".to_string()),
+    );
+}
+
+#[test]
+fn test_context_procedure_call_named_lhs() {
+    check_context(
+        r#"
+architecture rtl of e is
+    procedure my_proc(signal clk : in bit; constant n : in integer) is
+    begin null; end procedure;
+    signal sys_clk : bit;
+begin
+    process is begin
+        my_proc(|clk => sys_clk, n => 8);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_proc".to_string()),
+    );
+}
