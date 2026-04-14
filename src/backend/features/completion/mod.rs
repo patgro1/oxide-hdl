@@ -28,6 +28,9 @@ mod node_kinds {
     pub const SIGNAL_ASSIGNMENT: &str = "concurrent_simple_signal_assignment";
     pub const ASSOCIATION_LIST: &str = "association_list";
     pub const ASSOCIATION_ELEMENT: &str = "association_element";
+    pub const FUNCTION_CALL: &str = "function_call";
+    pub const PARENTHESIS_GROUP: &str = "parenthesis_group";
+    pub const ASSOCIATION_OR_RANGE_LIST: &str = "association_or_range_list";
     pub const GENERIC_MAP_ASPECT: &str = "generic_map_aspect";
     pub const PORT_MAP_ASPECT: &str = "port_map_aspect";
     pub const INSTANTIATED_UNIT: &str = "instantiated_unit";
@@ -77,6 +80,20 @@ pub enum CompletionContext {
     /// We are inside a generic map after the `=>`.
     /// Suggests: Constants or expressions from the current scope.
     GenericMapRhs,
+
+    /// Inside a subprogram call argument list with no arguments yet (empty or whitespace only).
+    /// Suggests both parameter names (LHS) and in-scope values (RHS), params first.
+    /// Payload: subprogram name (lowercase).
+    SubprogramCallBoth(String),
+
+    /// Inside a subprogram call argument list, before `=>` in named association mode.
+    /// Suggests: parameter names not yet supplied.
+    /// Payload: subprogram name (lowercase).
+    SubprogramCallLhs(String),
+
+    /// Inside a subprogram call argument list after `=>`, or in positional mode (args present, no `=>`).
+    /// Suggests: in-scope signals, variables, constants.
+    SubprogramCallRhs,
 
     /// Fallback for unknown or global scopes (e.g., top of file).
     Unresolved,
