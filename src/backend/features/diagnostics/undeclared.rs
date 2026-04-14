@@ -127,6 +127,9 @@ pub fn check_undeclared_identifiers(
             if is_aggregate_choice(node) {
                 continue;
             }
+            if is_element_constraint_field(node) {
+                continue;
+            }
         }
 
         let is_found = *lookup_cache.entry(name_lc.clone()).or_insert_with(|| {
@@ -222,6 +225,96 @@ fn is_aggregate_choice(node: Node) -> bool {
         }
     }
     false
+}
+
+/// Returns `true` if the identifier is a record element name in a VHDL-2008
+/// element constraint (e.g., the `data` in `T(3 downto 0)(data(31 downto 0))`).
+///
+/// Tree-sitter has no dedicated element_constraint node, so `data(31 downto 0)`
+/// is parsed as a function-call-shaped `name`. This filter detects the pattern
+/// by structural position: the identifier must be the leading name inside a
+/// non-arrow `association_element` inside a `parenthesis_group` that has a
+/// prior sibling `parenthesis_group` on the same parent `name` node.
+fn is_element_constraint_field(node: Node) -> bool {
+    // Step 1: node must be the leading identifier of its parent `name` node.
+    // In `data(31 downto 0)`, `data` is the head; range integers are not.
+    let name_parent = match node.parent() {
+        Some(p) if p.kind() == "name" => p,
+        _ => return false,
+    };
+    let first_id = name_parent
+        .named_children(&mut name_parent.walk())
+        .find(|c| c.kind() == "identifier");
+    if first_id.map(|n| n.start_byte()) != Some(node.start_byte()) {
+        return false;
+    }
+
+    // Step 2: walk up from name_parent to find an `association_element` with no `=>`.
+    // The chain is: name → simple_expression → conditional_expression → association_element.
+    // NOTE: is_port_map_formal (called earlier in the filter chain) already suppresses
+    // arrow-form association_element nodes, so the `=>` check here is a defensive guard
+    // against future gaps rather than the currently-active discriminator.
+    let mut current = name_parent;
+    let mut assoc = None;
+    for _ in 0..6 {
+        match current.parent() {
+            Some(p) if p.kind() == "association_element" => {
+                assoc = Some(p);
+                break;
+            }
+            Some(p) => current = p,
+            None => return false,
+        }
+    }
+    let assoc = match assoc {
+        Some(a) => a,
+        None => return false,
+    };
+    if assoc.children(&mut assoc.walk()).any(|c| c.kind() == "=>") {
+        return false;
+    }
+
+    // Step 3: walk up from assoc to find the containing `parenthesis_group`.
+    // The chain is: association_element → association_or_range_list → parenthesis_group.
+    current = assoc;
+    let mut pgroup = None;
+    for _ in 0..4 {
+        match current.parent() {
+            Some(p) if p.kind() == "parenthesis_group" => {
+                pgroup = Some(p);
+                break;
+            }
+            Some(p) => current = p,
+            None => return false,
+        }
+    }
+    let pgroup = match pgroup {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Step 4: the parenthesis_group's parent must be a `name` node.
+    // This rules out bare parenthesised expressions and function calls that
+    // are not part of a constrained subtype.
+    let name_ancestor = match pgroup.parent() {
+        Some(p) if p.kind() == "name" => p,
+        _ => return false,
+    };
+
+    // Step 5: pgroup must have a prior sibling that is also a `parenthesis_group`.
+    // The first group is the index constraint; only the second (and later) groups
+    // are element constraints. This is the decisive check.
+    let mut found_prior_paren = false;
+    let mut cursor = name_ancestor.walk();
+    for sibling in name_ancestor.named_children(&mut cursor) {
+        if sibling.start_byte() == pgroup.start_byte() {
+            break;
+        }
+        if sibling.kind() == "parenthesis_group" {
+            found_prior_paren = true;
+        }
+    }
+    found_prior_paren
 }
 
 /// Returns `true` if the identifier is a name being *declared* (not a type reference).
@@ -2274,6 +2367,108 @@ end architecture;
         assert!(
             gen_diags.is_empty(),
             "my_type inside generate should resolve via generate-local use clause. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_unconstrained_record_element_constraint_fields_not_flagged() {
+        // Signal declaration using per-element constraints on an unconstrained record type
+        // (VHDL-2008 element_constraint syntax). The field names `data` and `empty` in
+        // `avl_st_vector(4-1 downto 0)(data(32-1 downto 0), empty(2-1 downto 0))`
+        // are record element names, not standalone identifier references, and must not
+        // produce "undefined" diagnostics.
+        let code = r#"
+entity toto is
+end entity;
+
+architecture arch_toto of toto is
+    type avl_st is
+    record
+        valid: std_logic;
+        data: std_logic_vector;
+        empty: std_logic_vector;
+    end record avl_st;
+    type avl_st_vector is array(natural range<>) of avl_st;
+
+    signal w_in_st_vector : avl_st_vector(4-1 downto 0)(data(32-1 downto 0), empty(2-1 downto 0));
+
+begin
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let field_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                let msg = d.message.to_lowercase();
+                msg.contains("data") || msg.contains("empty")
+            })
+            .collect();
+        assert!(
+            field_diags.is_empty(),
+            "Record element names in element_constraint should not be flagged as undefined. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_element_constraint_index_undeclared_still_fires() {
+        // `bad_type` is in the first parenthesis_group (index constraint) — must still fire.
+        // `data` is in the second parenthesis_group (element constraint) — must not fire.
+        let code = r#"
+architecture rtl of test is
+    type avl_st is
+    record
+        data: std_logic_vector;
+    end record avl_st;
+    type avl_st_vector is array(natural range<>) of avl_st;
+    signal s : avl_st_vector(bad_type-1 downto 0)(data(31 downto 0));
+begin
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let bad_type_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("bad_type"))
+            .collect();
+        let data_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("data"))
+            .collect();
+        assert!(
+            !bad_type_diags.is_empty(),
+            "bad_type in index constraint should still fire. Got: {:?}",
+            diag_messages(&diags)
+        );
+        assert!(
+            data_diags.is_empty(),
+            "data in element constraint should not fire. Got: {:?}",
+            diag_messages(&diags)
+        );
+    }
+
+    #[test]
+    fn test_undeclared_function_call_in_expression_still_fires() {
+        // An undeclared function used in a behavioral expression must still fire.
+        // Confirms the element constraint filter does not bleed into expression contexts.
+        let code = r#"
+architecture rtl of test is
+    signal s : std_logic;
+begin
+    process
+    begin
+        s <= undeclared_func(s);
+    end process;
+end architecture;
+"#;
+        let diags = check_undeclared(code);
+        let func_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("undeclared_func"))
+            .collect();
+        assert!(
+            !func_diags.is_empty(),
+            "undeclared function call in expression should still fire. Got: {:?}",
             diag_messages(&diags)
         );
     }
