@@ -1,5 +1,6 @@
 use super::*;
 use crate::backend::test_utils::SHARED_PARSER_LOCK;
+use std::collections::HashSet;
 use tree_sitter::Parser;
 
 // --- Test Helpers ---
@@ -151,6 +152,93 @@ port map (
     let (name, kind) = result.unwrap();
     assert_eq!(name, "my_broken_comp");
     assert_eq!(kind, DetectedMapKind::Port);
+}
+
+// --- Unit Tests for collect_used_param_names ---
+
+#[test]
+fn test_collect_used_param_names_empty() {
+    // Empty parens: no content between ( and cursor
+    assert_eq!(collect_used_param_names("func(", 4, 5), HashSet::new());
+}
+
+#[test]
+fn test_collect_used_param_names_whitespace_only() {
+    assert_eq!(collect_used_param_names("func(  ", 4, 7), HashSet::new());
+}
+
+#[test]
+fn test_collect_used_param_names_single() {
+    // "func(a => x, " — only "a" should be collected
+    let text = "func(a => x, ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_multiple() {
+    let text = "func(a => x, b => y, ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a", "b"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_aggregate_rhs() {
+    // "others" inside aggregate must NOT be collected
+    let text = "func(a => (others => '0'), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_array_aggregate_rhs() {
+    // Array aggregate indexes like "0 =>" and "1 =>" must NOT be collected
+    let text = "func(a => (0 => '1', 1 => '0'), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_nested_call() {
+    // "x" is inside inner_func call, depth 2 — must NOT be collected
+    let text = "func(a => inner_func(x => y), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_case_insensitive() {
+    let text = "func(PARAM_A => x, ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["param_a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_mixed_aggregate_and_named() {
+    let text = "func(a => x, b => (others => '0'), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a", "b"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_positional_no_arrow() {
+    // No "=>" at top level — positional args — nothing collected
+    let text = "func(x, y, ";
+    assert_eq!(collect_used_param_names(text, 4, text.len()), HashSet::new());
 }
 
 // --- Basic Context Tests ---

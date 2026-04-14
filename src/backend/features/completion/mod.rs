@@ -148,6 +148,70 @@ fn is_rhs_of_association(text: &str, cursor_offset: usize) -> bool {
     current_segment.contains("=>")
 }
 
+/// Collects the names of parameters already bound in a subprogram call or map argument list.
+///
+/// Scans `text[open_paren_offset..cursor_offset]` tracking paren depth.
+/// Only collects `identifier =>` patterns at depth 1 (directly inside the call's `(`),
+/// ignoring `=>` tokens inside nested aggregates, inner calls, or qualified expressions.
+///
+/// # Arguments
+/// * `text` - The full source text.
+/// * `open_paren_offset` - Byte offset of the `(` that opens the argument list.
+/// * `cursor_offset` - Byte offset of the cursor.
+///
+/// # Returns
+/// A `HashSet<String>` of lowercased parameter names already supplied.
+fn collect_used_param_names(
+    text: &str,
+    open_paren_offset: usize,
+    cursor_offset: usize,
+) -> std::collections::HashSet<String> {
+    let mut used = std::collections::HashSet::new();
+    let limit = cursor_offset.min(text.len());
+    if open_paren_offset >= limit {
+        return used;
+    }
+    let slice = &text[open_paren_offset..limit];
+    let bytes = slice.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    let mut depth: usize = 0;
+
+    while i < n {
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b if depth == 1 && (b.is_ascii_alphabetic() || b == b'_') => {
+                // Potential identifier at top level of the argument list
+                let start = i;
+                while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let ident = &slice[start..i];
+                // Skip whitespace, then check for =>
+                let mut j = i;
+                while j < n && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
+                    j += 1;
+                }
+                if j + 1 < n && bytes[j] == b'=' && bytes[j + 1] == b'>' {
+                    used.insert(ident.to_ascii_lowercase());
+                }
+                // Do NOT advance i here; the loop will continue from i (after ident chars consumed)
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    used
+}
+
 /// Builds the appropriate `CompletionContext` for a map association.
 ///
 /// This is a helper to avoid repeating the same if/else logic for building
