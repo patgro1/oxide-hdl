@@ -1764,6 +1764,24 @@ end architecture;"#,
 }
 
 #[test]
+fn test_context_subprogram_partial_name_stays_both() {
+    // User typed "co" after the open paren — no arrow, no comma yet.
+    // Must stay SubprogramCallBoth so param names survive editor re-trigger.
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(condition : boolean; value : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(co|);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallBoth("my_func".to_string()),
+    );
+}
+
+#[test]
 fn test_context_subprogram_call_aggregate_in_named_rhs_then_lhs() {
     // Aggregate value for first arg — cursor is on LHS of second arg
     check_context(
@@ -1950,4 +1968,255 @@ end architecture;"#;
     // But in-scope signals/variables should appear
     assert!(names.contains(&"s".to_string()) || names.contains(&"v".to_string()),
         "in-scope items should appear in positional mode. Got: {:?}", names);
+}
+
+// --- Phase 2: Instantiation already-used param filtering ---
+
+#[test]
+fn test_port_map_lhs_filters_already_connected_port() {
+    // clk is already connected — should NOT appear in LHS suggestions
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        port (clk : in bit; data : in bit; q : out bit);
+    end component;
+    signal sys_clk : bit;
+    signal d : bit;
+    signal out_q : bit;
+begin
+    u1: dut port map (clk => sys_clk, |);
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"clk"), "'clk' should be filtered (already connected). Got: {:?}", names);
+    assert!(names.contains(&"data"), "'data' should appear. Got: {:?}", names);
+    assert!(names.contains(&"q"), "'q' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_port_map_lhs_filters_multiple_connected_ports() {
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        port (clk : in bit; data : in bit; q : out bit);
+    end component;
+    signal sys_clk : bit;
+    signal d : bit;
+begin
+    u1: dut port map (clk => sys_clk, data => d, |);
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"clk"), "'clk' should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"data"), "'data' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"q"), "'q' should still appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_port_map_lhs_aggregate_value_does_not_confuse_filter() {
+    // port map (data => (0 or 0), | ) — the word inside aggregate must not be filtered as a port
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        port (data : in bit; q : out bit);
+    end component;
+begin
+    u1: dut port map (data => (0 or 0), |);
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    // The key assertion: "others" or any word from inside the expression must not incorrectly
+    // be treated as a port name that's filtered
+    assert!(!names.contains(&"others"), "'others' must not appear as a filtered port name. Got: {:?}", names);
+}
+
+#[test]
+fn test_generic_map_lhs_filters_already_set_generic() {
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        generic (WIDTH : integer; DEPTH : integer);
+        port (clk : in bit);
+    end component;
+begin
+    u1: dut
+        generic map (WIDTH => 8, |)
+        port map (clk => '0');
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"WIDTH"), "'WIDTH' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"DEPTH") || names.contains(&"depth"), "'DEPTH' should appear. Got: {:?}", names);
+}
+
+// --- Bug-fix regression: cursor-in-the-middle filtering (Bug A) ---
+
+#[test]
+fn test_port_map_lhs_filters_port_after_cursor() {
+    // Cursor is BETWEEN two already-connected ports: both should be filtered
+    // even though `data` appears after the cursor position.
+    let arch = r#"
+architecture rtl of e is
+    component dut is port (clk : in bit; data : in bit; rst : in bit); end component;
+begin
+    u1: dut port map (clk => '0', |, data => '1');
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"clk"), "'clk' (before cursor) should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"data"), "'data' (after cursor) should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"rst") || names.contains(&"RST"), "'rst' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_param_after_cursor() {
+    // Cursor is between two already-supplied params; param after cursor must also be filtered.
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |, c => 2);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' (before cursor) should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"c".to_string()), "'c' (after cursor) should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "'b' should appear. Got: {:?}", names);
+}
+
+// --- Bug-fix regression: package-imported subprogram resolution (Bug B) ---
+
+#[test]
+fn test_subprogram_lhs_resolves_from_imported_package() {
+    // Function is declared in a package, not locally — params must still be offered.
+    let pkg = r#"
+package my_pkg is
+    function pkg_func(x : integer; y : integer) return integer;
+end package;"#;
+
+    let arch = r#"
+use work.my_pkg.all;
+architecture rtl of e is begin
+    process is variable v : integer; begin
+        v := pkg_func(|);
+    end process;
+end architecture;"#;
+
+    let (arch_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch(pkg, &arch_code, pos);
+    let names = labels(&items);
+    assert!(names.contains(&"x"), "param 'x' from package should appear. Got: {:?}", names);
+    assert!(names.contains(&"y"), "param 'y' from package should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_used_param_from_imported_package() {
+    // Same as above, but one param already supplied — it should be filtered.
+    let pkg = r#"
+package my_pkg is
+    function pkg_func(x : integer; y : integer) return integer;
+end package;"#;
+
+    let arch = r#"
+use work.my_pkg.all;
+architecture rtl of e is begin
+    process is variable v : integer; begin
+        v := pkg_func(x => 0, |);
+    end process;
+end architecture;"#;
+
+    let (arch_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch(pkg, &arch_code, pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"x"), "'x' already supplied should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"y"), "param 'y' should appear. Got: {:?}", names);
+}
+
+// --- SubprogramCallBoth sortText ordering ---
+
+#[test]
+fn test_subprogram_both_params_sort_before_scope_items() {
+    // In the empty-args case, param items must have sortText "0_<label>"
+    // and scope items must have sortText "1_<label>" so editors float params first,
+    // regardless of alphabetical order (zzz_param vs aaa_signal is the stress case).
+    let arch = r#"
+architecture rtl of e is
+    function my_func(zzz_param : integer) return integer is
+    begin return 0; end function;
+    signal aaa_signal : integer;
+begin
+    process is variable v : integer; begin
+        v := my_func(|);
+    end process;
+end architecture;"#;
+
+    let (arch_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch_code, pos);
+
+    let param_item = items.iter().find(|i| i.label == "zzz_param");
+    let scope_item = items.iter().find(|i| i.label == "aaa_signal");
+
+    assert!(param_item.is_some(), "zzz_param should appear. Got: {:?}", labels(&items));
+    assert!(scope_item.is_some(), "aaa_signal should appear. Got: {:?}", labels(&items));
+
+    let param_sort = param_item.unwrap().sort_text.as_deref().unwrap_or("");
+    let scope_sort = scope_item.unwrap().sort_text.as_deref().unwrap_or("");
+
+    assert!(
+        param_sort < scope_sort,
+        "param sortText ({param_sort:?}) should sort before scope item sortText ({scope_sort:?})"
+    );
+}
+
+// --- Regression: text-based fallback for incomplete code (no closing paren yet) ---
+
+#[test]
+fn test_subprogram_lhs_incomplete_code_no_close_paren() {
+    // Simulates real typing: cursor is after the first named param, no closing ')' yet.
+    // The AST has ERROR nodes because the expression is unfinished. The text-based
+    // fallback must still detect SubprogramCallLhs and return remaining params.
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |
+    end process;
+end architecture;"#;
+
+    // Note: do NOT strip the | before parsing — we intentionally parse broken code
+    // to confirm the text-based fallback works when the AST has ERROR nodes.
+    use crate::backend::AnalysisMap;
+    use crate::backend::test_utils::parse_text;
+    use tower_lsp::lsp_types::Url;
+
+    let (code, pos) = extract_cursor(arch);
+    let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+    let tree = parse_text(&code);
+    let root = tree.root_node();
+    let analysis = crate::backend::syntax::parser::extract_document_symbols(&code, root);
+    let mut analysis_map = AnalysisMap::new();
+    analysis_map.insert(arch_uri.clone(), analysis);
+
+    let ctx = get_completion_context(&code, root, pos);
+    let items = complete_scope(&analysis_map, &arch_uri, &ctx, pos, &code, root);
+    let names: Vec<&str> = labels(&items);
+
+    assert!(!names.contains(&"a"), "'a' already supplied should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"b"), "param 'b' should appear via text fallback. Got: {:?}", names);
+    assert!(names.contains(&"c"), "param 'c' should appear via text fallback. Got: {:?}", names);
 }

@@ -236,12 +236,44 @@ fn has_top_level_arrow(text: &str) -> bool {
     false
 }
 
+/// Returns `true` if the text contains a `,` at paren depth 0.
+///
+/// Used to confirm positional argument mode: once a top-level comma exists the
+/// user has passed the first argument without using `=>`, so the call is positional.
+///
+/// # Arguments
+/// * `text` - The inner content of a call's argument list (after the opening `(`).
+fn has_top_level_comma(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut depth: usize = 0;
+    let mut i = 0;
+    while i < n {
+        match bytes[i] {
+            b'(' => { depth += 1; i += 1; }
+            b')' => { depth = depth.saturating_sub(1); i += 1; }
+            b',' if depth == 0 => return true,
+            _ => { i += 1; }
+        }
+    }
+    false
+}
+
 /// Determines the appropriate `CompletionContext` for a cursor inside a subprogram call.
 ///
 /// Three modes:
-/// - **Both**: argument list is empty/whitespace — user hasn't committed to positional or named.
+/// - **Both**: argument list is empty/whitespace, OR the user is typing the first argument
+///   with no `=>` and no top-level comma yet (ambiguous: could be named or positional).
+///   Offers param names first, then in-scope values.
 /// - **Lhs**: named association mode (`=>` present at top level), cursor is before `=>`.
-/// - **Rhs**: after `=>` in named mode, OR positional mode (args present but no top-level `=>`).
+///   Offers only unbound parameter names.
+/// - **Rhs**: after `=>` in named mode, OR positional mode confirmed by a top-level comma
+///   without any `=>`. Offers only in-scope values.
+///
+/// The key rule for the no-`=>` case: we only commit to `SubprogramCallRhs` (positional)
+/// once there is a top-level comma in the content before the cursor. A single partial token
+/// like `"cond"` is ambiguous — the user may be starting a named param — so we keep `Both`
+/// and let the editor's own filtering narrow the list.
 ///
 /// # Arguments
 /// * `name` - The subprogram name (lowercase), used as the context payload.
@@ -269,8 +301,13 @@ fn classify_call_args(
         } else {
             CompletionContext::SubprogramCallLhs(name)
         }
-    } else {
+    } else if has_top_level_comma(inner) {
+        // Multiple args, no `=>` anywhere → positional mode confirmed.
         CompletionContext::SubprogramCallRhs
+    } else {
+        // Single partial token, no `=>`, no comma yet — ambiguous.
+        // Keep Both so param names stay visible while the user types.
+        CompletionContext::SubprogramCallBoth(name)
     }
 }
 
@@ -295,7 +332,7 @@ fn extract_subprogram_name(name_node: Node, text: &str) -> String {
             let name_text = &text[child.start_byte()..child.end_byte()];
             return name_text
                 .split('.')
-                .last()
+                .next_back()
                 .unwrap_or(name_text)
                 .trim()
                 .to_ascii_lowercase();
@@ -306,7 +343,7 @@ fn extract_subprogram_name(name_node: Node, text: &str) -> String {
     let before_paren = name_text.split('(').next().unwrap_or(name_text);
     before_paren
         .split('.')
-        .last()
+        .next_back()
         .unwrap_or(before_paren)
         .trim()
         .to_ascii_lowercase()
@@ -343,9 +380,9 @@ fn try_subprogram_call_context(
         if kind == PORT_MAP_ASPECT || kind == GENERIC_MAP_ASPECT {
             return None;
         }
-        if kind == PARENTHESIS_GROUP {
-            if let Some(parent) = n.parent() {
-                if parent.kind() == NAME {
+        if kind == PARENTHESIS_GROUP
+            && let Some(parent) = n.parent()
+                && parent.kind() == NAME {
                     let name = extract_subprogram_name(parent, text);
                     let open_paren_offset = n.start_byte();
                     let ctx = classify_call_args(name.clone(), text, open_paren_offset, cursor_offset);
@@ -359,8 +396,6 @@ fn try_subprogram_call_context(
                     }
                     return Some(ctx);
                 }
-            }
-        }
         current = n.parent();
     }
     None
@@ -984,6 +1019,54 @@ fn try_build_context_from_node(
 // Context Detection - Upward Traversal
 // =============================================================================
 
+/// Pure-text subprogram call detection — used as a fallback when the AST has
+/// ERROR nodes (e.g. incomplete code while typing, no closing `)` yet).
+///
+/// Scans backward from the cursor to find the nearest unmatched `(`, then scans
+/// further backward to extract the identifier immediately preceding it (skipping
+/// whitespace). Returns `None` if:
+/// - No open paren is found.
+/// - The text before the paren ends with `map` (→ it's a port/generic map).
+/// - No identifier precedes the paren.
+fn try_text_subprogram_call_context(
+    text: &str,
+    cursor_offset: usize,
+) -> Option<CompletionContext> {
+    let open_paren = find_call_open_paren(text, cursor_offset)?;
+    if open_paren == 0 {
+        return None;
+    }
+
+    // Scan backward over whitespace to find the end of the name.
+    let bytes = text.as_bytes();
+    let mut i = open_paren;
+    while i > 0 && matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        i -= 1;
+    }
+    if i == 0 {
+        return None;
+    }
+
+    // Collect the identifier chars (alphanumeric + underscore).
+    let name_end = i;
+    while i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+        i -= 1;
+    }
+    if i == name_end {
+        return None; // nothing before the paren
+    }
+
+    let raw_name = &text[i..name_end];
+
+    // Exclude VHDL map keywords — these are port/generic maps, not subprogram calls.
+    if raw_name.eq_ignore_ascii_case("map") {
+        return None;
+    }
+
+    let name = raw_name.to_ascii_lowercase();
+    Some(classify_call_args(name, text, open_paren, cursor_offset))
+}
+
 /// Handles upward traversal of the AST for context detection.
 ///
 /// This is the main logic for determining completion context when we have
@@ -1012,19 +1095,27 @@ fn handle_upward_traversal(
         // Check for subprogram call context before sequential scope, because
         // name-with-parenthesis_group nodes are nested inside process_statement
         // and would otherwise be shadowed by the Process context.
-        if kind == PARENTHESIS_GROUP || kind == NAME {
-            if let Some(ctx) = try_subprogram_call_context(n, text, cursor_offset) {
+        if (kind == PARENTHESIS_GROUP || kind == NAME)
+            && let Some(ctx) = try_subprogram_call_context(n, text, cursor_offset) {
                 return ctx;
             }
-        }
 
         // Check for sequential scope (process, subprogram)
         if is_sequential_scope(kind) {
+            // Fallback: detect subprogram calls via text when the AST has ERROR
+            // nodes (e.g. incomplete code, no closing `)` typed yet).
+            if let Some(ctx) = try_text_subprogram_call_context(text, cursor_offset) {
+                return ctx;
+            }
             return CompletionContext::Process;
         }
 
         // Check for architecture/concurrent scope
         if is_scope_container(kind) {
+            // Same fallback for concurrent procedure calls in architecture body.
+            if let Some(ctx) = try_text_subprogram_call_context(text, cursor_offset) {
+                return ctx;
+            }
             return CompletionContext::Architecture;
         }
 
@@ -1063,11 +1154,10 @@ fn handle_map_node(
     if matches!(
         kind,
         ASSOCIATION_ELEMENT | ASSOCIATION_LIST | ASSOCIATION_OR_RANGE_LIST | PARENTHESIS_GROUP
-    ) {
-        if let Some(ctx) = try_subprogram_call_context(node, text, cursor_offset) {
+    )
+        && let Some(ctx) = try_subprogram_call_context(node, text, cursor_offset) {
             return Some(ctx);
         }
-    }
 
     match kind {
         ERROR | SIGNAL_ASSIGNMENT => handle_error_or_assignment_node(node, text, cursor_offset),
@@ -1895,6 +1985,31 @@ fn find_call_open_paren(text: &str, cursor_offset: usize) -> Option<usize> {
     None
 }
 
+/// Finds the byte offset of the `)` that closes the `(` at `open_paren_offset`.
+///
+/// Scans forward from the opening paren, tracking depth. Returns the offset of
+/// the matching `)`, or `None` if the text ends before finding it (incomplete code).
+fn find_matching_close_paren(text: &str, open_paren_offset: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut depth: usize = 0;
+    let mut i = open_paren_offset;
+    while i < n {
+        match bytes[i] {
+            b'(' => { depth += 1; i += 1; }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+                i += 1;
+            }
+            _ => { i += 1; }
+        }
+    }
+    None
+}
+
 /// Generates completion items based on the detected context.
 ///
 /// # Arguments
@@ -1926,7 +2041,12 @@ pub fn complete_scope(
         {
             let cursor_offset = position_to_offset(text, position);
             let open_paren = find_call_open_paren(text, cursor_offset).unwrap_or(0);
-            let used = collect_used_param_names(text, open_paren, cursor_offset);
+            // Scan the FULL argument list (open to close paren) so params already present
+            // after the cursor are also excluded from suggestions.
+            let scan_end = find_matching_close_paren(text, open_paren).unwrap_or(text.len());
+            let used = collect_used_param_names(text, open_paren, scan_end);
+
+            let params_start = items.len();
 
             if let Some(tree) = &local_scope_tree {
                 let innermost = tree.find_innermost_scope(&position);
@@ -1948,26 +2068,89 @@ pub fn complete_scope(
                         })
                     });
 
-                if let Some(declarations) = tree.collect_visible_declarations(&innermost.range, header) {
-                    for decl in &declarations {
-                        if decl.name.eq_ignore_ascii_case(name)
-                            && matches!(
-                                decl.decl_type,
-                                DeclType::Function
-                                    | DeclType::FunctionDeclaration
-                                    | DeclType::Procedure
-                                    | DeclType::ProcedureDeclaration
-                            )
-                        {
-                            if let Some(params) = &decl.parameters {
-                                for param in params {
-                                    if !used.contains(&param.name.to_ascii_lowercase()) {
-                                        items.push(declaration_to_completion(param));
-                                    }
+                // Helper closure: push params of a matching subprogram declaration.
+                let push_params = |items: &mut Vec<CompletionItem>, decl: &Declaration| {
+                    if decl.name.eq_ignore_ascii_case(name)
+                        && matches!(
+                            decl.decl_type,
+                            DeclType::Function
+                                | DeclType::FunctionDeclaration
+                                | DeclType::Procedure
+                                | DeclType::ProcedureDeclaration
+                        )
+                        && let Some(params) = &decl.parameters {
+                            for param in params {
+                                if !used.contains(&param.name.to_ascii_lowercase()) {
+                                    items.push(declaration_to_completion(param));
                                 }
                             }
                         }
+                };
+
+                // 1. Local scope (architecture declarative region, process variables, etc.)
+                if let Some(declarations) = tree.collect_visible_declarations(&innermost.range, header) {
+                    for decl in &declarations {
+                        push_params(&mut items, decl);
                     }
+                }
+
+                // 2. Imported packages — mirrors the `_` arm's use_clauses logic so that
+                //    functions/procedures declared in packages are also resolved.
+                let mut effective_clauses: Vec<UseClause> =
+                    current_analysis.context_clauses_for(tree).to_vec();
+                if let Some(entity_name) = &tree.entity {
+                    let entity_key = entity_name.to_lowercase();
+                    if let Some(entity_tree) = current_analysis.entity_scope_trees.get(&entity_key) {
+                        effective_clauses
+                            .extend_from_slice(current_analysis.context_clauses_for(entity_tree));
+                    } else {
+                        for (other_uri, other_analysis) in analysis_map.iter() {
+                            if other_uri != current_uri
+                                && let Some(entity_tree) =
+                                    other_analysis.entity_scope_trees.get(&entity_key)
+                                {
+                                    effective_clauses.extend_from_slice(
+                                        other_analysis.context_clauses_for(entity_tree),
+                                    );
+                                    break;
+                                }
+                        }
+                    }
+                }
+                let chain = tree.collect_scope_chain(&position);
+                for scope in &chain {
+                    effective_clauses.extend_from_slice(&scope.use_clauses);
+                }
+                for clause in &effective_clauses {
+                    let pkg_name = clause.name.to_lowercase();
+                    for (_, analysis) in analysis_map.iter() {
+                        if let Some(pkg_scope) =
+                            analysis.package_declaration_scope_trees.get(&pkg_name)
+                        {
+                            let candidates: Vec<&Declaration> = if clause.all_import {
+                                pkg_scope.declarations.iter().collect()
+                            } else if let Some(sym) = &clause.imported_symbol {
+                                pkg_scope
+                                    .declarations
+                                    .iter()
+                                    .filter(|d| d.name.eq_ignore_ascii_case(sym))
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+                            for decl in candidates {
+                                push_params(&mut items, decl);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // In SubprogramCallBoth, params share the list with generic scope items.
+            // Prefix their sortText so editors float them to the top of the list.
+            if matches!(context, CompletionContext::SubprogramCallBoth(_)) {
+                for item in &mut items[params_start..] {
+                    item.sort_text = Some(format!("0_{}", item.label));
                 }
             }
 
@@ -2002,6 +2185,14 @@ pub fn complete_scope(
                 let is_generic = matches!(context, CompletionContext::GenericMapLhs(_));
                 let target_lower = target_name.to_lowercase();
 
+                // Compute already-connected port/generic names to filter from suggestions.
+                // Scan the FULL argument list (open to close paren) so names already present
+                // after the cursor are also excluded when inserting in the middle of a map.
+                let cursor_offset = position_to_offset(text, position);
+                let open_paren = find_call_open_paren(text, cursor_offset).unwrap_or(0);
+                let scan_end = find_matching_close_paren(text, open_paren).unwrap_or(text.len());
+                let used = collect_used_param_names(text, open_paren, scan_end);
+
                 //  First we look in the global lookup
                 for analysis in analysis_map.values() {
                     if let Some(entity_tree) = analysis.entity_scope_trees.get(&target_lower) {
@@ -2012,7 +2203,7 @@ pub fn complete_scope(
                                 matches!(decl.decl_type, DeclType::Port(_))
                             };
 
-                            if valid {
+                            if valid && !used.contains(&decl.name.to_ascii_lowercase()) {
                                 items.push(declaration_to_completion(decl));
                             }
                         }
@@ -2062,7 +2253,7 @@ pub fn complete_scope(
                                         matches!(param.decl_type, DeclType::Port(_))
                                     };
 
-                                    if valid {
+                                    if valid && !used.contains(&param.name.to_ascii_lowercase()) {
                                         items.push(declaration_to_completion(param));
                                     }
                                 }
@@ -2102,6 +2293,7 @@ pub fn complete_scope(
 
             // General Scope Completion (RHS, Process, Architecture body)
             _ => {
+                let scope_items_start = items.len();
                 if let Some(tree) = local_scope_tree {
                     let innermost = tree.find_innermost_scope(&position);
                     // Resolve entity/package header — check current file first, then
@@ -2132,6 +2324,21 @@ pub fn complete_scope(
                         tree.collect_visible_declarations(&innermost.range, header)
                     {
                         for decl in declarations {
+                            // In SubprogramCallBoth, suppress the called function/procedure
+                            // itself from the RHS scope list — it's noise when you're inside
+                            // its own argument list.
+                            if let CompletionContext::SubprogramCallBoth(called_name) = context
+                                && decl.name.eq_ignore_ascii_case(called_name)
+                                    && matches!(
+                                        decl.decl_type,
+                                        DeclType::Function
+                                            | DeclType::FunctionDeclaration
+                                            | DeclType::Procedure
+                                            | DeclType::ProcedureDeclaration
+                                    )
+                                {
+                                    continue;
+                                }
                             items.push(declaration_to_completion(&decl));
                         }
                     }
@@ -2156,8 +2363,8 @@ pub fn complete_scope(
                         } else {
                             // Cross-file: find the entity's analysis and inherit its context.
                             for (other_uri, other_analysis) in analysis_map.iter() {
-                                if other_uri != current_uri {
-                                    if let Some(entity_tree) =
+                                if other_uri != current_uri
+                                    && let Some(entity_tree) =
                                         other_analysis.entity_scope_trees.get(&entity_key)
                                     {
                                         effective_clauses.extend_from_slice(
@@ -2165,7 +2372,6 @@ pub fn complete_scope(
                                         );
                                         break;
                                     }
-                                }
                             }
                         }
                     }
@@ -2198,6 +2404,14 @@ pub fn complete_scope(
                                 }
                             }
                         }
+                    }
+                }
+                // When falling through from SubprogramCallBoth, push scope items
+                // behind params in the sort order so the function's own params
+                // float to the top of the completion list.
+                if matches!(context, CompletionContext::SubprogramCallBoth(_)) {
+                    for item in &mut items[scope_items_start..] {
+                        item.sort_text = Some(format!("1_{}", item.label));
                     }
                 }
             }

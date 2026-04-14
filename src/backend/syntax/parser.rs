@@ -85,7 +85,7 @@ pub fn extract_document_symbols(text: &str, root_node: Node) -> Analysis {
             };
 
             analysis.design_units.push(DesignUnit {
-                context_clauses: pending_context.drain(..).collect(),
+                context_clauses: std::mem::take(&mut pending_context),
                 scope_tree,
             });
         }
