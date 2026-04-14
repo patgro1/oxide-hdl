@@ -212,6 +212,67 @@ fn collect_used_param_names(
     used
 }
 
+/// Returns `true` if the text contains a `=>` token at paren depth 0.
+///
+/// Used to detect whether a call's argument list is using named association.
+/// Ignores `=>` tokens inside nested parentheses (aggregates, inner calls).
+///
+/// # Arguments
+/// * `text` - The inner content of a call's argument list (after the opening `(`).
+fn has_top_level_arrow(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut depth: usize = 0;
+    let mut i = 0;
+    while i < n {
+        match bytes[i] {
+            b'(' => { depth += 1; i += 1; }
+            b')' => { depth = depth.saturating_sub(1); i += 1; }
+            b'=' if depth == 0 && i + 1 < n && bytes[i + 1] == b'>' => return true,
+            _ => { i += 1; }
+        }
+    }
+    false
+}
+
+/// Determines the appropriate `CompletionContext` for a cursor inside a subprogram call.
+///
+/// Three modes:
+/// - **Both**: argument list is empty/whitespace — user hasn't committed to positional or named.
+/// - **Lhs**: named association mode (`=>` present at top level), cursor is before `=>`.
+/// - **Rhs**: after `=>` in named mode, OR positional mode (args present but no top-level `=>`).
+///
+/// # Arguments
+/// * `name` - The subprogram name (lowercase), used as the context payload.
+/// * `text` - The full source text.
+/// * `open_paren_offset` - Byte offset of the `(` opening the argument list.
+/// * `cursor_offset` - Byte offset of the cursor.
+fn classify_call_args(
+    name: String,
+    text: &str,
+    open_paren_offset: usize,
+    cursor_offset: usize,
+) -> CompletionContext {
+    let limit = cursor_offset.min(text.len());
+    let inner_start = (open_paren_offset + 1).min(limit);
+
+    if inner_start >= limit || text[inner_start..limit].chars().all(char::is_whitespace) {
+        return CompletionContext::SubprogramCallBoth(name);
+    }
+
+    let inner = &text[inner_start..limit];
+
+    if has_top_level_arrow(inner) {
+        if is_rhs_of_association(text, cursor_offset) {
+            CompletionContext::SubprogramCallRhs
+        } else {
+            CompletionContext::SubprogramCallLhs(name)
+        }
+    } else {
+        CompletionContext::SubprogramCallRhs
+    }
+}
+
 /// Builds the appropriate `CompletionContext` for a map association.
 ///
 /// This is a helper to avoid repeating the same if/else logic for building

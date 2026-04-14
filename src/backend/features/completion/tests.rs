@@ -241,6 +241,98 @@ fn test_collect_used_param_names_positional_no_arrow() {
     assert_eq!(collect_used_param_names(text, 4, text.len()), HashSet::new());
 }
 
+// --- Unit Tests for has_top_level_arrow ---
+
+#[test]
+fn test_has_top_level_arrow_simple() {
+    assert!(has_top_level_arrow("a => x"));
+    assert!(!has_top_level_arrow("a, b, c"));
+    assert!(!has_top_level_arrow(""));
+}
+
+#[test]
+fn test_has_top_level_arrow_nested_ignored() {
+    // => inside parens is NOT at top level
+    assert!(!has_top_level_arrow("(others => '0')"));
+    // but one at top level + one nested
+    assert!(has_top_level_arrow("a => (others => '0')"));
+}
+
+#[test]
+fn test_has_top_level_arrow_nested_call() {
+    assert!(!has_top_level_arrow("inner_func(x => y)"));
+    assert!(has_top_level_arrow("a => inner_func(x => y)"));
+}
+
+// --- Unit Tests for classify_call_args ---
+
+#[test]
+fn test_classify_call_args_empty() {
+    assert_eq!(
+        classify_call_args("func".to_string(), "func(", 4, 5),
+        CompletionContext::SubprogramCallBoth("func".to_string())
+    );
+}
+
+#[test]
+fn test_classify_call_args_whitespace_only() {
+    let text = "func(   ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallBoth("func".to_string())
+    );
+}
+
+#[test]
+fn test_classify_call_args_named_lhs() {
+    // After comma in named mode, cursor is on LHS
+    let text = "func(a => x, ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallLhs("func".to_string())
+    );
+}
+
+#[test]
+fn test_classify_call_args_named_rhs() {
+    // After => in named mode
+    let text = "func(a => ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallRhs
+    );
+}
+
+#[test]
+fn test_classify_call_args_positional() {
+    // Args present but no => at top level
+    let text = "func(x, ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallRhs
+    );
+}
+
+#[test]
+fn test_classify_call_args_aggregate_does_not_trigger_named() {
+    // (others => '0') is a positional arg — no top-level =>
+    let text = "func((others => '0'), ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallRhs
+    );
+}
+
+#[test]
+fn test_classify_call_args_named_after_aggregate_rhs_lhs() {
+    // Named arg whose value is an aggregate — cursor is after comma, on LHS
+    let text = "func(a => (others => '0'), ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallLhs("func".to_string())
+    );
+}
+
 // --- Basic Context Tests ---
 
 #[test]
