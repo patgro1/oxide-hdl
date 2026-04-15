@@ -87,6 +87,13 @@
 - **Background Worker/Disk Cache:** Current performance (<100ms) does not justify the complexity yet.
 
 ### Post 1.0
+
+- **Parser / LSP Split** (`oxide-parser` + `oxide-parser-cli`)
+  - Extract the parser and analysis layer into a standalone library crate.
+  - Expose it to external consumers (Python, C++, shell) via a JSON CLI binary.
+  - oxide-hdl becomes a thin LSP layer depending on the library — zero regression for LSP users.
+  - See `parser-split.md` for the full design.
+
 - **Overload Resolution for Sensitivity Analysis**
   - **Context:** When a procedure has multiple overloads with different parameter directions
     (e.g., two overloads where the 2nd param is `out`, and a third where it is `in`), the
