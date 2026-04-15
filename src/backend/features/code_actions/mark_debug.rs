@@ -64,7 +64,9 @@ fn single_cursor_actions(
     let pos = params.range.start;
 
     // 1. Word at cursor.
-    let Some(word) = get_word_at_pos(rope, pos) else { return };
+    let Some(word) = get_word_at_pos(rope, pos) else {
+        return;
+    };
 
     // 2. LHS-of-port-map guard: if the word is immediately followed by `=>`
     //    in the source text, it is the formal (component-side) port — skip it.
@@ -74,7 +76,9 @@ fn single_cursor_actions(
 
     // 3. Resolve symbol.
     let results = lookup_symbol(&word, uri, analysis_map, &pos, false);
-    let Some(result) = results.into_iter().next() else { return };
+    let Some(result) = results.into_iter().next() else {
+        return;
+    };
 
     let decl = match result.item {
         ResolvedItem::Declaration(d) => d,
@@ -87,12 +91,13 @@ fn single_cursor_actions(
     }
 
     // 5. Already marked? Check the scope containing the declaration.
-    let Some(analysis) = analysis_map.get(uri) else { return };
-    if let Some(scope) = find_scope_containing_pos(&decl.range.start, &analysis.scope_trees) {
-        if scope.is_attr_applied("mark_debug", &decl.name) {
+    let Some(analysis) = analysis_map.get(uri) else {
+        return;
+    };
+    if let Some(scope) = find_scope_containing_pos(&decl.range.start, &analysis.scope_trees)
+        && scope.is_attr_applied("mark_debug", &decl.name) {
             return;
         }
-    }
 
     // 6. Build edits and emit action.
     let kind_label = match decl.decl_type {
@@ -132,13 +137,16 @@ pub(crate) fn build_edits_for_signal(
         spec_indent, decl.name
     );
     let spec_edit = TextEdit {
-        range: Range { start: spec_pos, end: spec_pos },
+        range: Range {
+            start: spec_pos,
+            end: spec_pos,
+        },
         new_text: spec_text,
     };
 
     // Arch-level scope — used for the declaration edit.
     let arch = find_arch_scope_for_pos(&decl.range.start, &analysis.scope_trees);
-    let has_decl = arch.map_or(false, |a| {
+    let has_decl = arch.is_some_and(|a| {
         a.declarations.iter().any(|d| {
             matches!(d.decl_type, DeclType::Attribute) && d.name.eq_ignore_ascii_case("mark_debug")
         })
@@ -158,7 +166,10 @@ pub(crate) fn build_edits_for_signal(
     };
     let decl_text = format!("{}attribute mark_debug : string;\n", decl_indent);
     let decl_edit = TextEdit {
-        range: Range { start: decl_pos, end: decl_pos },
+        range: Range {
+            start: decl_pos,
+            end: decl_pos,
+        },
         new_text: decl_text,
     };
 
@@ -197,16 +208,19 @@ fn find_arch_scope_for_pos<'a>(
     pos: &Position,
     scope_trees: &'a [ScopeTree],
 ) -> Option<&'a ScopeTree> {
-    scope_trees.iter().find(|s| {
-        s.kind == ScopeKind::Architecture && position_in_range(*pos, s.range)
-    })
+    scope_trees
+        .iter()
+        .find(|s| s.kind == ScopeKind::Architecture && position_in_range(*pos, s.range))
 }
 
 /// Returns the insertion point: the start of the line after the last declaration
 /// in `scope`. Returns `None` if the scope has no declarations.
 pub(crate) fn insertion_point(scope: &ScopeTree) -> Option<Position> {
     let last = scope.declarations.iter().max_by_key(|d| d.range.end.line)?;
-    Some(Position { line: last.range.end.line + 1, character: 0 })
+    Some(Position {
+        line: last.range.end.line + 1,
+        character: 0,
+    })
 }
 
 /// Detects the indentation column used by declarations in `scope`.
@@ -233,7 +247,9 @@ fn multi_line_actions(
     actions: &mut Vec<CodeActionOrCommand>,
 ) {
     let sel = params.range;
-    let Some(analysis) = analysis_map.get(uri) else { return };
+    let Some(analysis) = analysis_map.get(uri) else {
+        return;
+    };
 
     let mut candidates: Vec<(String, Position)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -251,7 +267,7 @@ fn multi_line_actions(
     // Filter out already-marked signals
     candidates.retain(|(name, pos)| {
         let scope = find_scope_containing_pos(pos, &analysis.scope_trees);
-        !scope.map_or(false, |s| s.is_attr_applied("mark_debug", name))
+        !scope.is_some_and(|s| s.is_attr_applied("mark_debug", name))
     });
 
     if candidates.is_empty() {
@@ -265,7 +281,7 @@ fn multi_line_actions(
 
     // Arch decl edit (at most once — check all candidates' arch scopes)
     let needs_decl = candidates.iter().any(|(_, pos)| {
-        find_arch_scope_for_pos(pos, &analysis.scope_trees).map_or(true, |arch| {
+        find_arch_scope_for_pos(pos, &analysis.scope_trees).is_none_or(|arch| {
             !arch.declarations.iter().any(|d| {
                 matches!(d.decl_type, DeclType::Attribute)
                     && d.name.eq_ignore_ascii_case("mark_debug")
@@ -273,19 +289,20 @@ fn multi_line_actions(
         })
     });
 
-    if needs_decl {
-        if let Some((_, pos)) = candidates.first() {
-            if let Some(arch) = find_arch_scope_for_pos(pos, &analysis.scope_trees) {
+    if needs_decl
+        && let Some((_, pos)) = candidates.first()
+            && let Some(arch) = find_arch_scope_for_pos(pos, &analysis.scope_trees) {
                 let decl_indent = indent_for_scope(arch, rope);
                 if let Some(decl_pos) = insertion_point(arch) {
                     all_edits.push(TextEdit {
-                        range: Range { start: decl_pos, end: decl_pos },
+                        range: Range {
+                            start: decl_pos,
+                            end: decl_pos,
+                        },
                         new_text: format!("{}attribute mark_debug : string;\n", decl_indent),
                     });
                 }
             }
-        }
-    }
 
     // Group specs by containing scope (keyed by scope range start line)
     let mut scope_specs: std::collections::HashMap<u32, (Position, String, Vec<String>)> =
@@ -294,8 +311,10 @@ fn multi_line_actions(
         if let Some(scope) = find_scope_containing_pos(pos, &analysis.scope_trees) {
             let key = scope.range.start.line;
             let entry = scope_specs.entry(key).or_insert_with(|| {
-                let insert_pos = insertion_point(scope)
-                    .unwrap_or(Position { line: scope.range.end.line, character: 0 });
+                let insert_pos = insertion_point(scope).unwrap_or(Position {
+                    line: scope.range.end.line,
+                    character: 0,
+                });
                 let indent = indent_for_scope(scope, rope);
                 (insert_pos, indent, Vec::new())
             });
@@ -306,10 +325,18 @@ fn multi_line_actions(
     for (_, (insert_pos, indent, names)) in scope_specs {
         let spec_text: String = names
             .iter()
-            .map(|n| format!("{}attribute mark_debug of {} : signal is \"true\";\n", indent, n))
+            .map(|n| {
+                format!(
+                    "{}attribute mark_debug of {} : signal is \"true\";\n",
+                    indent, n
+                )
+            })
             .collect();
         all_edits.push(TextEdit {
-            range: Range { start: insert_pos, end: insert_pos },
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
             new_text: spec_text,
         });
     }
@@ -355,14 +382,12 @@ fn collect_usages_in_range(
             continue;
         }
         let results = lookup_symbol(&usage.name, uri, analysis_map, &usage.range.start, false);
-        if let Some(result) = results.into_iter().next() {
-            if let ResolvedItem::Declaration(decl) = result.item {
-                if matches!(decl.decl_type, DeclType::Signal | DeclType::Port(_)) {
+        if let Some(result) = results.into_iter().next()
+            && let ResolvedItem::Declaration(decl) = result.item
+                && matches!(decl.decl_type, DeclType::Signal | DeclType::Port(_)) {
                     seen.insert(name_lc);
                     candidates.push((decl.name.clone(), decl.range.start));
                 }
-            }
-        }
     }
     for child in &scope.children {
         collect_usages_in_range(child, sel, uri, analysis_map, candidates, seen);
@@ -384,7 +409,9 @@ fn range_contains_pos(range: Range, pos: Position) -> bool {
 /// this is a port map formal — do not offer mark_debug for it.
 fn is_port_map_lhs(rope: &Rope, pos: Position, word: &str) -> bool {
     let line_idx = pos.line as usize;
-    let Ok(line_char_idx) = rope.try_line_to_char(line_idx) else { return false };
+    let Ok(line_char_idx) = rope.try_line_to_char(line_idx) else {
+        return false;
+    };
     // Walk back from cursor to find the true word start (cursor may be anywhere inside the word).
     let cursor_abs = line_char_idx + pos.character as usize;
     let mut start_abs = cursor_abs;
@@ -430,10 +457,7 @@ pub(crate) fn push_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{
-        syntax::parser::extract_document_symbols,
-        test_utils::parse_text,
-    };
+    use crate::backend::{syntax::parser::extract_document_symbols, test_utils::parse_text};
     use tower_lsp::lsp_types::{
         CodeActionContext, CodeActionParams, PartialResultParams, TextDocumentIdentifier,
         WorkDoneProgressParams,
@@ -452,24 +476,50 @@ mod tests {
     }
 
     fn make_cursor_params(uri: &Url, line: u32, col: u32) -> CodeActionParams {
-        let pos = Position { line, character: col };
+        let pos = Position {
+            line,
+            character: col,
+        };
         CodeActionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
-            range: Range { start: pos, end: pos },
-            context: CodeActionContext { diagnostics: vec![], only: None, trigger_kind: None },
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         }
     }
 
-    fn make_range_params(uri: &Url, start_line: u32, start_col: u32, end_line: u32, end_col: u32) -> CodeActionParams {
+    fn make_range_params(
+        uri: &Url,
+        start_line: u32,
+        start_col: u32,
+        end_line: u32,
+        end_col: u32,
+    ) -> CodeActionParams {
         CodeActionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
             range: Range {
-                start: Position { line: start_line, character: start_col },
-                end: Position { line: end_line, character: end_col },
+                start: Position {
+                    line: start_line,
+                    character: start_col,
+                },
+                end: Position {
+                    line: end_line,
+                    character: end_col,
+                },
             },
-            context: CodeActionContext { diagnostics: vec![], only: None, trigger_kind: None },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         }
@@ -490,8 +540,14 @@ mod tests {
             CodeActionOrCommand::CodeAction(ca) => &ca.title,
             _ => panic!("expected CodeAction"),
         };
-        assert!(title.contains("my_sig"), "title should mention signal name: {title}");
-        assert!(title.to_lowercase().contains("mark_debug"), "title should mention mark_debug: {title}");
+        assert!(
+            title.contains("my_sig"),
+            "title should mention signal name: {title}"
+        );
+        assert!(
+            title.to_lowercase().contains("mark_debug"),
+            "title should mention mark_debug: {title}"
+        );
     }
 
     #[test]
@@ -501,7 +557,10 @@ mod tests {
         let (rope, map) = parse_and_build(code, &uri);
         let params = make_cursor_params(&uri, 2, 11);
         let actions = mark_debug_actions(&params, &rope, &map);
-        assert!(actions.is_empty(), "already-marked signal should yield no action");
+        assert!(
+            actions.is_empty(),
+            "already-marked signal should yield no action"
+        );
     }
 
     #[test]
@@ -524,9 +583,20 @@ mod tests {
         let actions = mark_debug_actions(&params, &rope, &map);
         assert_eq!(actions.len(), 1);
         if let CodeActionOrCommand::CodeAction(ca) = &actions[0] {
-            let edits = ca.edit.as_ref().unwrap().changes.as_ref().unwrap().get(&uri).unwrap();
+            let edits = ca
+                .edit
+                .as_ref()
+                .unwrap()
+                .changes
+                .as_ref()
+                .unwrap()
+                .get(&uri)
+                .unwrap();
             assert_eq!(edits.len(), 1, "only the spec edit expected");
-            assert!(edits[0].new_text.contains("of my_sig"), "edit should contain signal name");
+            assert!(
+                edits[0].new_text.contains("of my_sig"),
+                "edit should contain signal name"
+            );
         }
     }
 
@@ -539,11 +609,25 @@ mod tests {
         let actions = mark_debug_actions(&params, &rope, &map);
         assert_eq!(actions.len(), 1);
         if let CodeActionOrCommand::CodeAction(ca) = &actions[0] {
-            let edits = ca.edit.as_ref().unwrap().changes.as_ref().unwrap().get(&uri).unwrap();
+            let edits = ca
+                .edit
+                .as_ref()
+                .unwrap()
+                .changes
+                .as_ref()
+                .unwrap()
+                .get(&uri)
+                .unwrap();
             assert_eq!(edits.len(), 2, "expected decl edit + spec edit");
             let combined: String = edits.iter().map(|e| e.new_text.as_str()).collect();
-            assert!(combined.contains("attribute mark_debug : string"), "should include declaration");
-            assert!(combined.contains("of my_sig"), "should include specification");
+            assert!(
+                combined.contains("attribute mark_debug : string"),
+                "should include declaration"
+            );
+            assert!(
+                combined.contains("of my_sig"),
+                "should include specification"
+            );
         }
     }
 
@@ -585,7 +669,10 @@ mod tests {
             CodeActionOrCommand::CodeAction(ca) => &ca.title,
             _ => panic!("expected CodeAction"),
         };
-        assert!(title.to_lowercase().contains("mark_debug"), "title: {title}");
+        assert!(
+            title.to_lowercase().contains("mark_debug"),
+            "title: {title}"
+        );
     }
 
     #[test]
@@ -597,7 +684,10 @@ mod tests {
         // Select lines 2-4 (both signal declarations)
         let params = make_range_params(&uri, 2, 0, 4, 0);
         let actions = mark_debug_actions(&params, &rope, &map);
-        assert!(actions.is_empty(), "all signals already marked — no action expected");
+        assert!(
+            actions.is_empty(),
+            "all signals already marked — no action expected"
+        );
     }
 
     #[test]
@@ -620,6 +710,9 @@ mod tests {
         // "clk" starts at col 25
         let params = make_cursor_params(&uri, 6, 25);
         let actions = mark_debug_actions(&params, &rope, &map);
-        assert!(actions.is_empty(), "LHS of port map should not offer mark_debug, got: {actions:?}");
+        assert!(
+            actions.is_empty(),
+            "LHS of port map should not offer mark_debug, got: {actions:?}"
+        );
     }
 }

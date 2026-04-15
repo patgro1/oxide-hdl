@@ -1,5 +1,6 @@
 use super::*;
 use crate::backend::test_utils::SHARED_PARSER_LOCK;
+use std::collections::HashSet;
 use tree_sitter::Parser;
 
 // --- Test Helpers ---
@@ -151,6 +152,185 @@ port map (
     let (name, kind) = result.unwrap();
     assert_eq!(name, "my_broken_comp");
     assert_eq!(kind, DetectedMapKind::Port);
+}
+
+// --- Unit Tests for collect_used_param_names ---
+
+#[test]
+fn test_collect_used_param_names_empty() {
+    // Empty parens: no content between ( and cursor
+    assert_eq!(collect_used_param_names("func(", 4, 5), HashSet::new());
+}
+
+#[test]
+fn test_collect_used_param_names_whitespace_only() {
+    assert_eq!(collect_used_param_names("func(  ", 4, 7), HashSet::new());
+}
+
+#[test]
+fn test_collect_used_param_names_single() {
+    // "func(a => x, " — only "a" should be collected
+    let text = "func(a => x, ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_multiple() {
+    let text = "func(a => x, b => y, ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a", "b"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_aggregate_rhs() {
+    // "others" inside aggregate must NOT be collected
+    let text = "func(a => (others => '0'), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_array_aggregate_rhs() {
+    // Array aggregate indexes like "0 =>" and "1 =>" must NOT be collected
+    let text = "func(a => (0 => '1', 1 => '0'), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_nested_call() {
+    // "x" is inside inner_func call, depth 2 — must NOT be collected
+    let text = "func(a => inner_func(x => y), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_case_insensitive() {
+    let text = "func(PARAM_A => x, ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["param_a"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_mixed_aggregate_and_named() {
+    let text = "func(a => x, b => (others => '0'), ";
+    assert_eq!(
+        collect_used_param_names(text, 4, text.len()),
+        ["a", "b"].iter().map(|s| s.to_string()).collect::<HashSet<_>>()
+    );
+}
+
+#[test]
+fn test_collect_used_param_names_positional_no_arrow() {
+    // No "=>" at top level — positional args — nothing collected
+    let text = "func(x, y, ";
+    assert_eq!(collect_used_param_names(text, 4, text.len()), HashSet::new());
+}
+
+// --- Unit Tests for has_top_level_arrow ---
+
+#[test]
+fn test_has_top_level_arrow_simple() {
+    assert!(has_top_level_arrow("a => x"));
+    assert!(!has_top_level_arrow("a, b, c"));
+    assert!(!has_top_level_arrow(""));
+}
+
+#[test]
+fn test_has_top_level_arrow_nested_ignored() {
+    // => inside parens is NOT at top level
+    assert!(!has_top_level_arrow("(others => '0')"));
+    // but one at top level + one nested
+    assert!(has_top_level_arrow("a => (others => '0')"));
+}
+
+#[test]
+fn test_has_top_level_arrow_nested_call() {
+    assert!(!has_top_level_arrow("inner_func(x => y)"));
+    assert!(has_top_level_arrow("a => inner_func(x => y)"));
+}
+
+// --- Unit Tests for classify_call_args ---
+
+#[test]
+fn test_classify_call_args_empty() {
+    assert_eq!(
+        classify_call_args("func".to_string(), "func(", 4, 5),
+        CompletionContext::SubprogramCallBoth("func".to_string())
+    );
+}
+
+#[test]
+fn test_classify_call_args_whitespace_only() {
+    let text = "func(   ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallBoth("func".to_string())
+    );
+}
+
+#[test]
+fn test_classify_call_args_named_lhs() {
+    // After comma in named mode, cursor is on LHS
+    let text = "func(a => x, ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallLhs("func".to_string())
+    );
+}
+
+#[test]
+fn test_classify_call_args_named_rhs() {
+    // After => in named mode
+    let text = "func(a => ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallRhs
+    );
+}
+
+#[test]
+fn test_classify_call_args_positional() {
+    // Args present but no => at top level
+    let text = "func(x, ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallRhs
+    );
+}
+
+#[test]
+fn test_classify_call_args_aggregate_does_not_trigger_named() {
+    // (others => '0') is a positional arg — no top-level =>
+    let text = "func((others => '0'), ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallRhs
+    );
+}
+
+#[test]
+fn test_classify_call_args_named_after_aggregate_rhs_lhs() {
+    // Named arg whose value is an aggregate — cursor is after comma, on LHS
+    let text = "func(a => (others => '0'), ";
+    assert_eq!(
+        classify_call_args("func".to_string(), text, 4, text.len()),
+        CompletionContext::SubprogramCallLhs("func".to_string())
+    );
 }
 
 // --- Basic Context Tests ---
@@ -1494,4 +1674,549 @@ end architecture;
         "Entity generic 'G_WIDTH' should be visible inside arch body when entity is in a separate file. Got: {:?}",
         names
     );
+}
+
+// --- Context Detection Tests: Subprogram Call ---
+
+// Each test below is a self-contained VHDL snippet with | as the cursor marker.
+
+#[test]
+fn test_context_subprogram_call_empty() {
+    // Empty parens — offer both LHS and RHS
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(|);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallBoth("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_named_lhs_first_arg() {
+    // Before => on the first arg
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(|a => 0, b => 1);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_named_rhs() {
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallRhs,
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_named_lhs_after_comma() {
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_positional() {
+    // Positional args — no => at top level → RHS only
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(0, |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallRhs,
+    );
+}
+
+#[test]
+fn test_context_subprogram_partial_name_stays_both() {
+    // User typed "co" after the open paren — no arrow, no comma yet.
+    // Must stay SubprogramCallBoth so param names survive editor re-trigger.
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(condition : boolean; value : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(co|);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallBoth("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_aggregate_in_named_rhs_then_lhs() {
+    // Aggregate value for first arg — cursor is on LHS of second arg
+    check_context(
+        r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return a; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => (0 + 1), |);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_func".to_string()),
+    );
+}
+
+#[test]
+fn test_context_subprogram_call_nested_inner_wins() {
+    // Cursor inside inner call — context should be for inner call, not outer
+    check_context(
+        r#"
+architecture rtl of e is
+    function outer(x : integer) return integer is begin return x; end function;
+    function inner(p : integer) return integer is begin return p; end function;
+begin
+    process is variable v : integer; begin
+        v := outer(inner(|));
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallBoth("inner".to_string()),
+    );
+}
+
+#[test]
+fn test_context_procedure_call_named_lhs() {
+    check_context(
+        r#"
+architecture rtl of e is
+    procedure my_proc(signal clk : in bit; constant n : in integer) is
+    begin null; end procedure;
+    signal sys_clk : bit;
+begin
+    process is begin
+        my_proc(|clk => sys_clk, n => 8);
+    end process;
+end architecture;"#,
+        CompletionContext::SubprogramCallLhs("my_proc".to_string()),
+    );
+}
+
+// =============================================================================
+// Subprogram Call Completion (Resolution) Tests
+// =============================================================================
+
+/// Helper for subprogram call completion tests.
+/// Returns completion labels at the cursor position in the given arch code.
+fn complete_subprogram_call(arch_code: &str) -> Vec<String> {
+    use crate::backend::AnalysisMap;
+    use crate::backend::test_utils::parse_text;
+    use tower_lsp::lsp_types::Url;
+
+    let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+    let (code, pos) = extract_cursor(arch_code);
+
+    // parse_text acquires SHARED_PARSER_LOCK internally — do NOT hold it here.
+    let arch_tree = parse_text(&code);
+    let arch_root = arch_tree.root_node();
+    let arch_analysis =
+        crate::backend::syntax::parser::extract_document_symbols(&code, arch_root);
+
+    let mut analysis_map = AnalysisMap::new();
+    analysis_map.insert(arch_uri.clone(), arch_analysis);
+
+    let ctx = get_completion_context(&code, arch_root, pos);
+    let items = complete_scope(&analysis_map, &arch_uri, &ctx, pos, &code, arch_root);
+    labels(&items).iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn test_subprogram_lhs_offers_all_params_when_empty() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(|);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(names.contains(&"a".to_string()), "param 'a' should appear. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "param 'b' should appear. Got: {:?}", names);
+    assert!(names.contains(&"c".to_string()), "param 'c' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_already_supplied_param() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered out. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "param 'b' should appear. Got: {:?}", names);
+    assert!(names.contains(&"c".to_string()), "param 'c' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_multiple_supplied_params() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, b => 1, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"b".to_string()), "'b' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"c".to_string()), "param 'c' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_all_params_filtered_when_all_supplied() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, b => 1, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"b".to_string()), "'b' should be filtered. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_aggregate_rhs_does_not_filter_wrong_param() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => (0 + 1), |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "'b' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_positional_offers_no_param_names() {
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer) return integer is
+    begin return 0; end function;
+    signal s : integer;
+begin
+    process is variable v : integer; begin
+        v := my_func(0, |);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    // In positional mode, param names should not appear as completions
+    assert!(!names.contains(&"a".to_string()), "'a' should not appear in positional mode. Got: {:?}", names);
+    assert!(!names.contains(&"b".to_string()), "'b' should not appear in positional mode. Got: {:?}", names);
+    // But in-scope signals/variables should appear
+    assert!(names.contains(&"s".to_string()) || names.contains(&"v".to_string()),
+        "in-scope items should appear in positional mode. Got: {:?}", names);
+}
+
+// --- Phase 2: Instantiation already-used param filtering ---
+
+#[test]
+fn test_port_map_lhs_filters_already_connected_port() {
+    // clk is already connected — should NOT appear in LHS suggestions
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        port (clk : in bit; data : in bit; q : out bit);
+    end component;
+    signal sys_clk : bit;
+    signal d : bit;
+    signal out_q : bit;
+begin
+    u1: dut port map (clk => sys_clk, |);
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"clk"), "'clk' should be filtered (already connected). Got: {:?}", names);
+    assert!(names.contains(&"data"), "'data' should appear. Got: {:?}", names);
+    assert!(names.contains(&"q"), "'q' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_port_map_lhs_filters_multiple_connected_ports() {
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        port (clk : in bit; data : in bit; q : out bit);
+    end component;
+    signal sys_clk : bit;
+    signal d : bit;
+begin
+    u1: dut port map (clk => sys_clk, data => d, |);
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"clk"), "'clk' should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"data"), "'data' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"q"), "'q' should still appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_port_map_lhs_aggregate_value_does_not_confuse_filter() {
+    // port map (data => (0 or 0), | ) — the word inside aggregate must not be filtered as a port
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        port (data : in bit; q : out bit);
+    end component;
+begin
+    u1: dut port map (data => (0 or 0), |);
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    // The key assertion: "others" or any word from inside the expression must not incorrectly
+    // be treated as a port name that's filtered
+    assert!(!names.contains(&"others"), "'others' must not appear as a filtered port name. Got: {:?}", names);
+}
+
+#[test]
+fn test_generic_map_lhs_filters_already_set_generic() {
+    let arch = r#"
+architecture rtl of e is
+    component dut is
+        generic (WIDTH : integer; DEPTH : integer);
+        port (clk : in bit);
+    end component;
+begin
+    u1: dut
+        generic map (WIDTH => 8, |)
+        port map (clk => '0');
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"WIDTH"), "'WIDTH' should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"DEPTH") || names.contains(&"depth"), "'DEPTH' should appear. Got: {:?}", names);
+}
+
+// --- Bug-fix regression: cursor-in-the-middle filtering (Bug A) ---
+
+#[test]
+fn test_port_map_lhs_filters_port_after_cursor() {
+    // Cursor is BETWEEN two already-connected ports: both should be filtered
+    // even though `data` appears after the cursor position.
+    let arch = r#"
+architecture rtl of e is
+    component dut is port (clk : in bit; data : in bit; rst : in bit); end component;
+begin
+    u1: dut port map (clk => '0', |, data => '1');
+end architecture;"#;
+
+    let (_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch.replace("|", ""), pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"clk"), "'clk' (before cursor) should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"data"), "'data' (after cursor) should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"rst") || names.contains(&"RST"), "'rst' should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_param_after_cursor() {
+    // Cursor is between two already-supplied params; param after cursor must also be filtered.
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |, c => 2);
+    end process;
+end architecture;"#;
+
+    let names = complete_subprogram_call(arch);
+    assert!(!names.contains(&"a".to_string()), "'a' (before cursor) should be filtered. Got: {:?}", names);
+    assert!(!names.contains(&"c".to_string()), "'c' (after cursor) should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"b".to_string()), "'b' should appear. Got: {:?}", names);
+}
+
+// --- Bug-fix regression: package-imported subprogram resolution (Bug B) ---
+
+#[test]
+fn test_subprogram_lhs_resolves_from_imported_package() {
+    // Function is declared in a package, not locally — params must still be offered.
+    let pkg = r#"
+package my_pkg is
+    function pkg_func(x : integer; y : integer) return integer;
+end package;"#;
+
+    let arch = r#"
+use work.my_pkg.all;
+architecture rtl of e is begin
+    process is variable v : integer; begin
+        v := pkg_func(|);
+    end process;
+end architecture;"#;
+
+    let (arch_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch(pkg, &arch_code, pos);
+    let names = labels(&items);
+    assert!(names.contains(&"x"), "param 'x' from package should appear. Got: {:?}", names);
+    assert!(names.contains(&"y"), "param 'y' from package should appear. Got: {:?}", names);
+}
+
+#[test]
+fn test_subprogram_lhs_filters_used_param_from_imported_package() {
+    // Same as above, but one param already supplied — it should be filtered.
+    let pkg = r#"
+package my_pkg is
+    function pkg_func(x : integer; y : integer) return integer;
+end package;"#;
+
+    let arch = r#"
+use work.my_pkg.all;
+architecture rtl of e is begin
+    process is variable v : integer; begin
+        v := pkg_func(x => 0, |);
+    end process;
+end architecture;"#;
+
+    let (arch_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch(pkg, &arch_code, pos);
+    let names = labels(&items);
+    assert!(!names.contains(&"x"), "'x' already supplied should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"y"), "param 'y' should appear. Got: {:?}", names);
+}
+
+// --- SubprogramCallBoth sortText ordering ---
+
+#[test]
+fn test_subprogram_both_params_sort_before_scope_items() {
+    // In the empty-args case, param items must have sortText "0_<label>"
+    // and scope items must have sortText "1_<label>" so editors float params first,
+    // regardless of alphabetical order (zzz_param vs aaa_signal is the stress case).
+    let arch = r#"
+architecture rtl of e is
+    function my_func(zzz_param : integer) return integer is
+    begin return 0; end function;
+    signal aaa_signal : integer;
+begin
+    process is variable v : integer; begin
+        v := my_func(|);
+    end process;
+end architecture;"#;
+
+    let (arch_code, pos) = extract_cursor(arch);
+    let items = complete_in_arch("", &arch_code, pos);
+
+    let param_item = items.iter().find(|i| i.label == "zzz_param");
+    let scope_item = items.iter().find(|i| i.label == "aaa_signal");
+
+    assert!(param_item.is_some(), "zzz_param should appear. Got: {:?}", labels(&items));
+    assert!(scope_item.is_some(), "aaa_signal should appear. Got: {:?}", labels(&items));
+
+    let param_sort = param_item.unwrap().sort_text.as_deref().unwrap_or("");
+    let scope_sort = scope_item.unwrap().sort_text.as_deref().unwrap_or("");
+
+    assert!(
+        param_sort < scope_sort,
+        "param sortText ({param_sort:?}) should sort before scope item sortText ({scope_sort:?})"
+    );
+}
+
+// --- Regression: text-based fallback for incomplete code (no closing paren yet) ---
+
+#[test]
+fn test_subprogram_lhs_incomplete_code_no_close_paren() {
+    // Simulates real typing: cursor is after the first named param, no closing ')' yet.
+    // The AST has ERROR nodes because the expression is unfinished. The text-based
+    // fallback must still detect SubprogramCallLhs and return remaining params.
+    let arch = r#"
+architecture rtl of e is
+    function my_func(a : integer; b : integer; c : integer) return integer is
+    begin return 0; end function;
+begin
+    process is variable v : integer; begin
+        v := my_func(a => 0, |
+    end process;
+end architecture;"#;
+
+    // Note: do NOT strip the | before parsing — we intentionally parse broken code
+    // to confirm the text-based fallback works when the AST has ERROR nodes.
+    use crate::backend::AnalysisMap;
+    use crate::backend::test_utils::parse_text;
+    use tower_lsp::lsp_types::Url;
+
+    let (code, pos) = extract_cursor(arch);
+    let arch_uri = Url::parse("file:///arch.vhd").unwrap();
+    let tree = parse_text(&code);
+    let root = tree.root_node();
+    let analysis = crate::backend::syntax::parser::extract_document_symbols(&code, root);
+    let mut analysis_map = AnalysisMap::new();
+    analysis_map.insert(arch_uri.clone(), analysis);
+
+    let ctx = get_completion_context(&code, root, pos);
+    let items = complete_scope(&analysis_map, &arch_uri, &ctx, pos, &code, root);
+    let names: Vec<&str> = labels(&items);
+
+    assert!(!names.contains(&"a"), "'a' already supplied should be filtered. Got: {:?}", names);
+    assert!(names.contains(&"b"), "param 'b' should appear via text fallback. Got: {:?}", names);
+    assert!(names.contains(&"c"), "param 'c' should appear via text fallback. Got: {:?}", names);
 }

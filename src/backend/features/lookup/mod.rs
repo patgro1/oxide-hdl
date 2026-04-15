@@ -95,8 +95,8 @@ pub fn lookup_symbol(
                         .extend_from_slice(analysis.context_clauses_for(entity_tree));
                 } else {
                     for (other_uri, other_analysis) in analysis_map.iter() {
-                        if other_uri != current_uri {
-                            if let Some(entity_tree) =
+                        if other_uri != current_uri
+                            && let Some(entity_tree) =
                                 other_analysis.entity_scope_trees.get(&entity_key)
                             {
                                 effective_clauses.extend_from_slice(
@@ -104,7 +104,6 @@ pub fn lookup_symbol(
                                 );
                                 break;
                             }
-                        }
                     }
                 }
             }
