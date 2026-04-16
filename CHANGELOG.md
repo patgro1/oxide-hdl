@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.6.4] — 2026-04-16
+
+### Fixed
+
+- **Snippet completion after labeled statements** — process, generate, and instantiation snippets are now accessible after label prefixes (e.g., `my_label:p|`). Subprogram call detection no longer interferes with labeled statement context.
+
 ## [0.6.3] — 2026-04-14
 
 ### Added
