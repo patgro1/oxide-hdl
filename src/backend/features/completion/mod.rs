@@ -373,6 +373,12 @@ fn try_subprogram_call_context(
     text: &str,
     cursor_offset: usize,
 ) -> Option<CompletionContext> {
+    // Skip labeled statements (label: process, label: function_call, etc.)
+    // Detect by checking if node is a NAME and is preceded by a colon
+    if node.kind() == NAME && is_label_identifier(node, text) {
+        return None;
+    }
+
     let mut current = Some(node);
     while let Some(n) = current {
         let kind = n.kind();
@@ -399,6 +405,23 @@ fn try_subprogram_call_context(
         current = n.parent();
     }
     None
+}
+
+/// Checks if a NAME node is a label identifier (preceded by a colon).
+/// Excludes labels from subprogram call detection to preserve snippet completion.
+fn is_label_identifier(node: Node, text: &str) -> bool {
+    let start_byte = node.start_byte();
+    if start_byte == 0 {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let mut i = start_byte - 1;
+    // Skip whitespace backward
+    while i > 0 && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i -= 1;
+    }
+    // Check for colon
+    i < bytes.len() && bytes[i] == b':'
 }
 
 /// Returns `true` if the `parenthesis_group` node contains at least one `association_element`
