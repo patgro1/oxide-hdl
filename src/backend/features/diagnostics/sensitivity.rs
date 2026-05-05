@@ -67,18 +67,6 @@ struct SignalExtractionContext<'a> {
 impl<'a> SignalExtractionContext<'a> {
     fn extract(&mut self, start_node: Node, is_lhs: bool) {
         match start_node.kind() {
-            // Nodes where all identifiers are reads
-            "conditional_or_unaffected_expression"
-            | "case_expression"
-            | "relational_expression"
-            | "when_element"
-            | "when_expression"
-            | "initialiser" => collect_identifiers_recursive(
-                start_node,
-                self.text,
-                UsageContext::Behavioral,
-                self.read_signals,
-            ),
 
             // Assignment statements - need to distinguish LHS from RHS
             "simple_waveform_assignment"
@@ -1946,6 +1934,44 @@ end architecture;
             !unnecessary,
             "sig_inout is an 'inout' param from a package proc – must not be flagged as unnecessary; got: {:?}",
             diags
+        );
+    }
+
+    #[test]
+    fn test_signal_attribute_as_function_arg_no_false_positive() {
+        // Regression: a'length and a'range are static attributes — signal `a`
+        // must NOT be flagged as missing from the sensitivity list.
+        // Only `b` (which is actually read at runtime) needs to be in (b).
+        let code = r#"
+architecture rtl of toto is
+    function my_func(x: std_logic_vector; length: natural) return std_logic_vector is
+    begin
+        return x(length-1 downto 0);
+    end function;
+
+    function my_func2(s:std_logic_vector; arg2: natural)  return std_logic_vector is
+        variable ret    : std_logic_vector(s'length-1 downto 0);
+    begin
+        ret     := unsigned(s) - arg2;
+        return ret;
+    end function;
+
+    signal a: std_logic_vector(32-1 downto 0);
+    signal b: std_logic_vector(64-1 downto 0);
+begin
+        p_count_byte_counter : process (b)
+            variable v_empty   : std_logic_vector(a'range);
+        begin
+            v_empty   := my_func2(my_func(12345, a'length), b);
+        end process;
+end architecture;
+"#;
+        let diags = check_sensitivity(code);
+        eprintln!("Diagnostics: {:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            diags.is_empty(),
+            "process(b) with a'length/a'range used as static attributes should produce no diagnostics; got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 }

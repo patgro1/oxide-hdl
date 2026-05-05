@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.6.5] — 2026-05-05
+
+### Fixed
+
+- **Sensitivity list false positive for signal attributes** — using a signal's static attribute (e.g., `a'length`, `a'range`) as a function argument no longer causes the signal to be incorrectly flagged as missing from the process sensitivity list.
+
 ## [0.6.4] — 2026-04-16
 
 ### Fixed
