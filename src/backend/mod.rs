@@ -498,15 +498,33 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        // Get context
-        let rope = {
+        let text = {
             let map = self.document_map.read().await;
             match map.get(&uri) {
-                Some(r) => r.clone(),
+                Some(r) => r.to_string(),
                 None => return Ok(None),
             }
         };
 
+        let tree = {
+            let mut parser = self.parser.lock().await;
+            let lang = unsafe { crate::tree_sitter_vhdl() };
+            let _ = parser.set_language(&lang);
+            parser.parse(&text, None).unwrap()
+        };
+
+        let chain = hover::get_qualified_chain_at_pos(tree.root_node(), &text, position);
+        if chain.len() >= 2 {
+            let map = self.analysis_map.read().await;
+            let results = lookup::resolve_path_chain(&chain, &uri, &map, &position);
+            if !results.is_empty() {
+                let locations =
+                    features::goto::apply_definition_priority(results, &uri);
+                return Ok(Some(GotoDefinitionResponse::Array(locations)));
+            }
+        }
+
+        let rope = ropey::Rope::from_str(&text);
         if let Some(word) = get_word_at_pos(&rope, position) {
             let map = self.analysis_map.read().await;
 
@@ -542,14 +560,33 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let rope = {
+        let text = {
             let map = self.document_map.read().await;
             match map.get(&uri) {
-                Some(r) => r.clone(),
+                Some(r) => r.to_string(),
                 None => return Ok(None),
             }
         };
 
+        let tree = {
+            let mut parser = self.parser.lock().await;
+            let lang = unsafe { crate::tree_sitter_vhdl() };
+            let _ = parser.set_language(&lang);
+            parser.parse(&text, None).unwrap()
+        };
+
+        let chain = hover::get_qualified_chain_at_pos(tree.root_node(), &text, position);
+        if chain.len() >= 2 {
+            let map = self.analysis_map.read().await;
+            let results = lookup::resolve_path_chain(&chain, &uri, &map, &position);
+            if !results.is_empty() {
+                let locations =
+                    features::goto::apply_declaration_priority(results, &uri);
+                return Ok(Some(GotoDefinitionResponse::Array(locations)));
+            }
+        }
+
+        let rope = ropey::Rope::from_str(&text);
         if let Some(word) = get_word_at_pos(&rope, position) {
             let map = self.analysis_map.read().await;
             let target = &word.to_lowercase();
@@ -569,14 +606,33 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let rope = {
+        let text = {
             let map = self.document_map.read().await;
             match map.get(&uri) {
-                Some(r) => r.clone(),
+                Some(r) => r.to_string(),
                 None => return Ok(None),
             }
         };
 
+        let tree = {
+            let mut parser = self.parser.lock().await;
+            let lang = unsafe { crate::tree_sitter_vhdl() };
+            let _ = parser.set_language(&lang);
+            parser.parse(&text, None).unwrap()
+        };
+
+        let chain = hover::get_qualified_chain_at_pos(tree.root_node(), &text, position);
+        if chain.len() >= 2 {
+            let map = self.analysis_map.read().await;
+            let results = lookup::resolve_path_chain(&chain, &uri, &map, &position);
+            if !results.is_empty() {
+                let locations =
+                    features::goto::apply_implementation_priority(results, &map);
+                return Ok(Some(GotoDefinitionResponse::Array(locations)));
+            }
+        }
+
+        let rope = ropey::Rope::from_str(&text);
         if let Some(word) = get_word_at_pos(&rope, position) {
             let map = self.analysis_map.read().await;
             let target = &word.to_lowercase();

@@ -211,6 +211,37 @@ pub fn format_function_hover(sym: &Symbol) -> String {
     md
 }
 
+/// Extracts the dot-separated identifier chain at the cursor position from the AST.
+///
+/// Walks upward from the cursor leaf to find a `name` or `selected_name` node that
+/// contains dot-notation selections. When found, delegates to `extract_chain_at_pos`
+/// to build the identifier list up to the cursor (e.g. `["pkg_a", "my_func"]` for
+/// `pkg_a.my_func` or `["work", "pkg_a", "my_func"]` for `work.pkg_a.my_func`).
+///
+/// Returns an empty vec when the cursor is not on a dot-notation expression.
+///
+/// Used by both hover and goto handlers to detect qualified names before falling
+/// back to simple word-at-cursor lookup.
+pub fn get_qualified_chain_at_pos(root_node: Node, text: &str, pos: Position) -> Vec<String> {
+    let point = Point::new(pos.line as usize, pos.character as usize);
+    let mut current_node = root_node.descendant_for_point_range(point, point);
+
+    while let Some(node) = current_node {
+        if (node.kind() == "selected_name" || node.kind() == "name") && has_selections(node) {
+            let chain = extract_chain_at_pos(node, text, pos);
+            if !chain.is_empty() {
+                return chain;
+            }
+        }
+        if node.kind() == "process_statement" || node.kind() == "architecture_body" {
+            break;
+        }
+        current_node = node.parent();
+    }
+
+    vec![]
+}
+
 /// Main entry point for hover resolution. Handles both dot notation and standard lookups.
 ///
 /// Walks the AST upward from the cursor position looking for `selected_name` or `name`
@@ -233,29 +264,18 @@ pub fn resolve_hover(
     root_node: Node,
     pos: Position,
 ) -> Vec<HoverResolution> {
-    let point = Point::new(pos.line as usize, pos.character as usize);
-
-    let mut current_node = root_node.descendant_for_point_range(point, point);
-
-    while let Some(node) = current_node {
-        if (node.kind() == "selected_name" || node.kind() == "name") && has_selections(node) {
-            let chain = extract_chain_at_pos(node, text, pos);
-            if !chain.is_empty() {
-                let results = resolve_path_chain(&chain, current_uri, analysis_map, &pos);
-                return results
-                    .into_iter()
-                    .map(|res| HoverResolution {
-                        item: res.item,
-                        definition_uri: Some(res.source_uri),
-                    })
-                    .collect();
-            }
+    let chain = get_qualified_chain_at_pos(root_node, text, pos);
+    if !chain.is_empty() {
+        let results = resolve_path_chain(&chain, current_uri, analysis_map, &pos);
+        if !results.is_empty() {
+            return results
+                .into_iter()
+                .map(|res| HoverResolution {
+                    item: res.item,
+                    definition_uri: Some(res.source_uri),
+                })
+                .collect();
         }
-
-        if node.kind() == "process_statement" || node.kind() == "architecture_body" {
-            break;
-        }
-        current_node = node.parent();
     }
 
     if let Some(token) = get_identifier_from_ast(root_node, pos, text) {

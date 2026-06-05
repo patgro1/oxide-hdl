@@ -2,10 +2,56 @@
 mod tests {
     use crate::backend::AnalysisMap;
     use crate::backend::features::goto::{
-        lookup_declaration, lookup_definition, lookup_implementation,
+        apply_definition_priority, lookup_declaration, lookup_definition, lookup_implementation,
     };
+    use crate::backend::features::lookup::resolve_path_chain;
     use crate::backend::test_utils::parse_text;
     use tower_lsp::lsp_types::{Position, Url};
+
+    // Goto-definition on a qualified name (pkg_a.my_func) must consult only
+    // pkg_a's scope tree, not every package that exports a symbol with that name.
+    // The Backend handler uses resolve_path_chain + apply_definition_priority;
+    // this test validates that integration end-to-end.
+    #[test]
+    fn test_goto_definition_qualified_pkg_name_no_ambiguity() {
+        let files = vec![
+            (
+                "pkg_a.vhd",
+                "package pkg_a is\n  function my_func return boolean;\nend package;",
+            ),
+            (
+                "pkg_b.vhd",
+                "package pkg_b is\n  function my_func return boolean;\nend package;",
+            ),
+            (
+                "top.vhd",
+                "use work.pkg_a.my_func;\nuse work.pkg_b.my_func;\narchitecture rtl of top is\nbegin\nend architecture;",
+            ),
+        ];
+        let (map, uris) = setup_workspace(files);
+        let top_uri = &uris[2];
+        let pos = Position { line: 3, character: 0 };
+
+        let results = resolve_path_chain(
+            &["pkg_a".to_string(), "my_func".to_string()],
+            top_uri,
+            &map,
+            &pos,
+        );
+        let locs = apply_definition_priority(results, top_uri);
+
+        assert_eq!(
+            locs.len(),
+            1,
+            "qualified pkg_a.my_func should resolve to exactly one location, got {}",
+            locs.len()
+        );
+        assert!(
+            locs[0].uri.path().contains("pkg_a"),
+            "expected definition in pkg_a.vhd, got: {}",
+            locs[0].uri.path()
+        );
+    }
 
     fn setup_workspace(files: Vec<(&str, &str)>) -> (AnalysisMap, Vec<Url>) {
         let mut map = AnalysisMap::new();

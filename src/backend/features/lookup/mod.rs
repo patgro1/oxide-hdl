@@ -44,7 +44,7 @@ impl ResolvedItem {
 }
 
 /// Result of a lookup
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LookupResult {
     pub item: ResolvedItem,
     pub source_uri: Url,
@@ -550,11 +550,27 @@ fn deduplicate_results(results: Vec<LookupResult>) -> Vec<LookupResult> {
     unique
 }
 
+/// Returns `true` when `name` is a VHDL library identifier rather than a design unit.
+///
+/// In three-part selected names like `work.my_pkg.my_func` or `ieee.numeric_std.unsigned`,
+/// the first segment is a library name that must be stripped before package/member resolution.
+/// "work" is the implicit current library; other known builtins are identified via
+/// `get_builtin_search_paths`.
+fn is_library_prefix(name: &str) -> bool {
+    name.eq_ignore_ascii_case("work") || !get_builtin_search_paths(name).is_empty()
+}
+
 /// Resolves a chain of identifiers (e.g., `["my_rec", "sub", "field"]`) to its definition.
 ///
-/// Starting from the first identifier, each subsequent part is resolved by looking up the
-/// type of the current declaration and finding matching fields in its `parameters` list.
-/// This handles nested record field access (e.g., `my_rec.sub.field`).
+/// Handles three cases in order:
+/// 1. **Library prefix** (`work.pkg.member`, `ieee.pkg.member`): the leading library segment
+///    is stripped and resolution continues from the package segment.
+/// 2. **Package member access** (`pkg.member`): when the first segment resolves to a Package
+///    symbol, the member is looked up directly in that package's public declaration scope
+///    (`package_declaration_scope_trees`). Package body declarations are private per the VHDL
+///    spec and are intentionally excluded here.
+/// 3. **Record field access** (`signal.field`): when the first segment is a local Declaration,
+///    the member is resolved by looking up the type and searching its `parameters` list.
 ///
 /// For hover: pass the full chain up to (and including) the hovered identifier.
 /// For completion: pass the prefix chain (the part before the dot).
@@ -576,14 +592,26 @@ pub fn resolve_path_chain(
     if chain.is_empty() {
         return vec![];
     }
+
+    // Strip a leading library segment (e.g. "work" in work.pkg_a.my_func).
+    let chain = if chain.len() >= 2 && is_library_prefix(&chain[0]) {
+        &chain[1..]
+    } else {
+        chain
+    };
+
+    if chain.is_empty() {
+        return vec![];
+    }
+
     let root_name = &chain[0];
     let mut current_results = lookup_symbol(root_name, current_uri, analysis_map, pos, false);
 
-    for (_, part) in chain.iter().enumerate().skip(1) {
+    for part in chain.iter().skip(1) {
         let mut next_results = Vec::new();
         for res in current_results {
             match &res.item {
-                // If it is a declation, we need to check its type for the fields
+                // Record / type field access: resolve via the declaration's type.
                 ResolvedItem::Declaration(decl) => {
                     let type_name = &decl.type_info.base_type;
                     let type_defs = lookup_symbol(type_name, current_uri, analysis_map, pos, false);
@@ -600,6 +628,45 @@ pub fn resolve_path_chain(
                         }
                     }
                 }
+                // Package member access. Search both the declaration scope (public interface)
+                // and the body scope (implementation). Both results are returned so that the
+                // caller's priority function can pick the appropriate one:
+                //   - goto-definition  → apply_definition_priority  → prefers the body
+                //   - goto-declaration → apply_declaration_priority → prefers the declaration
+                //   - hover            → uses first result; declaration is found first
+                ResolvedItem::Symbol(sym)
+                    if sym.kind == OxideSymbolKind::Package
+                        || sym.kind == OxideSymbolKind::PackageBody =>
+                {
+                    let pkg_name = sym.name.to_lowercase();
+                    for (uri, analysis) in analysis_map.iter() {
+                        if let Some(scope) =
+                            analysis.package_declaration_scope_trees.get(&pkg_name)
+                        {
+                            for decl in &scope.declarations {
+                                if decl.name.eq_ignore_ascii_case(part) {
+                                    next_results.push(LookupResult {
+                                        item: ResolvedItem::Declaration(decl.clone()),
+                                        source_uri: uri.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        if let Some(scope) =
+                            analysis.package_body_scope_trees.get(&pkg_name)
+                        {
+                            for decl in &scope.declarations {
+                                if decl.name.eq_ignore_ascii_case(part) {
+                                    next_results.push(LookupResult {
+                                        item: ResolvedItem::Declaration(decl.clone()),
+                                        source_uri: uri.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                // Entity / component / other Symbol with explicit children (shallow scan).
                 ResolvedItem::Symbol(sym) => {
                     if let Some(child) = sym
                         .children
@@ -614,7 +681,7 @@ pub fn resolve_path_chain(
                 }
             }
         }
-        current_results = next_results;
+        current_results = deduplicate_results(next_results);
         if current_results.is_empty() {
             break;
         }
@@ -622,3 +689,6 @@ pub fn resolve_path_chain(
 
     current_results
 }
+
+#[cfg(test)]
+mod tests;

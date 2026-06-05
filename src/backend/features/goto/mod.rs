@@ -3,24 +3,34 @@ use crate::backend::features::lookup::{LookupResult, ResolvedItem, lookup_symbol
 use crate::backend::{AnalysisMap, Location};
 use tower_lsp::lsp_types::{Position, Url};
 
-/// Resolves the definition location(s) for a given symbol.
+fn to_locations(results: impl IntoIterator<Item = LookupResult>) -> Vec<Location> {
+    results
+        .into_iter()
+        .map(|res| Location {
+            uri: res.source_uri,
+            range: res.item.selection_range(),
+        })
+        .collect()
+}
+
+fn prefer_current_file(results: &mut Vec<&LookupResult>, current_uri: &Url) {
+    if results.len() > 1 && results.iter().any(|r| r.source_uri == *current_uri) {
+        results.retain(|r| r.source_uri == *current_uri);
+    }
+}
+
+/// Applies goto-definition priority ordering to a pre-resolved result set.
 ///
-/// This function implements the "Go to Definition" logic, prioritizing the
-/// implementation (body) over the interface (declaration).
+/// Identical prioritization to [`lookup_definition`] but operates on results
+/// already resolved by the caller (e.g. via `resolve_path_chain` for qualified
+/// names like `pkg.member` or `work.pkg.member`).
 ///
 /// # Logic
 /// 1.  **Prioritization:**
 ///     *   Subprograms: Favors implementation bodies (`DeclType::Function`) over signatures.
 ///     *   Entities: Favors the Entity declaration over a Component declaration.
-/// 2.  **Fallback:** If the preferred implementation isn't found, it returns available declarations.
-pub fn lookup_definition(
-    target: &str,
-    current_uri: &Url,
-    analysis_map: &AnalysisMap,
-    pos: Position,
-) -> Vec<Location> {
-    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
-
+/// 2.  **Fallback:** If the preferred kind isn't found, returns remaining results.
+pub fn apply_definition_priority(results: Vec<LookupResult>, current_uri: &Url) -> Vec<Location> {
     let mut entities = Vec::new();
     let mut components = Vec::new();
     let mut subprogram_bodies = Vec::new();
@@ -59,43 +69,25 @@ pub fn lookup_definition(
         others
     };
 
-    // If we have multiple results, try to prioritize the one in the current file
-    if final_results.len() > 1
-        && final_results
-            .iter()
-            .any(|res| res.source_uri == *current_uri)
-    {
-        final_results.retain(|res| res.source_uri == *current_uri);
-    }
-
-    final_results
-        .into_iter()
-        .map(|res| Location {
-            uri: res.source_uri.clone(),
-            range: res.item.selection_range(),
-        })
-        .collect()
+    prefer_current_file(&mut final_results, current_uri);
+    to_locations(final_results.into_iter().cloned())
 }
 
-/// Resolves the declaration location(s) for a given symbol.
+/// Applies goto-declaration priority ordering to a pre-resolved result set.
 ///
-/// This function implements the "Go to Declaration" logic, prioritizing the
-/// interface/specification over the implementation body.
+/// Identical prioritization to [`lookup_declaration`] but operates on results
+/// already resolved by the caller.
 ///
 /// # Logic
 /// 1.  **Prioritization:**
 ///     *   Subprograms: Favors signatures (`DeclType::FunctionDeclaration`) over bodies.
 ///     *   Components: Favors Component declarations over Entity declarations.
-/// 2.  **Fallback:** If the preferred declaration isn't found (e.g. no component defined),
+/// 2.  **Fallback:** If the preferred kind isn't found (e.g. no component defined),
 ///     it falls back to the Entity declaration.
-pub fn lookup_declaration(
-    target: &str,
+pub fn apply_declaration_priority(
+    results: Vec<LookupResult>,
     current_uri: &Url,
-    analysis_map: &AnalysisMap,
-    pos: Position,
 ) -> Vec<Location> {
-    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
-
     let mut components = Vec::new();
     let mut subprogram_specs = Vec::new();
     let mut entities = Vec::new();
@@ -132,60 +124,36 @@ pub fn lookup_declaration(
         others
     };
 
-    if final_results.len() > 1
-        && final_results
-            .iter()
-            .any(|res| res.source_uri == *current_uri)
-    {
-        final_results.retain(|res| res.source_uri == *current_uri);
-    }
-
-    final_results
-        .into_iter()
-        .map(|res| Location {
-            uri: res.source_uri.clone(),
-            range: res.item.selection_range(),
-        })
-        .collect()
+    prefer_current_file(&mut final_results, current_uri);
+    to_locations(final_results.into_iter().cloned())
 }
 
-/// Resolves the implementation location(s) for a given symbol.
+/// Applies goto-implementation priority ordering to a pre-resolved result set.
 ///
-/// This function implements the "Go to Implementation" logic, specifically
-/// targeting Architecture bodies and subprogram bodies.
+/// Identical prioritization to [`lookup_implementation`] but operates on results
+/// already resolved by the caller.
 ///
 /// # Logic
-/// 1.  **Direct Match:** Searches for `Architecture`, `PackageBody`, or subprogram implementations (`DeclType::Function`).
-/// 2.  **Entity-to-Architecture:** If the target is an Entity name, it performs a
+/// 1.  **Direct Match:** Filters for `Architecture`, `PackageBody`, or subprogram
+///     implementations (`DeclType::Function`).
+/// 2.  **Entity-to-Architecture:** If the target resolves to an Entity, performs a
 ///     global search to find all Architectures associated with that Entity.
-pub fn lookup_implementation(
-    target: &str,
-    current_uri: &Url,
+pub fn apply_implementation_priority(
+    results: Vec<LookupResult>,
     analysis_map: &AnalysisMap,
-    pos: Position,
 ) -> Vec<Location> {
-    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
-
-    let mut implementations = Vec::new();
-
-    for res in &results {
-        let is_impl = match &res.item {
-            ResolvedItem::Symbol(s) => matches!(
-                s.kind,
-                OxideSymbolKind::Architecture | OxideSymbolKind::PackageBody
-            ),
+    let mut implementations: Vec<LookupResult> = results
+        .iter()
+        .filter(|res| match &res.item {
+            ResolvedItem::Symbol(s) => {
+                matches!(s.kind, OxideSymbolKind::Architecture | OxideSymbolKind::PackageBody)
+            }
             ResolvedItem::Declaration(d) => {
                 matches!(d.decl_type, DeclType::Function | DeclType::Procedure)
             }
-        };
-
-        if is_impl {
-            implementations.push(LookupResult {
-                item: res.item.clone(),
-                source_uri: res.source_uri.clone(),
-            });
-        }
-    }
+        })
+        .cloned()
+        .collect();
 
     if implementations.is_empty() {
         let entities: Vec<_> = results
@@ -246,13 +214,67 @@ pub fn lookup_implementation(
         }
     }
 
-    implementations
-        .into_iter()
-        .map(|res| Location {
-            uri: res.source_uri,
-            range: res.item.selection_range(),
-        })
-        .collect()
+    to_locations(implementations)
+}
+
+/// Resolves the definition location(s) for a given symbol.
+///
+/// This function implements the "Go to Definition" logic, prioritizing the
+/// implementation (body) over the interface (declaration).
+///
+/// # Logic
+/// 1.  **Prioritization:**
+///     *   Subprograms: Favors implementation bodies (`DeclType::Function`) over signatures.
+///     *   Entities: Favors the Entity declaration over a Component declaration.
+/// 2.  **Fallback:** If the preferred implementation isn't found, it returns available declarations.
+pub fn lookup_definition(
+    target: &str,
+    current_uri: &Url,
+    analysis_map: &AnalysisMap,
+    pos: Position,
+) -> Vec<Location> {
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
+    apply_definition_priority(results, current_uri)
+}
+
+/// Resolves the declaration location(s) for a given symbol.
+///
+/// This function implements the "Go to Declaration" logic, prioritizing the
+/// interface/specification over the implementation body.
+///
+/// # Logic
+/// 1.  **Prioritization:**
+///     *   Subprograms: Favors signatures (`DeclType::FunctionDeclaration`) over bodies.
+///     *   Components: Favors Component declarations over Entity declarations.
+/// 2.  **Fallback:** If the preferred declaration isn't found (e.g. no component defined),
+///     it falls back to the Entity declaration.
+pub fn lookup_declaration(
+    target: &str,
+    current_uri: &Url,
+    analysis_map: &AnalysisMap,
+    pos: Position,
+) -> Vec<Location> {
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
+    apply_declaration_priority(results, current_uri)
+}
+
+/// Resolves the implementation location(s) for a given symbol.
+///
+/// This function implements the "Go to Implementation" logic, specifically
+/// targeting Architecture bodies and subprogram bodies.
+///
+/// # Logic
+/// 1.  **Direct Match:** Searches for `Architecture`, `PackageBody`, or subprogram implementations (`DeclType::Function`).
+/// 2.  **Entity-to-Architecture:** If the target is an Entity name, it performs a
+///     global search to find all Architectures associated with that Entity.
+pub fn lookup_implementation(
+    target: &str,
+    current_uri: &Url,
+    analysis_map: &AnalysisMap,
+    pos: Position,
+) -> Vec<Location> {
+    let results = lookup_symbol(target, current_uri, analysis_map, &pos, true);
+    apply_implementation_priority(results, analysis_map)
 }
 
 #[cfg(test)]
