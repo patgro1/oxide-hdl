@@ -198,8 +198,8 @@ impl Backend {
     /// * `uri` - The URI of the file whose dependencies should be checked.
     #[tracing::instrument(skip(self), fields(%uri))]
     async fn ensure_dependencies_loaded(&self, uri: &Url) {
-        // 1. Get the analysis of the current file to find what it "uses"
-        let deps_to_load = {
+        // 1. Get the analysis of the current file to find what it "uses" and instantiates
+        let (deps_to_load, entity_files) = {
             let map = self.analysis_map.read().await;
             let analysis = match map.get(uri) {
                 Some(a) => a,
@@ -216,7 +216,27 @@ impl Backend {
                     missing_deps.push(dep_uri);
                 }
             }
-            missing_deps
+
+            // Entities instantiated by this file need their interfaces available for
+            // hover, goto and port-map completion. Resolve them now; the parse itself
+            // happens below, outside the read lock.
+            //
+            // `seen` gives O(1) dedup — a top level instantiating the same entity 50
+            // times must parse it once. The Vec preserves a deterministic order so JIT
+            // parse log lines are reproducible across runs; HashSet iteration is not.
+            let mut entity_files: Vec<Url> = Vec::new();
+            let mut seen: std::collections::HashSet<Url> = std::collections::HashSet::new();
+            for scope_tree in &analysis.scope_trees {
+                for inst in scope_tree.collect_all_instantiations() {
+                    for target in units::resolve_entity_uris(&map, inst, &analysis.library) {
+                        if target != *uri && seen.insert(target.clone()) {
+                            entity_files.push(target);
+                        }
+                    }
+                }
+            }
+
+            (missing_deps, entity_files)
         }; // Lock dropped here
 
         // 2. Load the missing files (JIT)
@@ -244,6 +264,27 @@ impl Backend {
                 )
                 .await;
             }
+        }
+
+        // 3. Upgrade instantiated entities from shallow to deep so their ports are known.
+        //    `ensure_fully_parsed` short-circuits on `parse_level == Deep` behind a read
+        //    lock, so repeat calls cost a hashmap get each. The expensive pass happens
+        //    once, at first open — which is when an LSP is expected to warm up.
+        let lib_matcher = {
+            let config_guard = self.config.read().await;
+            crate::config::LibraryMatcher::from_config(
+                &config_guard.clone().unwrap_or_else(OxideConfig::default),
+            )
+        };
+        for entity_uri in entity_files {
+            workspace::ensure_fully_parsed(
+                &self.client,
+                &self.analysis_map,
+                &self.parser,
+                &entity_uri,
+                &lib_matcher,
+            )
+            .await;
         }
     }
 }
@@ -697,6 +738,12 @@ impl LanguageServer for Backend {
             (results, to_upgrade)
         };
 
+        // NOTE: this pre-parse is NOT made redundant by the JIT loop in
+        // `ensure_dependencies_loaded`. That loop resolves nothing for
+        // `unit_kind == Component`, so component-style instantiations (and any hover
+        // target outside a direct entity instantiation) still depend entirely on this
+        // site to force-parse the file that declares them. Removing it silently breaks
+        // hover on those, with no test failure.
         if !needs_jit.is_empty() {
             let lib_matcher = {
                 let config_guard = self.config.read().await;
@@ -821,6 +868,12 @@ impl LanguageServer for Backend {
                 target_uri
             };
 
+            // NOTE: this pre-parse is NOT made redundant by the JIT loop in
+            // `ensure_dependencies_loaded`. That loop resolves nothing for
+            // `unit_kind == Component`, so component-style instantiations still depend
+            // entirely on this site to force-parse the entity file supplying their
+            // ports. Removing it silently breaks port-map completion, with no test
+            // failure.
             if let Some(def_uri) = def_uri {
                 let lib_matcher = {
                     let config_guard = self.config.read().await;

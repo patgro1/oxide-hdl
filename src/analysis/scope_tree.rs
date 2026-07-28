@@ -298,6 +298,19 @@ impl ScopeTree {
         clauses
     }
 
+    /// Collects every instantiation in this scope and all nested child scopes.
+    ///
+    /// Instantiations inside `generate` and `block` statements live in child scope
+    /// trees, so a flat read of `self.instantiations` misses them. Used to decide
+    /// which entity files to JIT-parse when a document is opened.
+    pub fn collect_all_instantiations(&self) -> Vec<&Instance> {
+        let mut out: Vec<&Instance> = self.instantiations.iter().collect();
+        for child in &self.children {
+            out.extend(child.collect_all_instantiations());
+        }
+        out
+    }
+
     /// Recursively scan to find the innermost scope and returns the list of scope containing the
     /// position
     ///

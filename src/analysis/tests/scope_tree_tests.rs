@@ -313,4 +313,40 @@ mod lookup_tests {
         // Verify it's process2 by checking its declaration
         assert!(chain[1].get_declaration("var2").is_some());
     }
+
+    #[test]
+    fn test_collect_all_instantiations_includes_nested_scopes() {
+        let code = r#"
+architecture rtl of top is
+begin
+    u_direct: entity work.cpu port map (clk => clk);
+
+    gen_loop: for i in 0 to 3 generate
+    begin
+        u_nested: entity work.cell port map (idx => i);
+    end generate;
+
+    blk: block
+    begin
+        u_block: entity work.ram port map (clk => clk);
+    end block;
+end architecture;
+"#;
+        let tree = crate::backend::test_utils::parse_text(code);
+        let analysis =
+            crate::backend::syntax::parser::extract_document_symbols(code, tree.root_node());
+
+        let mut found: Vec<String> = analysis.scope_trees[0]
+            .collect_all_instantiations()
+            .iter()
+            .map(|i| i.component.to_lowercase())
+            .collect();
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec!["cell".to_string(), "cpu".to_string(), "ram".to_string()],
+            "instantiations inside generate and block scopes must be collected too"
+        );
+    }
 }
