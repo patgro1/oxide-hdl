@@ -120,8 +120,22 @@ libraries hold the same entity name:
   Tree-sitter tags `WIDTH`, `positive`, `natural`, `line`, `text`,
   `severity_level` and `delay_length` as `library_type` rather than `identifier`,
   and `extract_decl_from_generic_clause` / `extract_decl_from_port_clause` only
-  look for `identifier`. The interface silently loses those entries. Pre-existing,
-  reproduces on 0.6.6. Fix mirrors the existing fallback at `builders.rs:1532`.
+  look for `identifier`. The interface silently loses those entries.
+
+  **Only the declaration's NAME position is affected; the type position is fine:**
+
+  | declaration | result |
+  |---|---|
+  | `WIDTH : positive` | dropped |
+  | `natural : integer` | dropped |
+  | `cnt : natural` | kept |
+  | `cnt : positive` | kept |
+
+  So the fix is confined to reading `identifier_list`, not to type handling.
+  Affects generics and ports, and hits the component/package path exactly as hard
+  as direct instantiation — it has been eating `WIDTH` generics in the existing
+  workflow all along. Pre-existing, reproduces on the 0.6.6 binary. Fix mirrors
+  the existing fallback at `builders.rs:1532`.
   Worth a 0.6.7 patch rather than waiting for the feature branch.
 - [ ] **Configuration instantiation.** `configuration work.cfg` parses and is
   classified, but configurations are not indexed at all.
