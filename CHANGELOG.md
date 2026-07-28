@@ -17,7 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **VHDL library support** — a new `[libraries]` section in `oxide.toml` maps path globs to library names, so a design compiling into several libraries resolves accurately instead of by bare name. `work` behaves as VHDL defines it: a self-reference to the library of the file containing the reference, not a library of its own. With no `[libraries]` section every file belongs to `work` and behaviour is unchanged.
+- **VHDL library support** — a new `[libraries]` section in `oxide.toml` maps path globs to library names. `work` behaves as VHDL defines it: a self-reference to the library of the file containing the reference, not a library of its own. With no `[libraries]` section every file belongs to `work` and behaviour is unchanged.
+
+  Library awareness currently applies to entity-name completion and to choosing which
+  file to deep-parse for an instantiated entity. Go-to-definition, hover and port-map
+  completion still resolve by bare name across the whole workspace, so two entities
+  sharing a name in different libraries remain ambiguous for those features. Extending
+  them is planned follow-up work.
 - **Entity name completion after a library prefix** — typing `u0: entity rtl_lib.` offers every entity in that library, served from the fast index without parsing them. Typing `u0: entity ` offers the library names themselves.
 - **Instantiation snippets now cover the whole workspace** — previously only entities declared in the current file, plus components from imported packages, were offered. In a direct-instantiation codebase with no component declarations, that meant no snippets at all.
 - **Automatic deep-parse of instantiated entities** — opening a file resolves every `entity <lib>.<name>` it instantiates and upgrades those files from the shallow index, so hover, go-to-definition and port-map completion work against the real interface without opening them.

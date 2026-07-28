@@ -291,6 +291,11 @@ one wins, so overlapping patterns resolve deterministically rather than by chanc
 With libraries declared, typing `u0: entity rtl_lib.` offers every entity in that
 library, drawn from the fast index without parsing them.
 
+Library awareness currently covers entity-name completion and the choice of which file
+to deep-parse for an instantiated entity. Go-to-definition, hover and port-map completion
+still resolve by bare name across the whole workspace, so two entities sharing a name in
+different libraries remain ambiguous for those features.
+
 ### Configuration Reference
 
 | Key | Type | Default | Description |
