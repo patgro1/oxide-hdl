@@ -201,6 +201,58 @@ pub async fn index_workspace(
         .await;
 }
 
+/// Decides whether a freshly parsed [`Analysis`] should replace the stored one.
+///
+/// # Why this exists
+///
+/// The deep-parse path runs on every keystroke (with the default `on_save`
+/// diagnostics setting, `did_change` awaits `on_change` directly). While the user
+/// is typing, the buffer is frequently unparseable for a few keystrokes at a time
+/// — an `if` without its `end if;`, an unclosed `process`, a file not yet
+/// terminated with `end architecture;`. Tree-sitter cannot build an
+/// `architecture_definition` in that state, so the resulting `Analysis` has no
+/// scope trees whatsoever.
+///
+/// Writing that into the map used to destroy the perfectly good analysis from the
+/// previous keystroke, taking completion, hover and go-to-definition down with it
+/// until the construct was closed. Holding the last good analysis instead leaves
+/// the data a few lines stale, which is dramatically better than leaving it blank.
+///
+/// [`insert_batch`] and [`ensure_fully_parsed`] already make this same trade.
+///
+/// # Arguments
+/// * `previous` - The analysis currently stored for this file, if any.
+/// * `fresh` - The analysis just produced from the current buffer text.
+///
+/// # Returns
+/// `false` only when `fresh` is degenerate and `previous` holds real content.
+pub fn should_replace(previous: Option<&Analysis>, fresh: &Analysis) -> bool {
+    match previous {
+        Some(prev) => !(fresh.has_no_scope_trees() && !prev.has_no_scope_trees()),
+        None => true,
+    }
+}
+
+/// Stores a freshly parsed [`Analysis`], unless doing so would destroy good data.
+///
+/// Delegates the decision to [`should_replace`]; see that function for why a
+/// mid-edit buffer must not be allowed to blank out the map.
+///
+/// # Arguments
+/// * `analysis_map` - The global symbol table.
+/// * `uri` - File whose analysis is being stored.
+/// * `analysis` - The freshly parsed analysis.
+pub async fn store_analysis(
+    analysis_map: &Arc<RwLock<AnalysisMap>>,
+    uri: &Url,
+    analysis: Analysis,
+) {
+    let mut map = analysis_map.write().await;
+    if should_replace(map.get(uri), &analysis) {
+        map.insert(uri.clone(), analysis);
+    }
+}
+
 /// Inserts a batch of analysis results into the global map with overwrite protection.
 ///
 /// This function implements a "Do No Harm" policy: if a file already has deep analysis
@@ -359,11 +411,9 @@ pub async fn parse_and_update_document(
     //     }
     // }
 
-    // Phase 3: Store analysis in map
-    {
-        let mut map = analysis_map.write().await;
-        map.insert(uri.clone(), analysis.clone());
-    }
+    // Phase 3: Store analysis in map (skipped if the buffer is mid-edit and
+    // momentarily unparseable — see `store_analysis`).
+    store_analysis(&analysis_map, &uri, analysis.clone()).await;
 
     // Phase 4: Run diagnostics (now with access to imported packages)
 
@@ -521,11 +571,7 @@ pub async fn ensure_fully_parsed(
     .await
     .unwrap();
     if let Some(analysis) = result {
-        if analysis.package_declaration_scope_trees.is_empty()
-            && analysis.package_body_scope_trees.is_empty()
-            && analysis.entity_scope_trees.is_empty()
-            && analysis.scope_trees.is_empty()
-        {
+        if analysis.has_no_scope_trees() {
             client
                 .log_message(
                     MessageType::WARNING,
@@ -545,5 +591,179 @@ pub async fn ensure_fully_parsed(
             .await;
         let mut map = analysis_map.write().await;
         map.insert(uri.clone(), analysis);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::analysis::Analysis;
+
+    /// Parses VHDL into an Analysis, the way the deep-parse path does.
+    fn analyze(code: &str) -> Analysis {
+        let tree = crate::backend::test_utils::parse_text(code);
+        crate::backend::syntax::parser::extract_document_symbols(code, tree.root_node())
+    }
+
+    const GOOD: &str = "architecture rtl of top is\n  signal a : bit;\nbegin\n  b <= a;\nend architecture;\n";
+    // Mid-keystroke: the `if` has no `end if;` yet, which collapses the whole tree.
+    const MID_TYPING: &str = "architecture rtl of top is\n  signal a : bit;\nbegin\n  process(a)\n  begin\n    if a = '1' then\n  end process;\nend architecture;\n";
+
+    #[test]
+    fn test_replaces_when_nothing_stored_yet() {
+        let fresh = analyze(GOOD);
+        assert!(super::should_replace(None, &fresh));
+    }
+
+    #[test]
+    fn test_replaces_good_with_good() {
+        let previous = analyze(GOOD);
+        let fresh = analyze(GOOD);
+        assert!(super::should_replace(Some(&previous), &fresh));
+    }
+
+    #[test]
+    fn test_keeps_previous_when_buffer_becomes_unparseable() {
+        // THE BUG: typing `if ... then` wiped the stored analysis, killing
+        // completion/hover/goto until `end if;` was typed.
+        let previous = analyze(GOOD);
+        let fresh = analyze(MID_TYPING);
+        assert!(
+            !previous.has_no_scope_trees(),
+            "fixture invalid: previous should have content"
+        );
+        assert!(
+            fresh.has_no_scope_trees(),
+            "fixture invalid: mid-typing text should collapse the tree"
+        );
+        assert!(
+            !super::should_replace(Some(&previous), &fresh),
+            "must not overwrite a good analysis with an empty one"
+        );
+    }
+
+    #[test]
+    fn test_replaces_when_previous_was_also_empty() {
+        // Nothing worth preserving — keep refreshing so symbols/use_clauses stay current.
+        let previous = analyze(MID_TYPING);
+        let fresh = analyze(MID_TYPING);
+        assert!(super::should_replace(Some(&previous), &fresh));
+    }
+
+    #[test]
+    fn test_recovers_once_the_construct_is_closed() {
+        // After the guard held the old analysis, closing the construct must let
+        // the new one through — otherwise edits would never land.
+        let previous = analyze(GOOD);
+        let fresh = analyze(
+            "architecture rtl of top is\n  signal a : bit;\n  signal z : bit;\nbegin\n  z <= a;\nend architecture;\n",
+        );
+        assert!(super::should_replace(Some(&previous), &fresh));
+    }
+
+    #[test]
+    fn test_entity_only_file_replaces_normally() {
+        // Entity files populate entity_scope_trees, not scope_trees; they must not
+        // be mistaken for unparseable buffers and skipped.
+        let previous = analyze("entity top is\n  port (clk : in bit);\nend entity;\n");
+        let fresh = analyze("entity top is\n  port (clk : in bit; rst : in bit);\nend entity;\n");
+        assert!(super::should_replace(Some(&previous), &fresh));
+    }
+
+    #[tokio::test]
+    async fn test_store_analysis_writes_when_map_is_empty() {
+        let map: std::sync::Arc<tokio::sync::RwLock<crate::backend::AnalysisMap>> =
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::backend::AnalysisMap::new()));
+        let uri = tower_lsp::lsp_types::Url::parse("file:///top.vhd").unwrap();
+
+        super::store_analysis(&map, &uri, analyze(GOOD)).await;
+
+        let guard = map.read().await;
+        assert!(!guard.get(&uri).unwrap().has_no_scope_trees());
+    }
+
+    #[tokio::test]
+    async fn test_store_analysis_preserves_good_data_against_unparseable_buffer() {
+        // End-to-end on the real write path: store a good analysis, then simulate the
+        // next keystroke leaving the buffer unparseable. The good one must survive.
+        let map: std::sync::Arc<tokio::sync::RwLock<crate::backend::AnalysisMap>> =
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::backend::AnalysisMap::new()));
+        let uri = tower_lsp::lsp_types::Url::parse("file:///top.vhd").unwrap();
+
+        super::store_analysis(&map, &uri, analyze(GOOD)).await;
+        super::store_analysis(&map, &uri, analyze(MID_TYPING)).await;
+
+        let guard = map.read().await;
+        let stored = guard.get(&uri).unwrap();
+        assert!(
+            !stored.has_no_scope_trees(),
+            "an unparseable keystroke wiped the stored analysis"
+        );
+        assert!(
+            stored
+                .scope_trees
+                .iter()
+                .any(|t| t.declarations.iter().any(|d| d.name == "a")),
+            "signal `a` should still be visible to completion while typing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_store_analysis_accepts_edits_once_parseable_again() {
+        let map: std::sync::Arc<tokio::sync::RwLock<crate::backend::AnalysisMap>> =
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::backend::AnalysisMap::new()));
+        let uri = tower_lsp::lsp_types::Url::parse("file:///top.vhd").unwrap();
+
+        super::store_analysis(&map, &uri, analyze(GOOD)).await;
+        super::store_analysis(&map, &uri, analyze(MID_TYPING)).await;
+        // User finishes typing `end if;` — the new signal must now land.
+        super::store_analysis(
+            &map,
+            &uri,
+            analyze("architecture rtl of top is\n  signal a : bit;\n  signal z : bit;\nbegin\n  z <= a;\nend architecture;\n"),
+        )
+        .await;
+
+        let guard = map.read().await;
+        assert!(
+            guard.get(&uri).unwrap().scope_trees.iter()
+                .any(|t| t.declarations.iter().any(|d| d.name == "z")),
+            "the guard must not block a recovered parse from landing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_completion_survives_an_unclosed_if_while_typing() {
+        // The user-visible symptom this guard exists to fix: open a healthy file,
+        // start typing `if ... then` inside a process, and every completion in the
+        // file used to vanish until `end if;` was typed.
+        use tower_lsp::lsp_types::Position;
+
+        let map: std::sync::Arc<tokio::sync::RwLock<crate::backend::AnalysisMap>> =
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::backend::AnalysisMap::new()));
+        let uri = tower_lsp::lsp_types::Url::parse("file:///top.vhd").unwrap();
+
+        // 1. File is healthy on open.
+        let healthy = "architecture rtl of top is\n  signal sig_alpha : bit;\n  signal sig_beta : bit;\nbegin\n  process(sig_alpha)\n  begin\n  end process;\nend architecture;\n";
+        super::store_analysis(&map, &uri, analyze(healthy)).await;
+
+        // 2. User types `if sig_alpha = '1' then` — buffer is now unparseable.
+        let typing = "architecture rtl of top is\n  signal sig_alpha : bit;\n  signal sig_beta : bit;\nbegin\n  process(sig_alpha)\n  begin\n    if sig_alpha = '1' then\n      \n  end process;\nend architecture;\n";
+        super::store_analysis(&map, &uri, analyze(typing)).await;
+
+        // 3. Completion inside the half-written if-body must still offer the signals.
+        let guard = map.read().await;
+        let tree = crate::backend::test_utils::parse_text(typing);
+        let root = tree.root_node();
+        let pos = Position { line: 7, character: 6 };
+        let ctx = crate::backend::features::completion::get_completion_context(typing, root, pos);
+        let items = crate::backend::features::completion::complete_scope(
+            &guard, &uri, &ctx, pos, typing, root,
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        assert!(
+            labels.contains(&"sig_alpha") && labels.contains(&"sig_beta"),
+            "signals vanished from completion while typing an unclosed if; got {labels:?}"
+        );
     }
 }
