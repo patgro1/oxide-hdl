@@ -1924,3 +1924,125 @@ end architecture;
     assert!(!scope.is_attr_applied("mark_debug", "my_sig"));
 }
 
+
+// =========================================================================
+// Instantiated unit: library / architecture / kind extraction
+// =========================================================================
+
+/// Helper: parse an architecture body and return its single instantiation.
+fn single_instantiation(code: &str) -> crate::analysis::Instance {
+    let tree = parse_text(code);
+    let analysis = extract_document_symbols(code, tree.root_node());
+    assert_eq!(
+        analysis.scope_trees[0].instantiations.len(),
+        1,
+        "expected exactly one instantiation in: {code}"
+    );
+    analysis.scope_trees[0].instantiations[0].clone()
+}
+
+#[test]
+fn test_inst_unit_entity_work() {
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: entity work.cpu port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cpu");
+    assert_eq!(inst.library.as_deref(), Some("work"));
+    assert_eq!(inst.architecture, None);
+    assert_eq!(inst.unit_kind, crate::analysis::InstantiatedUnitKind::Entity);
+}
+
+#[test]
+fn test_inst_unit_entity_named_library() {
+    // `mylib` is NOT a library_namespace node — it is the name's first identifier,
+    // with `cpu` inside a selection. This is the asymmetry vs `work`.
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: entity mylib.cpu port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cpu");
+    assert_eq!(inst.library.as_deref(), Some("mylib"));
+    assert_eq!(inst.unit_kind, crate::analysis::InstantiatedUnitKind::Entity);
+}
+
+#[test]
+fn test_inst_unit_entity_with_architecture() {
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: entity work.cpu(behavioral) port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cpu");
+    assert_eq!(inst.library.as_deref(), Some("work"));
+    assert_eq!(inst.architecture.as_deref(), Some("behavioral"));
+}
+
+#[test]
+fn test_inst_unit_named_library_with_architecture() {
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: entity mylib.cpu(rtl) port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cpu");
+    assert_eq!(inst.library.as_deref(), Some("mylib"));
+    assert_eq!(inst.architecture.as_deref(), Some("rtl"));
+}
+
+#[test]
+fn test_inst_unit_preserves_source_case() {
+    // The codebase convention is: HashMap keys are lowercased, struct fields hold
+    // the source text verbatim, and comparisons normalize at the comparison site
+    // (23 uses of `eq_ignore_ascii_case` across 9 files). All three fields follow it.
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: entity MyLib.Cpu(Behavioral) port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "Cpu");
+    assert_eq!(inst.library.as_deref(), Some("MyLib"));
+    assert_eq!(inst.architecture.as_deref(), Some("Behavioral"));
+}
+
+#[test]
+fn test_inst_unit_plain_component() {
+    // No instantiated_unit node at all — `component:` hangs off the statement.
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: cpu port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cpu");
+    assert_eq!(inst.library, None);
+    assert_eq!(
+        inst.unit_kind,
+        crate::analysis::InstantiatedUnitKind::Component
+    );
+}
+
+#[test]
+fn test_inst_unit_explicit_component_keyword() {
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: component cpu port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cpu");
+    assert_eq!(inst.library, None);
+    assert_eq!(
+        inst.unit_kind,
+        crate::analysis::InstantiatedUnitKind::Component
+    );
+}
+
+#[test]
+fn test_inst_unit_configuration() {
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: configuration work.cfg port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "cfg");
+    assert_eq!(inst.library.as_deref(), Some("work"));
+    assert_eq!(
+        inst.unit_kind,
+        crate::analysis::InstantiatedUnitKind::Configuration
+    );
+}
+
+#[test]
+fn test_inst_unit_three_part_name_takes_last_segment() {
+    // `a.b.c` yields a name with two selection children; the unit is the last.
+    let inst = single_instantiation(
+        "architecture rtl of t is begin u0: entity a.b.c port map (clk => clk); end architecture;",
+    );
+    assert_eq!(inst.component, "c");
+    assert_eq!(inst.library.as_deref(), Some("a"));
+}

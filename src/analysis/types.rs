@@ -423,6 +423,21 @@ impl TypeInfo {
     }
 }
 
+/// Which flavour of instantiation statement produced an [`Instance`].
+///
+/// VHDL allows three: a direct entity instantiation (`entity lib.name`), a
+/// component instantiation (bare `name`, or the explicit `component name`
+/// form), and a configuration instantiation (`configuration lib.name`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstantiatedUnitKind {
+    /// `u0: entity work.cpu` — resolves against entity declarations.
+    Entity,
+    /// `u0: cpu` or `u0: component cpu` — resolves against component declarations.
+    Component,
+    /// `u0: configuration work.cfg` — not resolved by Oxide HDL yet.
+    Configuration,
+}
+
 /// An instance of an entity.
 ///
 /// Contains all the information about instance an instance
@@ -432,6 +447,17 @@ pub struct Instance {
     pub label: String,
     /// Design unit being instantiated
     pub component: String,
+    /// Library prefix exactly as written in the source, case preserved.
+    /// `None` for component instantiations, which carry no library.
+    ///
+    /// `work` here is a self-reference to the library of the file containing the
+    /// instantiation, not a library literally named `work`. Compare it
+    /// case-insensitively — see `backend::units::resolve_entity_uris`.
+    pub library: Option<String>,
+    /// Architecture named in `entity work.cpu(behavioral)`, case preserved.
+    pub architecture: Option<String>,
+    /// Which instantiation form this is.
+    pub unit_kind: InstantiatedUnitKind,
     /// Source location information
     pub range: Range,
     /// Range of the label for jumps

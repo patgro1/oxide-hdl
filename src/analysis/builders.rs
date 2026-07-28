@@ -5,7 +5,8 @@
 
 use crate::{
     analysis::{
-        DeclType, Declaration, Instance, ParameterClass, PortDirection, RegionType, ScopeKind,
+        DeclType, Declaration, Instance, InstantiatedUnitKind, ParameterClass, PortDirection,
+        RegionType, ScopeKind,
         ScopeTree, TypeInfo, Usage, UsageContext, UseClause, collect_identifiers_recursive,
     },
     utils::{
@@ -1229,25 +1230,58 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
         label = text[label_node.byte_range()].to_string();
         selection_range = node_to_range(label_node);
     }
-    let instantiated_unit = find_child(node, "instantiated_unit").unwrap_or(node);
+    // The plain form (`u0: cpu`) has no `instantiated_unit` node — the `component`
+    // field hangs directly off the statement. Every other form nests one.
+    let unit = find_child(node, "instantiated_unit").unwrap_or(node);
+
+    let (unit_kind, name_node) = if let Some(n) = unit.child_by_field_name("entity") {
+        (InstantiatedUnitKind::Entity, Some(n))
+    } else if let Some(n) = unit.child_by_field_name("configuration") {
+        (InstantiatedUnitKind::Configuration, Some(n))
+    } else if let Some(n) = unit.child_by_field_name("component") {
+        (InstantiatedUnitKind::Component, Some(n))
+    } else {
+        (InstantiatedUnitKind::Component, find_child(unit, "name"))
+    };
+
+    // `work` is a distinct grammar node (`library_namespace`); any other library
+    // is just the first identifier of a dotted `name`, with the unit in a `selection`.
+    let mut library = unit
+        .child_by_field_name("library")
+        .map(|n| text[n.byte_range()].to_string());
 
     let mut component = "".to_string();
-    if let Some(name) = find_child(instantiated_unit, "name") {
-        // Check for the library.component name
-        if let Some(selection) = find_child(name, "selection") {
-            if let Some(iden) = find_child(selection, "identifier") {
+    if let Some(name) = name_node {
+        let selections: Vec<Node> = name
+            .children(&mut name.walk())
+            .filter(|c| c.kind() == "selection")
+            .collect();
+
+        if let Some(last) = selections.last() {
+            // Dotted name: unit is the final segment, library the leading identifier.
+            if let Some(iden) = find_child(*last, "identifier") {
                 component = text[iden.byte_range()].to_string();
             }
-        }
-        // Check for the normal component name
-        else if let Some(iden) = find_child(name, "identifier") {
-            component = text[iden.byte_range()].to_string()
+            if library.is_none()
+                && let Some(iden) = find_child(name, "identifier")
+            {
+                library = Some(text[iden.byte_range()].to_string());
+            }
+        } else if let Some(iden) = find_child(name, "identifier") {
+            component = text[iden.byte_range()].to_string();
         }
     }
+
+    let architecture = unit
+        .child_by_field_name("architecture")
+        .map(|n| text[n.byte_range()].to_string());
 
     Instance {
         label,
         component,
+        library,
+        architecture,
+        unit_kind,
         range: node_to_range(node),
         selection_range,
     }
