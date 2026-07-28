@@ -2424,3 +2424,145 @@ fn test_instantiation_library_completion_lists_libraries() {
         "expected rtl_lib, got {names:?}"
     );
 }
+
+// =========================================================================
+// Workspace-wide instantiation snippets, direct form
+// =========================================================================
+
+/// Builds a deep-parsed Analysis in `library` with one entity that has ports.
+fn deep_entity_analysis(library: &str, entity: &str, src: &str) -> crate::analysis::Analysis {
+    let tree = crate::backend::test_utils::parse_text(src);
+    let mut a = crate::backend::syntax::parser::extract_document_symbols(src, tree.root_node());
+    a.library = library.to_string();
+    assert!(
+        a.entity_scope_trees.contains_key(entity),
+        "fixture did not produce an entity scope tree for {entity}"
+    );
+    a
+}
+
+#[test]
+fn test_instantiation_snippet_offered_for_entity_in_another_file() {
+    use crate::backend::AnalysisMap;
+
+    let sub_src = "entity uart_tx is\n  port (clk : in bit; tx : out bit);\nend entity;\n";
+    let top_src = "architecture rtl of top is\nbegin\nend architecture;\n";
+
+    let sub_uri = Url::parse("file:///sub.vhd").unwrap();
+    let top_uri = Url::parse("file:///top.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(sub_uri, deep_entity_analysis("rtl_lib", "uart_tx", sub_src));
+    let top_analysis = {
+        let tree = crate::backend::test_utils::parse_text(top_src);
+        let mut a =
+            crate::backend::syntax::parser::extract_document_symbols(top_src, tree.root_node());
+        a.library = "rtl_lib".to_string();
+        a
+    };
+    map.insert(top_uri, top_analysis.clone());
+
+    let items = generate_entity_completions(&map, &top_analysis);
+    let names = labels(&items);
+    assert!(
+        names.contains(&"uart_tx"),
+        "cross-file entity must be offered, got {names:?}"
+    );
+}
+
+#[test]
+fn test_same_library_entity_uses_work_prefix() {
+    use crate::backend::AnalysisMap;
+
+    let sub_src = "entity uart_tx is\n  port (clk : in bit);\nend entity;\n";
+    let top_src = "architecture rtl of top is\nbegin\nend architecture;\n";
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        Url::parse("file:///sub.vhd").unwrap(),
+        deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
+    );
+    let top_analysis = {
+        let tree = crate::backend::test_utils::parse_text(top_src);
+        let mut a =
+            crate::backend::syntax::parser::extract_document_symbols(top_src, tree.root_node());
+        a.library = "rtl_lib".to_string();
+        a
+    };
+    map.insert(Url::parse("file:///top.vhd").unwrap(), top_analysis.clone());
+
+    let items = generate_entity_completions(&map, &top_analysis);
+    let item = items
+        .iter()
+        .find(|i| i.label == "uart_tx")
+        .expect("uart_tx must be offered");
+    let text = item.insert_text.as_ref().expect("snippet must have text");
+    assert!(
+        text.starts_with("entity work.uart_tx"),
+        "same-library entity should use the work prefix, got: {text}"
+    );
+}
+
+#[test]
+fn test_cross_library_entity_uses_explicit_library_prefix() {
+    use crate::backend::AnalysisMap;
+
+    let sub_src = "entity uart_tx is\n  port (clk : in bit);\nend entity;\n";
+    let top_src = "architecture rtl of top is\nbegin\nend architecture;\n";
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        Url::parse("file:///sub.vhd").unwrap(),
+        deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
+    );
+    let top_analysis = {
+        let tree = crate::backend::test_utils::parse_text(top_src);
+        let mut a =
+            crate::backend::syntax::parser::extract_document_symbols(top_src, tree.root_node());
+        a.library = "top_lib".to_string();
+        a
+    };
+    map.insert(Url::parse("file:///top.vhd").unwrap(), top_analysis.clone());
+
+    let items = generate_entity_completions(&map, &top_analysis);
+    let item = items
+        .iter()
+        .find(|i| i.label == "uart_tx")
+        .expect("uart_tx must be offered");
+    let text = item.insert_text.as_ref().expect("snippet must have text");
+    assert!(
+        text.starts_with("entity rtl_lib.uart_tx"),
+        "cross-library entity needs an explicit prefix, got: {text}"
+    );
+}
+
+#[test]
+fn test_entity_snippet_is_deduplicated_across_files() {
+    use crate::backend::AnalysisMap;
+
+    let sub_src = "entity uart_tx is\n  port (clk : in bit);\nend entity;\n";
+    let top_src = "architecture rtl of top is\nbegin\nend architecture;\n";
+
+    let mut map = AnalysisMap::new();
+    // Same entity name declared twice in the same library.
+    map.insert(
+        Url::parse("file:///a.vhd").unwrap(),
+        deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
+    );
+    map.insert(
+        Url::parse("file:///b.vhd").unwrap(),
+        deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
+    );
+    let top_analysis = {
+        let tree = crate::backend::test_utils::parse_text(top_src);
+        let mut a =
+            crate::backend::syntax::parser::extract_document_symbols(top_src, tree.root_node());
+        a.library = "rtl_lib".to_string();
+        a
+    };
+    map.insert(Url::parse("file:///top.vhd").unwrap(), top_analysis.clone());
+
+    let items = generate_entity_completions(&map, &top_analysis);
+    let count = items.iter().filter(|i| i.label == "uart_tx").count();
+    assert_eq!(count, 1, "duplicate entity must be offered once");
+}

@@ -1950,26 +1950,51 @@ pub fn generate_entity_completions(
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
-    for entity in analysis.entity_scope_trees.values() {
-        let name = entity.name.clone().unwrap_or("UNKNOWN".to_string());
-        let snippet = generate_instantiation_snippet(&name, entity);
+    let current_library = analysis.library.clone();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Every deep-parsed entity in the workspace, not just this file's. In a
+    // direct-instantiation codebase there are no component declarations to fall
+    // back on, so a current-file-only list means no completions at all.
+    let mut sources: Vec<(&Analysis, &ScopeTree, String)> = Vec::new();
+    for global in analysis_map.values() {
+        for (key, tree) in &global.entity_scope_trees {
+            sources.push((global, tree, key.clone()));
+        }
+    }
+    sources.sort_by(|a, b| a.2.cmp(&b.2));
+
+    for (owner, entity, key) in sources {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let name = entity.name.clone().unwrap_or_else(|| key.clone());
+
+        // `work` is the correct prefix only when the target shares our library;
+        // otherwise the library must be named explicitly.
+        let unit_ref = if owner.library == current_library {
+            format!("entity work.{}", name)
+        } else {
+            format!("entity {}.{}", owner.library, name)
+        };
+
+        let snippet = generate_instantiation_snippet(&unit_ref, entity);
         items.push(CompletionItem {
             kind: Some(CompletionItemKind::SNIPPET),
             label: name.clone(),
-            detail: Some("Component Instantiation".to_string()),
+            detail: Some("Entity Instantiation".to_string()),
             label_details: Some(CompletionItemLabelDetails {
                 detail: None,
-                description: Some("Component Instantiation".to_string()),
+                description: Some(format!("entity in {}", owner.library)),
             }),
             documentation: Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value: format!(
                     "** Generate instantiation for `{}`**\n\n```vhdl\n{}\n```",
-                    name.clone(),
-                    snippet.clone()
+                    name, snippet
                 ),
             })),
-            sort_text: Some(format!("!{}", name.clone())),
+            sort_text: Some(format!("!{}", name)),
             filter_text: Some(name),
             insert_text: Some(snippet),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
