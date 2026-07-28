@@ -1933,17 +1933,29 @@ pub fn generate_instantiation_snippet_from_declaration(
 
 /// Generates completion items for entity and component instantiations.
 ///
-/// Finds all visible entities (from current file) and components (from imported packages)
-/// and creates snippet-based completion items for each one.
+/// Covers two sources, which deliberately produce different syntax:
+///
+/// * **Entities**, drawn from every deep-parsed file in the workspace — not just the
+///   current one. A direct-instantiation codebase has no component declarations to
+///   fall back on, so a current-file-only list would offer nothing. These emit the
+///   direct form, `entity <lib>.<name>`, using `work` when the entity shares the
+///   current file's library and the explicit library name otherwise. A bare name
+///   would not be legal VHDL here without a component declaration in scope.
+/// * **Components**, drawn from `use`d packages. These keep emitting a bare name,
+///   which is correct for a component instantiation.
+///
+/// Only deep-parsed entities appear, since a snippet needs the port and generic
+/// interface. Shallow-indexed entities are reached through `LibraryUnits` completion
+/// instead, which offers the name alone.
 ///
 /// # Arguments
 ///
 /// * `analysis_map` - The global map of all file analyses
-/// * `analysis` - The analysis of the current file
+/// * `analysis` - The analysis of the current file, used for its library and use clauses
 ///
 /// # Returns
 ///
-/// Vector of completion items, one for each available entity/component
+/// Vector of completion items, one per available entity/component, deduplicated by name
 pub fn generate_entity_completions(
     analysis_map: &AnalysisMap,
     analysis: &Analysis,

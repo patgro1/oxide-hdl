@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [0.7.0] — 2026-07-27
+
+### Added
+
+- **VHDL library support** — a new `[libraries]` section in `oxide.toml` maps path globs to library names, so a design compiling into several libraries resolves accurately instead of by bare name. `work` behaves as VHDL defines it: a self-reference to the library of the file containing the reference, not a library of its own. With no `[libraries]` section every file belongs to `work` and behaviour is unchanged.
+- **Entity name completion after a library prefix** — typing `u0: entity rtl_lib.` offers every entity in that library, served from the fast index without parsing them. Typing `u0: entity ` offers the library names themselves.
+- **Instantiation snippets now cover the whole workspace** — previously only entities declared in the current file, plus components from imported packages, were offered. In a direct-instantiation codebase with no component declarations, that meant no snippets at all.
+- **Automatic deep-parse of instantiated entities** — opening a file resolves every `entity <lib>.<name>` it instantiates and upgrades those files from the shallow index, so hover, go-to-definition and port-map completion work against the real interface without opening them.
+
+### Changed
+
+- **Entity instantiation snippets are emitted in direct form** (`entity work.foo`) rather than as a bare name. A bare name is only legal VHDL when a component declaration is in scope, so the previous output did not compile for an entity. Component snippets sourced from packages are unaffected and still emit a bare name.
+- Instantiations now retain the library, architecture and instantiation kind that the parser previously discarded.
+
 ## [0.6.6] — 2026-07-27
 
 ### Fixed

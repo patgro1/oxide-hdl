@@ -215,6 +215,7 @@ Place an `oxide.toml` file in your project root to configure the server. All fie
 - Diagnostics: `on_save`
 - Ignored identifiers: none
 - Included workspaces: none
+- Libraries: none — every file belongs to `work`
 
 ```toml
 # File extensions recognized as VHDL source files.
@@ -252,7 +253,43 @@ ignored_identifiers = [
 # This is useful when a repository depends on another repository.
 # Default: []
 include_workspace = []
+
+# Map VHDL library names to the files that compile into them.
+# Files matching no pattern belong to `work`. With no [libraries] section at all,
+# every file is in `work` and library-aware resolution is a no-op.
+# Default: {} (no libraries declared)
+[libraries]
+rtl_lib = ["rtl/**/*.vhd", "common/**/*.vhd"]
+unisim  = ["/opt/Xilinx/**/unisims/**/*.vhd"]
 ```
+
+### Libraries
+
+By default every file belongs to `work`, and `entity work.foo` resolves against any
+entity named `foo` anywhere in the workspace. If your design compiles into several
+VHDL libraries, declare them so resolution, go-to-definition and entity completion
+become library-accurate:
+
+```toml
+[libraries]
+rtl_lib = ["rtl/**/*.vhd", "common/**/*.vhd"]
+unisim  = ["/opt/Xilinx/**/unisims/**/*.vhd"]
+```
+
+Each glob is matched against the path relative to the workspace root, then against the
+absolute path — the second attempt is what lets you declare vendor libraries living
+outside your repository.
+
+`work` behaves as VHDL defines it: a self-reference, not a library. `entity work.cpu`
+written in a file belonging to `rtl_lib` resolves to `rtl_lib.cpu`.
+
+Unlike `ignore` patterns, library globs are **directory-aware**: `*` stops at a path
+separator, so `rtl/*.vhd` matches only files directly in `rtl/`, while `rtl/**/*.vhd`
+matches at any depth. If a file matches several libraries the alphabetically-first
+one wins, so overlapping patterns resolve deterministically rather than by chance.
+
+With libraries declared, typing `u0: entity rtl_lib.` offers every entity in that
+library, drawn from the fast index without parsing them.
 
 ### Configuration Reference
 
@@ -263,6 +300,7 @@ include_workspace = []
 | `diagnostics` | `string` | `"on_save"` | When to publish diagnostics: `"on_save"` runs after every save; `"on_change"` runs 300 ms after the last keystroke (debounced). |
 | `ignored_identifiers` | `[string]` | `[]` | Regex patterns for identifiers to ignore in undeclared checks |
 | `include_workspace` | `[string]` | `[]` | List of external workspace directories to include for indexing |
+| `libraries` | `table` | `{}` | Maps a VHDL library name to the globs of files compiling into it. Unmatched files belong to `work`. |
 
 ## Known Limitations
 

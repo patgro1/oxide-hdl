@@ -190,9 +190,21 @@ impl Backend {
 
     /// Checks the dependencies of a parsed file and lazy-loads them if missing.
     ///
-    /// Scans the file's `use` clauses to identify imported packages, then checks
-    /// if each dependency is already in the analysis map. Missing dependencies
-    /// (typically standard library packages like IEEE) are JIT-loaded from the cache.
+    /// Two kinds of dependency are resolved:
+    ///
+    /// 1. **Imported packages** — from the file's `use` clauses. Missing ones
+    ///    (typically standard library packages like IEEE) are JIT-loaded from the cache.
+    /// 2. **Directly instantiated entities** — every `entity <lib>.<name>` in the file
+    ///    is resolved through [`units::resolve_entity_uris`] and upgraded from shallow
+    ///    to deep, so hover, go-to-definition and port-map completion work against the
+    ///    real interface without the user ever opening those files.
+    ///
+    /// Component instantiations are deliberately *not* resolved here — they bind
+    /// through a component declaration, not directly to a library entity. Those still
+    /// rely on the on-demand pre-parse in [`Backend::completion`] and [`Backend::hover`].
+    ///
+    /// Entity upgrades are deduplicated per call and `ensure_fully_parsed` short-circuits
+    /// on already-deep files, so the cost is paid once, at first open.
     ///
     /// # Arguments
     /// * `uri` - The URI of the file whose dependencies should be checked.
