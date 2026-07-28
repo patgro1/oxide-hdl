@@ -470,7 +470,7 @@ fn test_analysis_library_survives_clone() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test test_analysis_defaults_to_work_library test_analysis_library_survives_clone 2>&1 | tail -20`
+Run: `cargo test -- test_analysis_defaults_to_work_library test_analysis_library_survives_clone 2>&1 | tail -20`
 
 Expected: compile error — no field `library` on `Analysis`.
 
@@ -495,7 +495,7 @@ And to the `Self { .. }` literal in `Analysis::new()`:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test test_analysis_defaults_to_work_library test_analysis_library_survives_clone 2>&1 | tail -10`
+Run: `cargo test -- test_analysis_defaults_to_work_library test_analysis_library_survives_clone 2>&1 | tail -10`
 
 Expected: 2 passed.
 
@@ -698,7 +698,7 @@ There are **four live sites** today (plus one inside a commented-out block — i
 | `Backend::completion` | `backend/mod.rs` | build one locally, see below |
 | Task 5's new loop in `ensure_dependencies_loaded` | `backend/mod.rs` | build one locally, see below |
 
-For the `backend/mod.rs` sites, build the matcher from the stored config:
+For the `backend/mod.rs` sites, build the matcher from the stored config. **Mind the nesting:** in `Backend::hover` it belongs inside the `if !needs_jit.is_empty() {` block, and in `Backend::completion` inside the `if let Some(def_uri) = def_uri {` block. Keep the inner braces shown below — they drop the config read-guard before the `ensure_fully_parsed` await, and removing them risks holding a lock across an await.
 
 ```rust
             let lib_matcher = {
@@ -1903,7 +1903,7 @@ If `labels` and `SHARED_PARSER_LOCK` are not already imported in this test file,
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test completion::tests::test_detect_context completion::tests::test_library_units completion::tests::test_work_prefix completion::tests::test_instantiation_library 2>&1 | tail -20`
+Run: `cargo test -- completion::tests::test_detect_context completion::tests::test_library_units completion::tests::test_work_prefix completion::tests::test_instantiation_library 2>&1 | tail -20`
 
 Expected: compile errors — no `detect_instantiation_unit_context`, no `LibraryUnits` / `InstantiationLibrary` variants.
 
@@ -2078,7 +2078,7 @@ In `complete_scope`, add two arms to the `match context { ... }` block, immediat
 
 - [ ] **Step 6: Run the new tests**
 
-Run: `cargo test completion::tests::test_detect_context completion::tests::test_library_units completion::tests::test_work_prefix completion::tests::test_instantiation_library 2>&1 | tail -20`
+Run: `cargo test -- completion::tests::test_detect_context completion::tests::test_library_units completion::tests::test_work_prefix completion::tests::test_instantiation_library 2>&1 | tail -20`
 
 Expected: 9 passed.
 
@@ -2294,7 +2294,7 @@ fn test_entity_snippet_is_deduplicated_across_files() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test completion::tests::test_instantiation_snippet_offered completion::tests::test_same_library_entity completion::tests::test_cross_library_entity completion::tests::test_entity_snippet_is_dedup 2>&1 | tail -20`
+Run: `cargo test -- completion::tests::test_instantiation_snippet_offered completion::tests::test_same_library_entity completion::tests::test_cross_library_entity completion::tests::test_entity_snippet_is_dedup 2>&1 | tail -20`
 
 Expected: 4 failures — the cross-file entity is not offered at all, so `uart_tx` is missing from every assertion.
 
@@ -2360,7 +2360,7 @@ In `src/backend/features/completion/mod.rs`, replace the first loop of `generate
 
 - [ ] **Step 4: Run the new tests**
 
-Run: `cargo test completion::tests::test_instantiation_snippet_offered completion::tests::test_same_library_entity completion::tests::test_cross_library_entity completion::tests::test_entity_snippet_is_dedup 2>&1 | tail -20`
+Run: `cargo test -- completion::tests::test_instantiation_snippet_offered completion::tests::test_same_library_entity completion::tests::test_cross_library_entity completion::tests::test_entity_snippet_is_dedup 2>&1 | tail -20`
 
 Expected: 4 passed.
 
