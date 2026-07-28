@@ -2220,3 +2220,207 @@ end architecture;"#;
     assert!(names.contains(&"b"), "param 'b' should appear via text fallback. Got: {:?}", names);
     assert!(names.contains(&"c"), "param 'c' should appear via text fallback. Got: {:?}", names);
 }
+
+// =========================================================================
+// Instantiation unit completion: `entity <lib>.<name>`
+// =========================================================================
+
+use crate::analysis::{OxideSymbolKind as OSK, ParseLevel, Symbol as Sym};
+
+/// Builds a shallow Analysis in `library` declaring `entities`.
+fn shallow_lib(library: &str, entities: &[&str]) -> crate::analysis::Analysis {
+    let mut a = crate::analysis::Analysis::new();
+    a.library = library.to_string();
+    a.parse_level = ParseLevel::Shallow;
+    for e in entities {
+        a.symbols.insert(
+            e.to_lowercase(),
+            Sym {
+                name: e.to_string(),
+                kind: OSK::Entity,
+                detail: Some("Entity".to_string()),
+                range: tower_lsp::lsp_types::Range::default(),
+                children: Vec::new(),
+            },
+        );
+    }
+    a
+}
+
+#[test]
+fn test_detect_context_after_library_dot() {
+    let text = "architecture rtl of top is\nbegin\n  u0: entity rtl_lib.my_\n";
+    let pos = Position {
+        line: 2,
+        character: 26,
+    };
+    assert_eq!(
+        super::detect_instantiation_unit_context(text, pos),
+        Some(CompletionContext::LibraryUnits("rtl_lib".to_string()))
+    );
+}
+
+#[test]
+fn test_detect_context_after_library_dot_empty_prefix() {
+    let text = "architecture rtl of top is\nbegin\n  u0: entity rtl_lib.\n";
+    let pos = Position {
+        line: 2,
+        character: 24,
+    };
+    assert_eq!(
+        super::detect_instantiation_unit_context(text, pos),
+        Some(CompletionContext::LibraryUnits("rtl_lib".to_string()))
+    );
+}
+
+#[test]
+fn test_detect_context_after_entity_keyword() {
+    let text = "architecture rtl of top is\nbegin\n  u0: entity \n";
+    let pos = Position {
+        line: 2,
+        character: 13,
+    };
+    assert_eq!(
+        super::detect_instantiation_unit_context(text, pos),
+        Some(CompletionContext::InstantiationLibrary)
+    );
+}
+
+#[test]
+fn test_detect_context_is_case_insensitive() {
+    let text = "architecture rtl of top is\nbegin\n  U0: ENTITY RTL_LIB.MY_\n";
+    let pos = Position {
+        line: 2,
+        character: 26,
+    };
+    assert_eq!(
+        super::detect_instantiation_unit_context(text, pos),
+        Some(CompletionContext::LibraryUnits("rtl_lib".to_string()))
+    );
+}
+
+#[test]
+fn test_detect_context_ignores_unrelated_dotted_names() {
+    // A record field access must NOT be mistaken for a library prefix.
+    let text = "architecture rtl of top is\nbegin\n  x <= my_rec.fie\n";
+    let pos = Position {
+        line: 2,
+        character: 18,
+    };
+    assert_eq!(super::detect_instantiation_unit_context(text, pos), None);
+}
+
+#[test]
+fn test_detect_context_ignores_use_clause() {
+    // `use ieee.std_logic_1164` is not an instantiation.
+    let text = "use ieee.std_\n";
+    let pos = Position {
+        line: 0,
+        character: 13,
+    };
+    assert_eq!(super::detect_instantiation_unit_context(text, pos), None);
+}
+
+#[test]
+fn test_library_units_completion_lists_entities_of_that_library() {
+    use crate::backend::AnalysisMap;
+    let text = "architecture rtl of top is\nbegin\n  u0: entity rtl_lib.\n";
+    let pos = Position {
+        line: 2,
+        character: 24,
+    };
+    let top_uri = Url::parse("file:///top.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        Url::parse("file:///a.vhd").unwrap(),
+        shallow_lib("rtl_lib", &["uart_tx", "cpu"]),
+    );
+    map.insert(
+        Url::parse("file:///b.vhd").unwrap(),
+        shallow_lib("other_lib", &["excluded"]),
+    );
+    map.insert(top_uri.clone(), shallow_lib("rtl_lib", &[]));
+
+    let tree = crate::backend::test_utils::parse_text(text);
+    let root = tree.root_node();
+
+    let ctx = get_completion_context(text, root, pos);
+    assert_eq!(ctx, CompletionContext::LibraryUnits("rtl_lib".to_string()));
+
+    let items = complete_scope(&map, &top_uri, &ctx, pos, text, root);
+    let names = labels(&items);
+    assert!(names.contains(&"cpu"), "expected cpu, got {names:?}");
+    assert!(names.contains(&"uart_tx"), "expected uart_tx, got {names:?}");
+    assert!(
+        !names.contains(&"excluded"),
+        "entity from another library leaked: {names:?}"
+    );
+}
+
+#[test]
+fn test_work_prefix_lists_current_files_library() {
+    use crate::backend::AnalysisMap;
+    let text = "architecture rtl of top is\nbegin\n  u0: entity work.\n";
+    let pos = Position {
+        line: 2,
+        character: 19,
+    };
+    let top_uri = Url::parse("file:///top.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        Url::parse("file:///a.vhd").unwrap(),
+        shallow_lib("rtl_lib", &["uart_tx"]),
+    );
+    map.insert(
+        Url::parse("file:///b.vhd").unwrap(),
+        shallow_lib("other_lib", &["excluded"]),
+    );
+    // The file being edited lives in rtl_lib, so `work.` means rtl_lib.
+    map.insert(top_uri.clone(), shallow_lib("rtl_lib", &[]));
+
+    let tree = crate::backend::test_utils::parse_text(text);
+    let root = tree.root_node();
+
+    let ctx = get_completion_context(text, root, pos);
+    let items = complete_scope(&map, &top_uri, &ctx, pos, text, root);
+    let names = labels(&items);
+    assert!(names.contains(&"uart_tx"), "expected uart_tx, got {names:?}");
+    assert!(
+        !names.contains(&"excluded"),
+        "work must not reach other_lib: {names:?}"
+    );
+}
+
+#[test]
+fn test_instantiation_library_completion_lists_libraries() {
+    use crate::backend::AnalysisMap;
+    let text = "architecture rtl of top is\nbegin\n  u0: entity \n";
+    let pos = Position {
+        line: 2,
+        character: 13,
+    };
+    let top_uri = Url::parse("file:///top.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        Url::parse("file:///a.vhd").unwrap(),
+        shallow_lib("rtl_lib", &["uart_tx"]),
+    );
+    map.insert(top_uri.clone(), shallow_lib("work", &[]));
+
+    let tree = crate::backend::test_utils::parse_text(text);
+    let root = tree.root_node();
+
+    let ctx = get_completion_context(text, root, pos);
+    assert_eq!(ctx, CompletionContext::InstantiationLibrary);
+
+    let items = complete_scope(&map, &top_uri, &ctx, pos, text, root);
+    let names = labels(&items);
+    assert!(names.contains(&"work"), "expected work, got {names:?}");
+    assert!(
+        names.contains(&"rtl_lib"),
+        "expected rtl_lib, got {names:?}"
+    );
+}

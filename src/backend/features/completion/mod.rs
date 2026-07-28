@@ -9,6 +9,17 @@ use crate::backend::AnalysisMap;
 use crate::backend::features::hover;
 use crate::backend::features::lookup::{ResolvedItem, lookup_symbol, resolve_path_chain};
 
+lazy_static::lazy_static! {
+    /// Matches `entity <lib>.<partial>` at the end of the text before the cursor.
+    /// Captures the library name.
+    static ref RE_INST_LIB_DOT: regex::Regex =
+        regex::Regex::new(r"(?i)\bentity\s+([A-Za-z]\w*)\s*\.\s*(\w*)$").unwrap();
+
+    /// Matches `entity <partial>` at the end of the text before the cursor, with no dot.
+    static ref RE_INST_ENTITY_KW: regex::Regex =
+        regex::Regex::new(r"(?i)\bentity\s+(\w*)$").unwrap();
+}
+
 // =============================================================================
 // Node Kind Constants
 // =============================================================================
@@ -81,6 +92,15 @@ pub enum CompletionContext {
     /// We are inside a generic map after the `=>`.
     /// Suggests: Constants or expressions from the current scope.
     GenericMapRhs,
+
+    /// Cursor sits right after the `entity` keyword of an instantiation, before any
+    /// library name. Suggests: library names present in the workspace.
+    InstantiationLibrary,
+
+    /// Cursor sits after `<library>.` in an instantiation. Payload: lowercase library
+    /// name as typed (`work` is resolved against the current file's library at
+    /// completion time, not here). Suggests: entities declared in that library.
+    LibraryUnits(String),
 
     /// Inside a subprogram call argument list with no arguments yet (empty or whitespace only).
     /// Suggests both parameter names (LHS) and in-scope values (RHS), params first.
@@ -948,6 +968,41 @@ fn find_component_via_text(text: &str, cursor_offset: usize) -> Option<Component
     }
 }
 
+/// Detects whether the cursor sits in the *unit name* position of a direct entity
+/// instantiation — i.e. `u0: entity |`, or `u0: entity rtl_lib.my_|`.
+///
+/// This is text-based rather than AST-based on purpose: while the user is typing,
+/// `entity rtl_lib.my_` does not parse into a clean `instantiated_unit`, and the
+/// generic dot-access path would otherwise treat the dot as a record field access.
+///
+/// Anchored to the `entity` keyword, so `use ieee.std_logic_1164` and ordinary
+/// record accesses like `my_rec.field` are correctly rejected.
+///
+/// # Arguments
+/// * `text` - Full source text.
+/// * `pos` - Cursor position.
+///
+/// # Returns
+/// `Some(CompletionContext::LibraryUnits(lib))` after a library prefix,
+/// `Some(CompletionContext::InstantiationLibrary)` right after `entity`,
+/// or `None` when this is not an instantiation unit position.
+fn detect_instantiation_unit_context(text: &str, pos: Position) -> Option<CompletionContext> {
+    let line = text.lines().nth(pos.line as usize)?;
+    let col = (pos.character as usize).min(line.len());
+    let prefix = &line[..col];
+
+    if let Some(caps) = RE_INST_LIB_DOT.captures(prefix) {
+        let library = caps.get(1)?.as_str().to_lowercase();
+        return Some(CompletionContext::LibraryUnits(library));
+    }
+
+    if RE_INST_ENTITY_KW.is_match(prefix) {
+        return Some(CompletionContext::InstantiationLibrary);
+    }
+
+    None
+}
+
 // =============================================================================
 // Context Detection - Deep Scan
 // =============================================================================
@@ -1359,19 +1414,26 @@ pub fn get_completion_context(text: &str, root: Node, pos: Position) -> Completi
         None => return CompletionContext::Unresolved,
     };
 
-    // 1. Handle Dot Access (fast path)
+    // 1. Instantiation unit position (`entity |`, `entity lib.|`) — must precede the
+    //    dot-access fast path, which would otherwise treat the library dot as a
+    //    record field access.
+    if let Some(ctx) = detect_instantiation_unit_context(text, pos) {
+        return ctx;
+    }
+
+    // 2. Handle Dot Access (fast path)
     if is_dot_access_context(&node, text, pos) {
         return CompletionContext::DotAccess;
     }
 
-    // 2. Handle Broken Tree (deep scan from root)
+    // 3. Handle Broken Tree (deep scan from root)
     if node.kind() == DESIGN_FILE
         && let Some(context) = deep_scan_for_map_context(node, text, point, cursor_offset)
     {
         return context;
     }
 
-    // 3. Walk the tree upwards (default/valid tree logic)
+    // 4. Walk the tree upwards (default/valid tree logic)
     handle_upward_traversal(node, text, point, cursor_offset)
 }
 
@@ -2287,6 +2349,73 @@ pub fn complete_scope(
 
                 return items;
             }
+            CompletionContext::InstantiationLibrary => {
+                for library in crate::backend::units::known_libraries(analysis_map) {
+                    items.push(CompletionItem {
+                        kind: Some(CompletionItemKind::MODULE),
+                        label: library.clone(),
+                        detail: Some("VHDL library".to_string()),
+                        insert_text: Some(format!("{}.", library)),
+                        ..Default::default()
+                    });
+                }
+                // `work` is always a valid prefix even if no file is stamped with it.
+                if !items.iter().any(|i| i.label == "work") {
+                    items.push(CompletionItem {
+                        kind: Some(CompletionItemKind::MODULE),
+                        label: "work".to_string(),
+                        detail: Some("VHDL library (current)".to_string()),
+                        insert_text: Some("work.".to_string()),
+                        ..Default::default()
+                    });
+                }
+                items.sort_by(|a, b| a.label.cmp(&b.label));
+                return items;
+            }
+
+            CompletionContext::LibraryUnits(library) => {
+                // `work` means the library of the file being edited. Compare
+                // case-insensitively — VHDL identifiers are case-insensitive and this
+                // payload comes from user-typed text.
+                let target = if library.eq_ignore_ascii_case("work") {
+                    current_analysis.library.clone()
+                } else {
+                    library.clone()
+                };
+
+                for (name, entity_uri) in
+                    crate::backend::units::entities_in_library(analysis_map, &target)
+                {
+                    // Emit a full port-map snippet only when the entity's interface is
+                    // already in memory. Deep-parsing a whole library to build this list
+                    // would be unacceptable, so shallow entities get a plain name and the
+                    // existing PortMapLhs path fills in ports once the user types further.
+                    let deep_tree = analysis_map
+                        .get(&entity_uri)
+                        .and_then(|a| a.entity_scope_trees.get(&name));
+
+                    let (insert_text, format) = match deep_tree {
+                        Some(tree) => (
+                            generate_instantiation_snippet(&name, tree),
+                            InsertTextFormat::SNIPPET,
+                        ),
+                        None => (name.clone(), InsertTextFormat::PLAIN_TEXT),
+                    };
+
+                    items.push(CompletionItem {
+                        kind: Some(CompletionItemKind::CLASS),
+                        label: name.clone(),
+                        detail: Some(format!("entity in {}", target)),
+                        filter_text: Some(name.clone()),
+                        insert_text: Some(insert_text),
+                        insert_text_format: Some(format),
+                        ..Default::default()
+                    });
+                }
+                items.sort_by(|a, b| a.label.cmp(&b.label));
+                return items;
+            }
+
             CompletionContext::DotAccess => {
                 if let Some(chain) = extract_dot_chain(text, position) {
                     let results = resolve_path_chain(&chain, current_uri, analysis_map, &position);
