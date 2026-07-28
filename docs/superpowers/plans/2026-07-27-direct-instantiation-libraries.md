@@ -1262,10 +1262,8 @@ mod tests {
         // Parse real source rather than hand-building a ScopeTree — there is no
         // root constructor, only `ScopeTree::new(kind, &Node)`.
         let src = "entity uart_tx is\n  port (clk : in bit);\nend entity;\n";
-        let _guard = crate::backend::test_utils::SHARED_PARSER_LOCK.lock().unwrap();
         let tree = crate::backend::test_utils::parse_text(src);
         let a = crate::backend::syntax::parser::extract_document_symbols(src, tree.root_node());
-        drop(_guard);
 
         assert!(
             a.entity_scope_trees.contains_key("uart_tx"),
@@ -1448,13 +1446,13 @@ pub fn known_libraries(map: &AnalysisMap) -> Vec<String> {
 
 Run: `cargo test units:: 2>&1 | tail -20`
 
-Expected: 11 passed.
+Expected: 12 passed.
 
 - [ ] **Step 5: Run the full suite**
 
 Run: `cargo test 2>&1 | tail -5`
 
-Expected: `501 passed; 0 failed`.
+Expected: `502 passed; 0 failed`.
 
 - [ ] **Step 6: Commit**
 
@@ -1816,10 +1814,8 @@ fn test_library_units_completion_lists_entities_of_that_library() {
     );
     map.insert(top_uri.clone(), shallow_lib("rtl_lib", &[]));
 
-    let _guard = SHARED_PARSER_LOCK.lock().unwrap();
     let tree = crate::backend::test_utils::parse_text(text);
     let root = tree.root_node();
-    drop(_guard);
 
     let ctx = get_completion_context(text, root, pos);
     assert_eq!(ctx, CompletionContext::LibraryUnits("rtl_lib".to_string()));
@@ -1856,10 +1852,8 @@ fn test_work_prefix_lists_current_files_library() {
     // The file being edited lives in rtl_lib, so `work.` means rtl_lib.
     map.insert(top_uri.clone(), shallow_lib("rtl_lib", &[]));
 
-    let _guard = SHARED_PARSER_LOCK.lock().unwrap();
     let tree = crate::backend::test_utils::parse_text(text);
     let root = tree.root_node();
-    drop(_guard);
 
     let ctx = get_completion_context(text, root, pos);
     let items = complete_scope(&map, &top_uri, &ctx, pos, text, root);
@@ -1888,10 +1882,8 @@ fn test_instantiation_library_completion_lists_libraries() {
     );
     map.insert(top_uri.clone(), shallow_lib("work", &[]));
 
-    let _guard = SHARED_PARSER_LOCK.lock().unwrap();
     let tree = crate::backend::test_utils::parse_text(text);
     let root = tree.root_node();
-    drop(_guard);
 
     let ctx = get_completion_context(text, root, pos);
     assert_eq!(ctx, CompletionContext::InstantiationLibrary);
@@ -1906,7 +1898,14 @@ fn test_instantiation_library_completion_lists_libraries() {
 }
 ```
 
-If `labels` and `SHARED_PARSER_LOCK` are not already imported in this test file, check the top of `tests.rs` — both are used by existing tests there, so they should be in scope already.
+`labels` is already defined in `tests.rs` and is in scope.
+
+> **Do not wrap `parse_text` in `SHARED_PARSER_LOCK`.** `crate::backend::test_utils::parse_text`
+> acquires that mutex internally, and `std::sync::Mutex` is not reentrant — locking around a
+> `parse_text` call deadlocks the test binary. It compiles cleanly and the RED step looks
+> normal, so the failure surfaces only as a hung suite at GREEN. Existing tests in this file
+> that *do* take the lock construct a `Parser` by hand instead of calling `parse_text`; either
+> approach is fine, but never combine them.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2099,7 +2098,7 @@ Expected: all completion tests pass. Pay particular attention to any existing `D
 
 Run: `cargo test 2>&1 | tail -5`
 
-Expected: `511 passed; 0 failed`.
+Expected: `512 passed; 0 failed`.
 
 - [ ] **Step 9: Commit**
 
@@ -2140,11 +2139,9 @@ Add to `src/backend/features/completion/tests.rs`, at the end of the file:
 
 /// Builds a deep-parsed Analysis in `library` with one entity that has ports.
 fn deep_entity_analysis(library: &str, entity: &str, src: &str) -> crate::analysis::Analysis {
-    let _guard = SHARED_PARSER_LOCK.lock().unwrap();
     let tree = crate::backend::test_utils::parse_text(src);
     let mut a =
         crate::backend::syntax::parser::extract_document_symbols(src, tree.root_node());
-    drop(_guard);
     a.library = library.to_string();
     assert!(
         a.entity_scope_trees.contains_key(entity),
@@ -2169,13 +2166,11 @@ fn test_instantiation_snippet_offered_for_entity_in_another_file() {
         deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
     );
     let top_analysis = {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
         let tree = crate::backend::test_utils::parse_text(top_src);
         let mut a = crate::backend::syntax::parser::extract_document_symbols(
             top_src,
             tree.root_node(),
         );
-        drop(_guard);
         a.library = "rtl_lib".to_string();
         a
     };
@@ -2202,13 +2197,11 @@ fn test_same_library_entity_uses_work_prefix() {
         deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
     );
     let top_analysis = {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
         let tree = crate::backend::test_utils::parse_text(top_src);
         let mut a = crate::backend::syntax::parser::extract_document_symbols(
             top_src,
             tree.root_node(),
         );
-        drop(_guard);
         a.library = "rtl_lib".to_string();
         a
     };
@@ -2239,13 +2232,11 @@ fn test_cross_library_entity_uses_explicit_library_prefix() {
         deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
     );
     let top_analysis = {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
         let tree = crate::backend::test_utils::parse_text(top_src);
         let mut a = crate::backend::syntax::parser::extract_document_symbols(
             top_src,
             tree.root_node(),
         );
-        drop(_guard);
         a.library = "top_lib".to_string();
         a
     };
@@ -2281,13 +2272,11 @@ fn test_entity_snippet_is_deduplicated_across_files() {
         deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
     );
     let top_analysis = {
-        let _guard = SHARED_PARSER_LOCK.lock().unwrap();
         let tree = crate::backend::test_utils::parse_text(top_src);
         let mut a = crate::backend::syntax::parser::extract_document_symbols(
             top_src,
             tree.root_node(),
         );
-        drop(_guard);
         a.library = "rtl_lib".to_string();
         a
     };
@@ -2381,7 +2370,7 @@ Expected: all pass unchanged — those tests call `generate_instantiation_snippe
 
 Run: `cargo test 2>&1 | tail -5`
 
-Expected: `515 passed; 0 failed`.
+Expected: `516 passed; 0 failed`.
 
 - [ ] **Step 7: Commit**
 
@@ -2465,7 +2454,7 @@ cargo clippy --all-targets 2>&1 | grep -E "^(warning|error)" | head -20
 cargo build --release 2>&1 | tail -3
 ```
 
-Expected: `515 passed; 0 failed`; no new clippy warnings; a clean release build.
+Expected: `516 passed; 0 failed`; no new clippy warnings; a clean release build.
 
 - [ ] **Step 4: Review the commit series**
 
@@ -2501,6 +2490,13 @@ Points where an implementer is most likely to go wrong, all called out inline:
 - **Task 3** — the grammar asymmetries. `work` after `entity` is a `library_namespace` field; `work` after `configuration` is not; a named library is the leading identifier of a dotted `name`; and the plain form has no `instantiated_unit` node at all. Reread "Verified Grammar Facts" before writing that function.
 
 - **Task 3 / Task 4 — case handling.** `Instance.library` and `.architecture` preserve source case, matching the codebase rule (HashMap keys lowercased, struct fields verbatim, comparisons normalized at the comparison site). That makes `resolve_entity_uris` responsible for lowercasing *before* it tests for `work` — `test_uppercase_work_still_expands_to_current_library` pins it. Note `Analysis.library` is different and *is* stored lowercase: it comes from `oxide.toml` via `LibraryMatcher`, not from parsed VHDL.
+
+- **Dead-code warnings lag one task behind.** Each of Tasks 1, 3 and 4 defines API whose first
+  *caller* appears in a later task, and rustc's dead-code analysis is transitive — a function
+  that reads a field does not count as using it unless that function itself is called. So
+  `units.rs`'s four functions warn until Task 5 calls `resolve_entity_uris`, and
+  `Instance.architecture` keeps warning even then, because nothing reads it (architecture
+  resolution is explicitly out of scope). All of this is expected. Never add `#[allow(dead_code)]`.
 
 - **Task 5** — do not delete the `Backend::completion` / `Backend::hover` pre-parse calls as redundant. Component instantiations still depend on them, and nothing will fail if you remove them.
 - **Task 2, Step 8** — `ensure_fully_parsed` replaces the `Analysis` wholesale, so it must recompute `library` from the matcher. An earlier draft had it carry the value over from the existing map entry, which was a trap: no compile error, no test failure, just silently wrong resolution for JIT-upgraded files. The matcher parameter exists specifically so all three write paths share one rule. **Do not "simplify" it back to a carry-over.**
