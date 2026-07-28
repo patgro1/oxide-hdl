@@ -1634,7 +1634,7 @@ Then append, immediately before the closing brace of `ensure_dependencies_loaded
 
 Run: `cargo test 2>&1 | tail -5`
 
-Expected: `502 passed; 0 failed`.
+Expected: `503 passed; 0 failed`.
 
 **Do not delete the `Backend::completion` / `Backend::hover` pre-parse calls.** Once Task 5 lands they look redundant — the entities an open file instantiates are already deep-parsed. They are not. Task 5 deliberately resolves nothing for `unit_kind == Component`, so *component* instantiations still depend entirely on those call sites to force-parse the entity file that supplies their ports. Removing them silently breaks port-map completion for every component-style instantiation, with no test failure. Leave a comment saying so at each site.
 
