@@ -6,6 +6,7 @@
 //! * [`workspace`]: Functions related to the workspace
 pub mod features;
 pub mod syntax;
+pub mod units;
 pub mod workspace;
 
 use crate::backend::features::lookup;
