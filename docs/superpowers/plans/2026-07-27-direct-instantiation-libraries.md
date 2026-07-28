@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Zero regression when `[libraries]` is absent.** Every file defaults to library `work`, so `work.foo` resolves workspace-wide exactly as it does today. All 447 existing tests must stay green after every task.
+- **Zero regression when `[libraries]` is absent.** Every file defaults to library `work`, so `work.foo` resolves workspace-wide exactly as it does today. All 465 pre-existing tests must stay green after every task.
 - **Never deep-parse speculatively at scale.** A library may hold 500+ entities. Entity-name completion must be served from the shallow index only. Deep parsing happens for entities actually instantiated in an open file, or on demand for port-map completion (which already works this way).
 - **Conservative diagnostics.** This plan adds no new diagnostics. Unknown entities, missing ports, and bad architecture specs stay silent — that is deferred work, listed in "Out of Scope".
 - **Library names are case-insensitive**, normalized to lowercase everywhere. VHDL identifiers are case-insensitive; the codebase already lowercases map keys.
@@ -404,6 +404,13 @@ Expected: 11 tests pass.
 Run: `cargo test 2>&1 | tail -5`
 
 Expected: `465 passed` plus the 11 new = `476 passed; 0 failed`.
+
+> **Expected transient warnings.** This task only *produces* the `LibraryMatcher`
+> API; its first production consumer arrives in Task 2. Until then the non-test build
+> reports three `dead_code` warnings (`libraries` never read, `LibraryMatcher` never
+> constructed, its methods never used). That is correct and expected — **do not silence
+> them with `#[allow(dead_code)]`**, or the attribute will outlive its reason and hide
+> genuinely dead code later. They clear themselves when Task 2 lands.
 
 - [ ] **Step 7: Commit**
 
