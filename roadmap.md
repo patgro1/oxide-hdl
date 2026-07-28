@@ -1,6 +1,9 @@
 # Oxide HDL - Development Tracking
 
-**Last Updated:** February 10, 2026
+**Last Updated:** July 27, 2026
+
+> Sections below marked v0.5/v0.6 predate the 0.6.x releases and are stale; the
+> Libraries section and Known Bugs entries are current.
 
 ---
 
@@ -75,7 +78,38 @@
   - [ ] "Remove unused signal" (using existing unused diagnostic)
   - [ ] "Add to sensitivity list" (using existing sensitivity diagnostic)
 
-### v0.7: Advanced Safety
+### v0.7: Libraries & Direct Instantiation — shipped 0.7.0
+
+- [X] `[libraries]` config section mapping path globs to VHDL library names
+- [X] Per-file library stamping at index time; `work` treated as a self-reference
+- [X] Library-aware design-unit queries (`backend::units`)
+- [X] JIT deep-parse of entities instantiated by an open document
+- [X] Entity-name completion after a library prefix (`entity rtl_lib.`)
+- [X] Workspace-wide instantiation snippets, emitted in direct form
+
+**Deferred to 0.7.1 — library awareness does not yet reach every feature.**
+`resolve_entity_uris` has one production caller (the JIT deep-parse), so these
+still resolve by bare name across the whole workspace and are ambiguous when two
+libraries hold the same entity name:
+
+- [ ] **Library-aware go-to-definition and hover.** Blocked on two things:
+  `goto_definition` resolves a bare word from the rope with no AST context, so it
+  cannot tell an entity instantiation from a signal reference; and `Instance`
+  records the statement range and the label range but not the *unit name* range,
+  so there is no way to ask whether the cursor sits on the entity name. Fix is to
+  add `unit_range` to `Instance`, add a `find_instance_at(analysis, pos)` helper,
+  and check it before falling through to `lookup_symbol`. Roughly one task.
+- [ ] **Library-aware port-map completion.** `PortMapLhs(String)` carries a bare
+  name, so the library never reaches the resolution site. Changing the payload
+  churns a large number of existing completion tests for a benefit that only
+  appears with cross-library name collisions — lower value than the above.
+- [ ] **Architecture resolution.** `Instance.architecture` is captured but read by
+  nothing, so `entity work.cpu(behavioral)` cannot be validated or navigated. This
+  is why `field architecture is never read` warns in a clean build.
+- [ ] **Configuration instantiation.** `configuration work.cfg` parses and is
+  classified, but configurations are not indexed at all.
+
+### v0.8: Advanced Safety
 **Goal:** Catch functional bugs that compile fine but break hardware.
 
 - [ ] **Latch Inference Warning** (If/Case without else)
@@ -121,6 +155,22 @@
 2. **Subprogram Deduplication (Hover):**
    - **Issue:** Hover might show both Specification and Body if both are indexed.
    - **Task:** Ensure `lookup_symbol` (find_all=false) or formatter prioritizes Body over Spec to avoid duplicates in tooltips.
+
+3. **No partial scope-tree recovery:**
+   - **Issue:** Any unclosed construct (an `if` awaiting `end if;`, an unclosed
+     `process`/`generate`/`block`, or a missing `end architecture;`) makes
+     `extract_document_symbols` return zero scope trees for the file.
+   - **Mitigated in 0.6.6:** the last good analysis is retained rather than being
+     overwritten, so completion/hover/goto keep working against slightly stale data.
+   - **Not fixed:** freshly typed text still contributes nothing until the file
+     parses. Real error recovery in `builders.rs` would fix this and also fix the
+     related context-detection bug below.
+4. **Completion context misdetected on an unclosed paren:**
+   - **Issue:** With an open `port map (` followed by `end architecture;`,
+     `get_completion_context` returns `Architecture` instead of `PortMapLhs`, so
+     scope items are offered where ports should be.
+   - **Impact:** Limited — most editors auto-close the paren, which avoids it.
+   - Affects component and direct instantiation equally.
 
 2. **Record Type Visibility:**
    - **Issue:** Dot completion relies on text heuristics in some edge cases.

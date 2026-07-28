@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Library awareness currently applies to entity-name completion and to choosing which
   file to deep-parse for an instantiated entity. Go-to-definition, hover and port-map
   completion still resolve by bare name across the whole workspace, so two entities
-  sharing a name in different libraries remain ambiguous for those features. Extending
-  them is planned follow-up work.
+  sharing a name in different libraries remain ambiguous for those features. **Extending
+  them is planned for 0.7.1** — see the Libraries section of `roadmap.md`. Workspaces
+  without colliding entity names are unaffected either way.
 - **Entity name completion after a library prefix** — typing `u0: entity rtl_lib.` offers every entity in that library, served from the fast index without parsing them. Typing `u0: entity ` offers the library names themselves.
 - **Instantiation snippets now cover the whole workspace** — previously only entities declared in the current file, plus components from imported packages, were offered. In a direct-instantiation codebase with no component declarations, that meant no snippets at all.
 - **Automatic deep-parse of instantiated entities** — opening a file resolves every `entity <lib>.<name>` it instantiates and upgrades those files from the shallow index, so hover, go-to-definition and port-map completion work against the real interface without opening them.
