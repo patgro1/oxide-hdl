@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Completion, hover and go-to-definition no longer disappear while typing** — any unclosed construct (an `if` awaiting its `end if;`, an unclosed `process`, `generate` or `block`, or a file not yet terminated with `end architecture;`) prevents tree-sitter from building the architecture, producing an analysis with no scope trees. That empty result was overwriting the previous good one on every keystroke, blanking out every language feature for the file until the construct was closed. The last good analysis is now retained until the buffer parses again.
+
 ## [0.6.5] — 2026-05-05
 
 ### Fixed

@@ -330,4 +330,87 @@ mod analysis_lookup_tests {
         assert!(result.is_some());
         assert!(matches!(result.unwrap().decl_type, DeclType::Port(_)));
     }
+
+    // =========================================================================
+    // has_no_scope_trees — detecting a transiently unparseable buffer
+    //
+    // Any unclosed construct makes tree-sitter fail to produce an
+    // architecture_definition, so extract_document_symbols yields an Analysis
+    // with zero scope trees. That signature is what tells the caller not to
+    // clobber the last good analysis while the user is mid-keystroke.
+    // =========================================================================
+
+    /// Parses VHDL and reports whether the resulting Analysis has any scope trees.
+    fn scope_trees_lost(code: &str) -> bool {
+        let tree = crate::backend::test_utils::parse_text(code);
+        let analysis =
+            crate::backend::syntax::parser::extract_document_symbols(code, tree.root_node());
+        analysis.has_no_scope_trees()
+    }
+
+    const ARCH_HEAD: &str =
+        "architecture rtl of top is\n  signal a : bit;\n  signal b : bit;\nbegin\n";
+
+    #[test]
+    fn test_complete_architecture_has_scope_trees() {
+        assert!(
+            !scope_trees_lost(&format!("{ARCH_HEAD}  b <= a;\nend architecture;\n")),
+            "a well-formed architecture must produce scope trees"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_process_loses_scope_trees() {
+        assert!(scope_trees_lost(&format!(
+            "{ARCH_HEAD}  process(a)\n  begin\n    b <= a;\n\nend architecture;\n"
+        )));
+    }
+
+    #[test]
+    fn test_unclosed_if_inside_closed_process_loses_scope_trees() {
+        // The nastiest case: the process itself is closed, but an `if` awaiting
+        // its `end if;` still collapses the whole architecture.
+        assert!(scope_trees_lost(&format!(
+            "{ARCH_HEAD}  process(a)\n  begin\n    if a = '1' then\n      b <= a;\n  end process;\nend architecture;\n"
+        )));
+    }
+
+    #[test]
+    fn test_unclosed_generate_loses_scope_trees() {
+        assert!(scope_trees_lost(&format!(
+            "{ARCH_HEAD}  g: for i in 0 to 3 generate\n  begin\n    b <= a;\n\nend architecture;\n"
+        )));
+    }
+
+    #[test]
+    fn test_unclosed_block_loses_scope_trees() {
+        assert!(scope_trees_lost(&format!(
+            "{ARCH_HEAD}  blk: block\n  begin\n    b <= a;\n\nend architecture;\n"
+        )));
+    }
+
+    #[test]
+    fn test_missing_end_architecture_loses_scope_trees() {
+        assert!(scope_trees_lost(&format!("{ARCH_HEAD}  b <= a;\n")));
+    }
+
+    #[test]
+    fn test_entity_only_file_is_not_considered_empty() {
+        // An entity declaration populates entity_scope_trees, not scope_trees.
+        // It must NOT be mistaken for an unparseable buffer.
+        assert!(
+            !scope_trees_lost("entity top is\n  port (clk : in bit);\nend entity;\n"),
+            "an entity-only file has real content and must not look empty"
+        );
+    }
+
+    #[test]
+    fn test_package_only_file_is_not_considered_empty() {
+        assert!(
+            !scope_trees_lost(
+                "package my_pkg is\n  constant C : integer := 1;\nend package;\n"
+            ),
+            "a package-only file has real content and must not look empty"
+        );
+    }
 }

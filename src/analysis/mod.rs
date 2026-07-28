@@ -88,6 +88,26 @@ impl Analysis {
         }
     }
 
+    /// Returns `true` when no design-unit scope trees were extracted at all.
+    ///
+    /// This is the signature of a **transiently unparseable buffer**, not of an
+    /// empty file. Tree-sitter cannot produce an `architecture_definition` while
+    /// any construct inside it is still unclosed, so a single `if` awaiting its
+    /// `end if;` collapses every scope tree in the file. The same happens for an
+    /// unclosed `process`, `generate` or `block`, or a file not yet terminated
+    /// with `end architecture;`.
+    ///
+    /// Callers use this to avoid replacing a good analysis with a useless one
+    /// while the user is mid-keystroke. Note that a file holding only an entity
+    /// or only a package still has content — those populate `entity_scope_trees`
+    /// and `package_*_scope_trees` — so all four collections are checked.
+    pub fn has_no_scope_trees(&self) -> bool {
+        self.scope_trees.is_empty()
+            && self.entity_scope_trees.is_empty()
+            && self.package_declaration_scope_trees.is_empty()
+            && self.package_body_scope_trees.is_empty()
+    }
+
     /// Returns the context clauses that apply to the design unit containing `scope_tree`.
     ///
     /// Searches `design_units` for an entry whose scope tree covers the same range.
