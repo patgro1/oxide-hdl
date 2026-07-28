@@ -106,6 +106,23 @@ libraries hold the same entity name:
 - [ ] **Architecture resolution.** `Instance.architecture` is captured but read by
   nothing, so `entity work.cpu(behavioral)` cannot be validated or navigated. This
   is why `field architecture is never read` warns in a clean build.
+- [ ] **Completion parity between entities and package components.** In the
+  architecture-body context, `generate_entity_completions` iterates
+  `entity_scope_trees`, which exist only for deep-parsed files — so a package
+  component is always offered while a shallow-indexed entity is offered *not at
+  all*. Two parts: (a) offer shallow entities by name, from the fast index;
+  (b) implement `completionItem/resolve` (currently `resolve_provider: Some(false)`,
+  no handler) to deep-parse just the selected entity and fill in its snippet.
+  Measured cost of one deep parse is ~0.66 ms, so deferring is cheap; the eager
+  cost that ruled `resolve` out originally only ever applied to parsing a whole
+  library up front.
+- [ ] **Ports and generics named after VHDL standard types are dropped.**
+  Tree-sitter tags `WIDTH`, `positive`, `natural`, `line`, `text`,
+  `severity_level` and `delay_length` as `library_type` rather than `identifier`,
+  and `extract_decl_from_generic_clause` / `extract_decl_from_port_clause` only
+  look for `identifier`. The interface silently loses those entries. Pre-existing,
+  reproduces on 0.6.6. Fix mirrors the existing fallback at `builders.rs:1532`.
+  Worth a 0.6.7 patch rather than waiting for the feature branch.
 - [ ] **Configuration instantiation.** `configuration work.cfg` parses and is
   classified, but configurations are not indexed at all.
 

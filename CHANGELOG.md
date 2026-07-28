@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them is planned for 0.7.1** — see the Libraries section of `roadmap.md`. Workspaces
   without colliding entity names are unaffected either way.
 - **Entity name completion after a library prefix** — typing `u0: entity rtl_lib.` offers every entity in that library, served from the fast index without parsing them. Typing `u0: entity ` offers the library names themselves.
-- **Instantiation snippets now cover the whole workspace** — previously only entities declared in the current file, plus components from imported packages, were offered. In a direct-instantiation codebase with no component declarations, that meant no snippets at all.
+- **Instantiation snippets now cover deep-parsed entities anywhere in the workspace** — previously only entities declared in the current file, plus components from imported packages, were offered.
+
+  **Known limitation:** a file is deep-parsed only once it has been opened, or once something you opened instantiates it. Entities still sitting in the shallow index are not offered in the architecture-body completion list at all, so the entity you are about to instantiate for the first time may not appear until you have opened its file. Typing `entity <lib>.` does list shallow entities by name and is the reliable route today. Closing this gap needs shallow entities offered by name plus `completionItem/resolve` to fill the snippet on selection — tracked for 0.7.1.
 - **Automatic deep-parse of instantiated entities** — opening a file resolves every `entity <lib>.<name>` it instantiates and upgrades those files from the shallow index, so hover, go-to-definition and port-map completion work against the real interface without opening them.
 
 ### Changed
