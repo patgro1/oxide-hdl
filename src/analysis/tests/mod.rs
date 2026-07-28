@@ -414,3 +414,17 @@ mod analysis_lookup_tests {
         );
     }
 }
+
+#[test]
+fn test_analysis_defaults_to_work_library() {
+    let analysis = crate::analysis::Analysis::new();
+    assert_eq!(analysis.library, "work");
+}
+
+#[test]
+fn test_analysis_library_survives_clone() {
+    let mut analysis = crate::analysis::Analysis::new();
+    analysis.library = "rtl_lib".to_string();
+    let copy = analysis.clone();
+    assert_eq!(copy.library, "rtl_lib");
+}

@@ -53,6 +53,13 @@ pub struct Analysis {
     /// How the file was parsed
     pub parse_level: ParseLevel,
 
+    /// VHDL library this file's design units belong to, lowercase.
+    ///
+    /// Resolved from the `[libraries]` globs in `oxide.toml` at index time.
+    /// Defaults to `work`, which is also what every file gets when no libraries
+    /// are configured — making library-aware resolution a no-op for such workspaces.
+    pub library: String,
+
     /// Scope tree with entity declaration (Headers)
     pub entity_scope_trees: HashMap<String, ScopeTree>,
 
@@ -79,6 +86,7 @@ impl Analysis {
         Self {
             symbols: HashMap::new(),
             parse_level: ParseLevel::Shallow,
+            library: "work".to_string(),
             design_units: Vec::new(),
             entity_scope_trees: HashMap::new(),
             scope_trees: Vec::new(),

@@ -3,8 +3,9 @@
 use crate::analysis::{Analysis, OxideSymbolKind, ParseLevel};
 use crate::backend::AnalysisMap;
 use crate::backend::syntax::{parser, scanner};
-use crate::config::OxideConfig;
+use crate::config::{LibraryMatcher, OxideConfig};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -13,6 +14,25 @@ use tower_lsp::Client;
 use tower_lsp::lsp_types::Diagnostic;
 use tower_lsp::lsp_types::{MessageType, Url};
 use walkdir::WalkDir;
+
+/// Shallow-scans one file's text and stamps the library it belongs to.
+///
+/// Factored out of `index_workspace` so the scan-and-stamp step is unit-testable:
+/// `index_workspace` itself needs a live `Client` and a real directory tree, but
+/// this does not. Pure — no I/O, no locks.
+///
+/// # Arguments
+/// * `text` - File contents.
+/// * `path` - Path on disk, used only to resolve the library.
+/// * `matcher` - Compiled `[libraries]` globs.
+pub fn analysis_for_file(text: &str, path: &Path, matcher: &LibraryMatcher) -> Analysis {
+    let mut analysis = Analysis::new();
+    analysis.library = matcher.library_for(path);
+    for s in scanner::scan_fast(text) {
+        analysis.symbols.insert(s.name.clone().to_lowercase(), s);
+    }
+    analysis
+}
 
 /// Scans the entire workspace using a fast, multi-threaded Regex scanner.
 ///
@@ -51,6 +71,7 @@ pub async fn index_workspace(
         .await;
 
     let matcher = config.build_globset();
+    let lib_matcher = Arc::new(LibraryMatcher::from_config(&config));
 
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
 
@@ -158,6 +179,7 @@ pub async fn index_workspace(
 
     for path in paths {
         let sem_clone = semaphore.clone();
+        let lib_clone = lib_matcher.clone();
         let path_uri = match Url::from_file_path(&path) {
             Ok(u) => u,
             Err(_) => continue,
@@ -166,13 +188,7 @@ pub async fn index_workspace(
             let _permit = sem_clone.acquire_owned().await.unwrap();
             tokio::task::spawn_blocking(move || {
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
-                let symbols = scanner::scan_fast(&text);
-
-                let mut analysis = Analysis::new();
-                for s in symbols {
-                    analysis.symbols.insert(s.name.clone().to_lowercase(), s);
-                }
-                (path_uri, analysis)
+                (path_uri, analysis_for_file(&text, &path, &lib_clone))
             })
             .await
             .unwrap()
@@ -313,6 +329,7 @@ pub async fn parse_and_update_document(
     config: OxideConfig,
 ) -> Vec<Diagnostic> {
     let uri = uri.clone();
+    let lib_matcher = LibraryMatcher::from_config(&config);
     let text_for_diag = text.clone();
     let parser_for_diag = parser.clone();
 
@@ -376,7 +393,7 @@ pub async fn parse_and_update_document(
         }
 
         if let Some(pkg_uri) = pkg_uri {
-            ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri).await;
+            ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri, &lib_matcher).await;
         }
     }
 
@@ -397,7 +414,7 @@ pub async fn parse_and_update_document(
             pkg_uri = crate::backend::features::lookup::resolve_import_uri(library, package_name);
         }
         if let Some(pkg_uri) = pkg_uri {
-            ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri).await;
+            ensure_fully_parsed(client, &analysis_map, &parser, &pkg_uri, &lib_matcher).await;
         }
     }
 
@@ -411,8 +428,13 @@ pub async fn parse_and_update_document(
     //     }
     // }
 
-    // Phase 3: Store analysis in map (skipped if the buffer is mid-edit and
-    // momentarily unparseable — see `store_analysis`).
+    // Phase 3: Stamp the library, then store (the store is skipped if the buffer is
+    // mid-edit and momentarily unparseable — see `store_analysis`). A fresh Analysis
+    // defaults to "work" and would otherwise clobber what the indexer resolved.
+    let mut analysis = analysis;
+    if let Ok(path) = uri.to_file_path() {
+        analysis.library = lib_matcher.library_for(&path);
+    }
     store_analysis(&analysis_map, &uri, analysis.clone()).await;
 
     // Phase 4: Run diagnostics (now with access to imported packages)
@@ -520,12 +542,14 @@ fn find_package_file(name: &str, map: &AnalysisMap) -> Option<Url> {
 /// * `analysis_map` - The global symbol table to check and update.
 /// * `parser` - The shared, mutex-protected Tree-sitter parser instance.
 /// * `uri` - The URI of the file that needs to be checked and potentially upgraded.
+/// * `matcher` - Compiled `[libraries]` globs, used to re-stamp the upgraded analysis.
 #[tracing::instrument(skip_all, fields(uri = %uri))]
 pub async fn ensure_fully_parsed(
     client: &Client,
     analysis_map: &Arc<RwLock<AnalysisMap>>,
     parser: &Arc<Mutex<crate::backend::Parser>>,
     uri: &Url,
+    matcher: &LibraryMatcher,
 ) {
     // Check if the file was shallow index or fully parsed
     let needs_parsing = {
@@ -589,6 +613,13 @@ pub async fn ensure_fully_parsed(
                 format!("JIT Parse completed for {}. Updating index.", uri),
             )
             .await;
+        // A JIT upgrade replaces the shallow Analysis wholesale, so the library must
+        // be recomputed — the fresh Analysis defaults to "work" and would otherwise
+        // silently clobber what the indexer resolved for this file.
+        let mut analysis = analysis;
+        if let Ok(path) = uri.to_file_path() {
+            analysis.library = matcher.library_for(&path);
+        }
         let mut map = analysis_map.write().await;
         map.insert(uri.clone(), analysis);
     }
@@ -597,6 +628,8 @@ pub async fn ensure_fully_parsed(
 #[cfg(test)]
 mod tests {
     use crate::analysis::Analysis;
+    use crate::config::LibraryMatcher;
+    use std::path::PathBuf;
 
     /// Parses VHDL into an Analysis, the way the deep-parse path does.
     fn analyze(code: &str) -> Analysis {
@@ -764,6 +797,39 @@ mod tests {
         assert!(
             labels.contains(&"sig_alpha") && labels.contains(&"sig_beta"),
             "signals vanished from completion while typing an unclosed if; got {labels:?}"
+        );
+    }
+
+    fn matcher() -> LibraryMatcher {
+        LibraryMatcher::new(
+            vec![("rtl_lib".to_string(), vec!["rtl/**/*.vhd".to_string()])],
+            PathBuf::from("/ws"),
+        )
+    }
+
+    #[test]
+    fn test_analysis_for_file_stamps_matched_library() {
+        let src = "entity uart_tx is\nend entity;\n";
+        let a = super::analysis_for_file(src, &PathBuf::from("/ws/rtl/uart_tx.vhd"), &matcher());
+        assert_eq!(a.library, "rtl_lib");
+    }
+
+    #[test]
+    fn test_analysis_for_file_defaults_unmatched_to_work() {
+        let src = "entity uart_tx is\nend entity;\n";
+        let a = super::analysis_for_file(src, &PathBuf::from("/ws/tb/uart_tb.vhd"), &matcher());
+        assert_eq!(a.library, "work");
+    }
+
+    #[test]
+    fn test_analysis_for_file_still_populates_symbols() {
+        // The library stamp must not disturb the shallow scan it wraps.
+        let src = "entity uart_tx is\nend entity;\n";
+        let a = super::analysis_for_file(src, &PathBuf::from("/ws/rtl/uart_tx.vhd"), &matcher());
+        assert!(
+            a.symbols.contains_key("uart_tx"),
+            "shallow scan results lost, got keys: {:?}",
+            a.symbols.keys().collect::<Vec<_>>()
         );
     }
 }

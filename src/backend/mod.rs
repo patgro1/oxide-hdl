@@ -697,12 +697,19 @@ impl LanguageServer for Backend {
         };
 
         if !needs_jit.is_empty() {
+            let lib_matcher = {
+                let config_guard = self.config.read().await;
+                crate::config::LibraryMatcher::from_config(
+                    &config_guard.clone().unwrap_or_else(OxideConfig::default),
+                )
+            };
             for def_uri in needs_jit {
                 workspace::ensure_fully_parsed(
                     &self.client,
                     &self.analysis_map,
                     &self.parser,
                     &def_uri,
+                    &lib_matcher,
                 )
                 .await;
             }
@@ -814,11 +821,18 @@ impl LanguageServer for Backend {
             };
 
             if let Some(def_uri) = def_uri {
+                let lib_matcher = {
+                    let config_guard = self.config.read().await;
+                    crate::config::LibraryMatcher::from_config(
+                        &config_guard.clone().unwrap_or_else(OxideConfig::default),
+                    )
+                };
                 workspace::ensure_fully_parsed(
                     &self.client,
                     &self.analysis_map,
                     &self.parser,
                     &def_uri,
+                    &lib_matcher,
                 )
                 .await;
             }
