@@ -14,7 +14,7 @@
 - **Never deep-parse speculatively at scale.** A library may hold 500+ entities. Entity-name completion must be served from the shallow index only. Deep parsing happens for entities actually instantiated in an open file, or on demand for port-map completion (which already works this way).
 - **Conservative diagnostics.** This plan adds no new diagnostics. Unknown entities, missing ports, and bad architecture specs stay silent — that is deferred work, listed in "Out of Scope".
 - **Library names are case-insensitive**, normalized to lowercase everywhere. VHDL identifiers are case-insensitive; the codebase already lowercases map keys.
-- **Additive struct changes only.** `Analysis` and `Instance` are each constructed in exactly one place (`Analysis::new()` at `src/analysis/mod.rs:71`, `create_instance_from_node` at `src/analysis/builders.rs:1248`), so adding fields ripples nowhere. Do not remove `Instance::component`.
+- **Additive struct changes only.** `Analysis` and `Instance` are each constructed in exactly one place (`Analysis::new()` at `src/analysis/mod.rs:71`, `create_instance_from_node` in `src/analysis/builders.rs`), so adding fields ripples nowhere. Do not remove `Instance::component`.
 - Run `cargo test` (not a filtered subset) before every commit.
 
 ---
@@ -28,6 +28,7 @@ These were confirmed by dumping `to_sexp()` against the vendored grammar. The ex
 | `u0: entity work.cpu` | `(component_instantiation_statement (label_declaration (label)) (instantiated_unit library: (library_namespace) entity: (name (identifier))))` |
 | `u0: entity mylib.cpu` | `(component_instantiation_statement (label_declaration (label)) (instantiated_unit entity: (name (identifier) (selection (identifier)))))` |
 | `u0: entity work.cpu(behavioral)` | `(instantiated_unit library: (library_namespace) entity: (name (identifier)) architecture: (identifier))` |
+| `u0: entity mylib.cpu(rtl)` | `(instantiated_unit entity: (name (identifier) (selection (identifier))) architecture: (identifier))` — the `architecture:` field survives on the no-`library:` path |
 | `u0: entity a.b.c` | `(instantiated_unit entity: (name (identifier) (selection (identifier)) (selection (identifier))))` |
 | `u0: configuration work.cfg` | `(instantiated_unit configuration: (name (identifier) (selection (identifier))))` |
 | `u0: component cpu` | `(instantiated_unit component: (name (identifier)))` |
@@ -918,7 +919,7 @@ Add these fields to `Instance`, after `component`:
 
 - [ ] **Step 4: Rewrite the extraction**
 
-In `src/analysis/builders.rs`, replace the whole of `create_instance_from_node` (currently at line 1223) with:
+In `src/analysis/builders.rs`, replace the whole of `create_instance_from_node` (find it by name; it moves as the file changes) with:
 
 ```rust
 /// Create an instance struct from the component instantiation node
@@ -1016,6 +1017,12 @@ Expected: the pre-existing `test_instantiation_entity_work`, `test_instantiation
 Run: `cargo test 2>&1 | tail -5`
 
 Expected: `490 passed; 0 failed`.
+
+> **Expected transient warning.** Like Task 1, this task only *produces* new API.
+> Until Task 4 consumes them, the non-test build reports
+> `fields library, architecture, and unit_kind are never read` at `src/analysis/types.rs`.
+> That is correct — **do not silence it with `#[allow(dead_code)]`**. It clears when
+> Task 4 lands.
 
 - [ ] **Step 8: Commit**
 
