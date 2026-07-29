@@ -804,7 +804,7 @@ impl LanguageServer for Backend {
 
         if let Some(analysis) = map.get(&uri) {
             let mut symbols = features::symbol::collect_document_symbol(analysis);
-            symbols.sort_by(|a, b| a.range.start.cmp(&b.range.start));
+            symbols.sort_by_key(|s| s.range.start);
             return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
         }
         Ok(None)

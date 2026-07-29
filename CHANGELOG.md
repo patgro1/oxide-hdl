@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Entity instantiation snippets are emitted in direct form** (`entity work.foo`) rather than as a bare name. A bare name is only legal VHDL when a component declaration is in scope, so the previous output did not compile for an entity. Component snippets sourced from packages are unaffected and still emit a bare name.
 - Instantiations now retain the library, architecture and instantiation kind that the parser previously discarded.
+- **Document outline names the bound architecture** — an instance written `u0: entity work.cpu(behavioral)` now shows `Instance of cpu(behavioral)` rather than `Instance of cpu`, which matters precisely when an entity has several architectures.
+
+### Fixed
+
+- `cargo clippy` is now warning-free across all targets. Six of the eight warnings predated this work: three map iterations that should use `.values()`, a hand-rolled `Default` impl that can be derived, a `sort_by` that should be `sort_by_key`, and two `tests.rs` files nesting a redundant `mod tests` (the rest of the codebase does not). Note CI runs only `cargo build` and `cargo test`, so nothing was catching this drift.
 
 ## [0.6.6] — 2026-07-27
 

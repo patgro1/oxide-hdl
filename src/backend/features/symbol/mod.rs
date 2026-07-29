@@ -48,10 +48,18 @@ pub fn to_document_symbol(declaration: &Declaration) -> DocumentSymbol {
 ///
 /// A `DocumentSymbol` struct compliant with the Language Server Protocol.
 pub fn instance_to_document_symbol(instance: &Instance) -> DocumentSymbol {
+    // Name the architecture when one was written explicitly, as in
+    // `u0: entity work.cpu(behavioral)`. An entity with several architectures is
+    // exactly the case where the outline needs to say which is bound.
+    let detail = match &instance.architecture {
+        Some(arch) => format!("Instance of {}({})", instance.component, arch),
+        None => format!("Instance of {}", instance.component),
+    };
+
     #[allow(deprecated)]
     DocumentSymbol {
         name: instance.label.clone(),
-        detail: Some(format!("Instance of {}", instance.component)),
+        detail: Some(detail),
         kind: SymbolKind::from(OxideSymbolKind::ComponentInstantiation),
         children: None,
         range: instance.range,
@@ -275,3 +283,6 @@ fn collect_symbols_recursive(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

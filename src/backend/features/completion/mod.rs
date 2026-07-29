@@ -2016,7 +2016,7 @@ pub fn generate_entity_completions(
 
     for clause in &analysis.use_clauses {
         let pkg_name = &clause.name;
-        for (_, global_analysis) in analysis_map.iter() {
+        for global_analysis in analysis_map.values() {
             // Primarily check declarations (headers) for completions
             if let Some(pkg_scope) = global_analysis
                 .package_declaration_scope_trees
@@ -2245,7 +2245,7 @@ pub fn complete_scope(
                 }
                 for clause in &effective_clauses {
                     let pkg_name = clause.name.to_lowercase();
-                    for (_, analysis) in analysis_map.iter() {
+                    for analysis in analysis_map.values() {
                         if let Some(pkg_scope) =
                             analysis.package_declaration_scope_trees.get(&pkg_name)
                         {
@@ -2571,7 +2571,7 @@ pub fn complete_scope(
                     // Now we add public symbols from imported packages (scope-chain-aware)
                     for clause in &effective_clauses {
                         let pkg_name = &clause.name;
-                        for (_, analysis) in analysis_map.iter() {
+                        for analysis in analysis_map.values() {
                             if let Some(pkg_scope) = analysis
                                 .package_declaration_scope_trees
                                 .get(&pkg_name.to_lowercase())

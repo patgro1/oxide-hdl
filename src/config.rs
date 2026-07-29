@@ -5,19 +5,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Diagnostic trigger type
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticTrigger {
     /// Trigger diagnostic only when the file is saved
+    #[default]
     OnSave,
     /// Trigger diagnostic for each change
     OnChange,
-}
-
-impl Default for DiagnosticTrigger {
-    fn default() -> Self {
-        Self::OnSave
-    }
 }
 
 /// Configuration for the Oxide HDL Language Server.
