@@ -143,7 +143,20 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
 /// # Arguments
 /// * `sym` - An `Entity`-kind symbol with its generics/ports as `children`
 ///   (built by `build_entity_symbol`).
+///
+/// # Empty-children fallback
+/// `format_hover_result` dispatches *every* `Entity`-kind symbol here, not just
+/// the ones `resolve_instantiated_entity_hover` builds. Symbols reaching hover
+/// via the bare-word path (`get_identifier_from_ast` → `resolve_rich_hover` →
+/// `lookup_symbol`) carry no `children`, and so does the shallow synthetic
+/// symbol this feature builds before the JIT re-parse. Rendering those as
+/// `entity <name> is / end entity;` would be a confidently-wrong claim that the
+/// entity has no generics and no ports, so an empty `children` list falls back
+/// to [`format_basic`] instead.
 pub fn format_entity_hover(sym: &Symbol) -> String {
+    if sym.children.is_empty() {
+        return format_basic(sym);
+    }
     let mut md = String::new();
     md.push_str(&format!("**{}**\n\n", sym.name));
     md.push_str("```vhdl\n");
@@ -313,9 +326,17 @@ fn build_entity_symbol(name: &str, tree: &crate::analysis::ScopeTree) -> Symbol 
 }
 
 /// Resolves hover when the cursor sits on the unit-name of a direct entity
-/// instantiation (`label: entity lib.name`), bypassing the generic
-/// dotted-name chain resolver, which has no concept of instantiation syntax
-/// and would otherwise return a meaningless `entity : void` result.
+/// instantiation (`label: entity lib.name`).
+///
+/// This runs before *both* of `resolve_hover`'s generic paths, because neither
+/// has any concept of instantiation syntax:
+/// * the dotted-name chain resolver (`get_qualified_chain_at_pos` /
+///   `resolve_path_chain`) — at this cursor position the chain comes back
+///   empty, so it contributes nothing rather than something wrong; and
+/// * the bare-word fallback (`get_identifier_from_ast` → `resolve_rich_hover`
+///   → `lookup_symbol`) — this is the path that actually produced the old,
+///   meaningless `entity : void` output, by finding the entity's childless
+///   `Symbol` and rendering it through `format_basic`.
 ///
 /// When the target entity is still shallow-indexed, returns a minimal result
 /// that still carries the correct `definition_uri` — `Backend::hover`'s

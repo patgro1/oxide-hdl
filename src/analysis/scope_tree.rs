@@ -357,8 +357,14 @@ impl ScopeTree {
 ///
 /// Used to detect when the cursor sits on the entity/component name inside
 /// `label: entity lib.name`, so hover and goto-definition can resolve it as
-/// an instantiation instead of falling through to the generic dotted-name
-/// chain resolver, which has no concept of instantiation syntax.
+/// an instantiation. The check must run before *both* of the generic
+/// resolution paths, since neither understands instantiation syntax: the
+/// dotted-name chain resolver (`get_qualified_chain_at_pos` /
+/// `resolve_path_chain`) and the bare-word fallback
+/// (`get_identifier_from_ast` → `lookup_symbol`). At this cursor position the
+/// chain resolver simply comes up empty, so it is the bare-word fallback that
+/// actually mishandles it — it finds the entity's shallow, childless `Symbol`
+/// and degrades to `format_basic`'s `entity : void`.
 pub fn find_instance_at(scope_trees: &[ScopeTree], pos: Position) -> Option<&Instance> {
     for tree in scope_trees {
         for inst in tree.collect_all_instantiations() {

@@ -94,6 +94,70 @@ fn hover_on_shallow_instantiated_entity_still_points_at_definition_uri() {
     assert_eq!(results[0].definition_uri, Some(target_uri));
 }
 
+// The `Entity` arm of `format_hover_result`'s dispatch is shared with the
+// pre-existing bare-word path (`get_identifier_from_ast` → `resolve_rich_hover`
+// → `lookup_symbol`), which yields `Entity` symbols with no `children`.
+// Rendering those through the rich formatter would claim the entity has zero
+// generics and zero ports, which is a confidently-wrong statement about an
+// entity that may well have both. Empty children must fall back to
+// `format_basic`.
+#[test]
+fn hover_on_bare_entity_reference_does_not_claim_an_empty_interface() {
+    let (mut map, uris) = setup(vec![(
+        "top.vhd",
+        "architecture rtl of top is\nbegin\n  uart_rx <= '1';\nend architecture;\n",
+    )]);
+    let current_uri = uris[0].clone();
+
+    // A separate file known only shallowly: its entity symbol has no children,
+    // exactly like the regex scanner produces — but the real `uart_rx` entity
+    // does have ports.
+    let target_uri = Url::parse("file:///uart_rx.vhd").unwrap();
+    let mut shallow = crate::analysis::Analysis::new();
+    shallow.library = "work".to_string();
+    shallow.parse_level = crate::analysis::ParseLevel::Shallow;
+    shallow.symbols.insert(
+        "uart_rx".to_string(),
+        crate::analysis::Symbol {
+            name: "uart_rx".to_string(),
+            kind: crate::analysis::OxideSymbolKind::Entity,
+            detail: Some("Entity".to_string()),
+            range: tower_lsp::lsp_types::Range::default(),
+            children: Vec::new(),
+        },
+    );
+    map.insert(target_uri, shallow);
+
+    let current_src = "architecture rtl of top is\nbegin\n  uart_rx <= '1';\nend architecture;\n";
+    let tree = parse_text(current_src);
+    // Cursor inside the bare word "uart_rx" on line 2.
+    let pos = Position {
+        line: 2,
+        character: 4,
+    };
+
+    let results = resolve_hover(&map, &current_uri, current_src, tree.root_node(), pos);
+    assert!(
+        !results.is_empty(),
+        "expected the bare-word path to resolve the global entity symbol"
+    );
+    for res in &results {
+        let md = format_hover_result(res);
+        assert!(
+            !md.contains("end entity;"),
+            "a childless Entity symbol must not render the rich entity block, got: {md}"
+        );
+        assert!(
+            !md.contains("generics ("),
+            "must not claim an (empty) generic list, got: {md}"
+        );
+        assert!(
+            !md.contains("ports ("),
+            "must not claim an (empty) port list, got: {md}"
+        );
+    }
+}
+
 #[test]
 fn hover_on_ordinary_dotted_access_is_unaffected() {
     // A record field access must still go through the existing chain path —
