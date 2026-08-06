@@ -1833,6 +1833,44 @@ pub fn generate_instantiation_snippet(name: &str, scope_tree: &ScopeTree) -> Str
     snippet
 }
 
+#[derive(serde::Deserialize)]
+struct EntitySnippetData {
+    uri: String,
+    name: String,
+}
+
+/// Decodes the `(uri, name)` pair a shallow `LibraryUnits` completion item
+/// stashed in its `data` field, so `completionItem/resolve` knows which file
+/// to JIT-parse and which entity to look up once it's parsed.
+///
+/// Returns `None` for items with no data (deep items never carry any) or
+/// malformed data — callers treat both as "nothing to resolve".
+pub fn decode_entity_snippet_data(item: &CompletionItem) -> Option<(Url, String)> {
+    let data = item.data.clone()?;
+    let payload: EntitySnippetData = serde_json::from_value(data).ok()?;
+    let uri = Url::parse(&payload.uri).ok()?;
+    Some((uri, payload.name))
+}
+
+/// Fills in `item`'s real generic/port-map snippet from `uri`'s entity scope
+/// tree, if it's there. Returns `item` unchanged when the entity still isn't
+/// deep-parsed (caller upgrades it first) or is gone entirely.
+pub fn apply_entity_snippet(
+    mut item: CompletionItem,
+    uri: &Url,
+    name: &str,
+    analysis_map: &AnalysisMap,
+) -> CompletionItem {
+    if let Some(tree) = analysis_map
+        .get(uri)
+        .and_then(|a| a.entity_scope_trees.get(name))
+    {
+        item.insert_text = Some(generate_instantiation_snippet(name, tree));
+        item.insert_text_format = Some(InsertTextFormat::SNIPPET);
+    }
+    item
+}
+
 /// Generates a component instantiation snippet from a component Declaration.
 ///
 /// Similar to `generate_instantiation_snippet()` but works with component declarations
@@ -2431,12 +2469,20 @@ pub fn complete_scope(
                         .get(&entity_uri)
                         .and_then(|a| a.entity_scope_trees.get(&name));
 
-                    let (insert_text, format) = match deep_tree {
+                    let (insert_text, format, data) = match deep_tree {
                         Some(tree) => (
                             generate_instantiation_snippet(&name, tree),
                             InsertTextFormat::SNIPPET,
+                            None,
                         ),
-                        None => (name.clone(), InsertTextFormat::PLAIN_TEXT),
+                        None => (
+                            name.clone(),
+                            InsertTextFormat::PLAIN_TEXT,
+                            Some(serde_json::json!({
+                                "uri": entity_uri.to_string(),
+                                "name": name.clone(),
+                            })),
+                        ),
                     };
 
                     items.push(CompletionItem {
@@ -2446,6 +2492,7 @@ pub fn complete_scope(
                         filter_text: Some(name.clone()),
                         insert_text: Some(insert_text),
                         insert_text_format: Some(format),
+                        data,
                         ..Default::default()
                     });
                 }

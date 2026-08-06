@@ -27,7 +27,7 @@ use tree_sitter::Parser;
 
 use tower_lsp::lsp_types::{
     CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
-    CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
+    CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
     Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
@@ -338,7 +338,7 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 // Completion
                 completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
                     trigger_characters: Some(vec![
                         ".".to_string(),
                         ">".to_string(),
@@ -916,6 +916,39 @@ impl LanguageServer for Backend {
             is_incomplete: true,
             items,
         })));
+    }
+
+    /// Handles `completionItem/resolve`: fills in the real generic/port-map
+    /// snippet for a `LibraryUnits` completion item whose target entity
+    /// wasn't deep-parsed yet when the list was built.
+    ///
+    /// Items with no `data` (already resolved, or from any other completion
+    /// path) pass through unchanged — this is a no-op for everything except
+    /// the specific shallow-entity case Task 1 of the 0.7.1 plan closes.
+    async fn completion_resolve(&self, item: CompletionItem) -> Result<CompletionItem> {
+        let Some((uri, name)) = features::completion::decode_entity_snippet_data(&item) else {
+            return Ok(item);
+        };
+
+        let lib_matcher = {
+            let config_guard = self.config.read().await;
+            crate::config::LibraryMatcher::from_config(
+                &config_guard.clone().unwrap_or_else(OxideConfig::default),
+            )
+        };
+        workspace::ensure_fully_parsed(
+            &self.client,
+            &self.analysis_map,
+            &self.parser,
+            &uri,
+            &lib_matcher,
+        )
+        .await;
+
+        let map = self.analysis_map.read().await;
+        Ok(features::completion::apply_entity_snippet(
+            item, &uri, &name, &map,
+        ))
     }
 
     async fn prepare_rename(

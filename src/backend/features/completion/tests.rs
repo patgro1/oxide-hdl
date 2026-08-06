@@ -2359,6 +2359,139 @@ fn test_library_units_completion_lists_entities_of_that_library() {
 }
 
 #[test]
+fn test_library_units_shallow_item_carries_resolve_data() {
+    use crate::backend::AnalysisMap;
+    let text = "architecture rtl of top is\nbegin\n  u0: entity rtl_lib.\n";
+    let pos = Position {
+        line: 2,
+        character: 24,
+    };
+    let top_uri = Url::parse("file:///top.vhd").unwrap();
+    let entity_uri = Url::parse("file:///a.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(entity_uri.clone(), shallow_lib("rtl_lib", &["uart_tx"]));
+    map.insert(top_uri.clone(), shallow_lib("rtl_lib", &[]));
+
+    let tree = crate::backend::test_utils::parse_text(text);
+    let root = tree.root_node();
+    let ctx = get_completion_context(text, root, pos);
+    let items = complete_scope(&map, &top_uri, &ctx, pos, text, root);
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "uart_tx")
+        .expect("expected uart_tx in the list");
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::PLAIN_TEXT));
+    let data = item
+        .data
+        .clone()
+        .expect("shallow item should carry resolve data");
+    assert_eq!(data["uri"], entity_uri.to_string());
+    assert_eq!(data["name"], "uart_tx");
+}
+
+#[test]
+fn test_library_units_deep_item_carries_no_resolve_data() {
+    use crate::backend::AnalysisMap;
+    let sub_src = "entity uart_tx is\n  port (clk : in bit);\nend entity;\n";
+    let text = "architecture rtl of top is\nbegin\n  u0: entity rtl_lib.\n";
+    let pos = Position {
+        line: 2,
+        character: 24,
+    };
+    let top_uri = Url::parse("file:///top.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        Url::parse("file:///a.vhd").unwrap(),
+        deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
+    );
+    map.insert(top_uri.clone(), shallow_lib("rtl_lib", &[]));
+
+    let tree = crate::backend::test_utils::parse_text(text);
+    let root = tree.root_node();
+    let ctx = get_completion_context(text, root, pos);
+    let items = complete_scope(&map, &top_uri, &ctx, pos, text, root);
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "uart_tx")
+        .expect("expected uart_tx in the list");
+    assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    assert!(item.data.is_none(), "deep item needs no resolve data");
+}
+
+#[test]
+fn test_decode_entity_snippet_data_roundtrip() {
+    let uri = Url::parse("file:///a.vhd").unwrap();
+    let item = CompletionItem {
+        data: Some(serde_json::json!({"uri": uri.to_string(), "name": "uart_tx"})),
+        ..Default::default()
+    };
+    let (decoded_uri, decoded_name) =
+        decode_entity_snippet_data(&item).expect("expected valid data to decode");
+    assert_eq!(decoded_uri, uri);
+    assert_eq!(decoded_name, "uart_tx");
+}
+
+#[test]
+fn test_decode_entity_snippet_data_missing_returns_none() {
+    let item = CompletionItem::default();
+    assert!(decode_entity_snippet_data(&item).is_none());
+}
+
+#[test]
+fn test_apply_entity_snippet_fills_in_snippet_once_deep() {
+    use crate::backend::AnalysisMap;
+    let sub_src = "entity uart_tx is\n  port (clk : in bit);\nend entity;\n";
+    let entity_uri = Url::parse("file:///a.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(
+        entity_uri.clone(),
+        deep_entity_analysis("rtl_lib", "uart_tx", sub_src),
+    );
+
+    let item = CompletionItem {
+        label: "uart_tx".to_string(),
+        insert_text: Some("uart_tx".to_string()),
+        insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+        ..Default::default()
+    };
+
+    let resolved = apply_entity_snippet(item, &entity_uri, "uart_tx", &map);
+    assert_eq!(resolved.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    assert!(
+        resolved.insert_text.unwrap().contains("port map"),
+        "expected the real port-map snippet"
+    );
+}
+
+#[test]
+fn test_apply_entity_snippet_still_shallow_returns_unchanged() {
+    use crate::backend::AnalysisMap;
+    let entity_uri = Url::parse("file:///a.vhd").unwrap();
+
+    let mut map = AnalysisMap::new();
+    map.insert(entity_uri.clone(), shallow_lib("rtl_lib", &["uart_tx"]));
+
+    let item = CompletionItem {
+        label: "uart_tx".to_string(),
+        insert_text: Some("uart_tx".to_string()),
+        insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+        data: Some(serde_json::json!({"uri": entity_uri.to_string(), "name": "uart_tx"})),
+        ..Default::default()
+    };
+
+    let resolved = apply_entity_snippet(item, &entity_uri, "uart_tx", &map);
+    assert_eq!(
+        resolved.insert_text_format,
+        Some(InsertTextFormat::PLAIN_TEXT)
+    );
+}
+
+#[test]
 fn test_work_prefix_lists_current_files_library() {
     use crate::backend::AnalysisMap;
     let text = "architecture rtl of top is\nbegin\n  u0: entity work.\n";
