@@ -462,6 +462,13 @@ pub struct Instance {
     pub range: Range,
     /// Range of the label for jumps
     pub selection_range: Range,
+    /// Range of the unit-name token only — the identifier naming the
+    /// entity/component/configuration, e.g. `uart_rx` in `entity work.uart_rx`.
+    /// Distinct from `range` (the whole statement) and `selection_range` (the
+    /// label). `None` when no identifiable name token exists.
+    // Read only by tests until hover/goto start consuming it; drop this allow then.
+    #[allow(dead_code)]
+    pub unit_range: Option<Range>,
 }
 
 /// Structure representing a use clause for package extractions

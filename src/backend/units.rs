@@ -176,6 +176,7 @@ mod tests {
             unit_kind: kind,
             range: Range::default(),
             selection_range: Range::default(),
+            unit_range: None,
         }
     }
 
