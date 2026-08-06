@@ -16,9 +16,9 @@ They touch disjoint code (`completion/mod.rs` vs `hover/mod.rs` + `backend/mod.r
 Reproduced live against a running `oxide-hdl` server driven through its real LSP
 client (Neovim, via `--remote-expr`/`buf_request_sync`), not just unit tests:
 
-- Completing `entity lib_kynze.k` lists every entity in the library (shallow-name
+- Completing `entity rtl_lib.f` lists every entity in the library (shallow-name
   fallback already works, from 0.7.0's Task 7), but an entity nobody has
-  instantiated yet in any *currently open* document — e.g. `kz_ram`, before
+  instantiated yet in any *currently open* document — e.g. `fifo_sync`, before
   anything JIT-deep-parses its file — completes as a bare name with no
   generic/port-map snippet. The gap is real but self-healing: once anything
   triggers a deep parse of that file (opening it, instantiating it elsewhere in
@@ -55,7 +55,7 @@ go-to-definition and hover" is the second one, unchanged from that description).
 
 ### Data flow
 
-1. Client requests `textDocument/completion` after `entity lib_kynze.` → server returns the full name list immediately (unchanged cost: shallow index only).
+1. Client requests `textDocument/completion` after `entity rtl_lib.` → server returns the full name list immediately (unchanged cost: shallow index only).
 2. Client highlights one item as the user navigates the popup and calls `completionItem/resolve` for *that* item only.
 3. `completion_resolve` decodes `item.data`, calls `ensure_fully_parsed(uri)` (no-op if already deep — the function already short-circuits on non-`Shallow` files), re-reads `entity_scope_trees.get(&name)`, and if present, regenerates `item.insert_text`/`insert_text_format` via the existing `generate_instantiation_snippet`.
 4. If the entry still isn't found after parsing (e.g. file deleted since the list was built), return the item unchanged — no error surfaced to the client.
@@ -78,7 +78,7 @@ go-to-definition and hover" is the second one, unchanged from that description).
 
 | Decision | Choice | Why |
 |---|---|---|
-| New data on `Instance` | `pub unit_range: Option<Range>` | Span of just the unit-name token (`kz_generic_pipe` in `entity lib.kz_generic_pipe`), distinct from `range` (whole statement) and `selection_range` (label). `None` when no identifiable name token exists. |
+| New data on `Instance` | `pub unit_range: Option<Range>` | Span of just the unit-name token (`pipe` in `entity lib.pipe`), distinct from `range` (whole statement) and `selection_range` (label). `None` when no identifiable name token exists. |
 | Where it's populated | `create_instance_from_node` (`analysis/builders.rs`), at both existing sites that assign `component` from an identifier node | No new tree-sitter traversal — the identifier node is already in hand at assignment time; just also capture its range. |
 | Lookup helper | `find_instance_at(scope_trees: &[ScopeTree], pos: Position) -> Option<&Instance>` in `analysis/scope_tree.rs`, beside `collect_all_instantiations` | Same traversal shape as the existing helper; keeps instantiation-scanning logic in one place. |
 | Scope of the check | Only `unit_kind == Entity` with a library present | Component/configuration instantiations resolve through component declarations, not `resolve_entity_uris`, and aren't part of this gap. |
