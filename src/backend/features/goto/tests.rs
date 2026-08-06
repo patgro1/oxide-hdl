@@ -84,6 +84,67 @@ fn setup_workspace(files: Vec<(&str, &str)>) -> (AnalysisMap, Vec<Url>) {
 }
 
 #[test]
+fn goto_instantiated_entity_name_resolves_to_deep_entity_declaration() {
+    let files = vec![
+        (
+            "uart_rx.vhd",
+            "entity uart_rx is\n  port (clk : in std_logic);\nend entity;\n",
+        ),
+        (
+            "top.vhd",
+            "\narchitecture rtl of top is\nbegin\n    u0: entity work.uart_rx\nend architecture;\n",
+        ),
+    ];
+    let (map, uris) = setup_workspace(files);
+    let target_uri = &uris[0];
+    let current_uri = &uris[1];
+
+    // Cursor inside the "uart_rx" token (chars 20..27 on this line — the
+    // "u0:" label is shorter than Task 2's "u_uart:" fixture).
+    let pos = Position {
+        line: 3,
+        character: 23,
+    };
+
+    let loc = crate::backend::features::goto::resolve_instantiated_entity_location(
+        &map,
+        current_uri,
+        pos,
+    )
+    .expect("expected a resolved location");
+    assert_eq!(&loc.uri, target_uri);
+}
+
+#[test]
+fn goto_instantiated_entity_name_misses_off_the_unit_range() {
+    let files = vec![
+        (
+            "uart_rx.vhd",
+            "entity uart_rx is\n  port (clk : in std_logic);\nend entity;\n",
+        ),
+        (
+            "top.vhd",
+            "\narchitecture rtl of top is\nbegin\n    u0: entity work.uart_rx\nend architecture;\n",
+        ),
+    ];
+    let (map, uris) = setup_workspace(files);
+    let current_uri = &uris[1];
+
+    // Cursor on the label "u0", not the entity name.
+    let pos = Position {
+        line: 3,
+        character: 6,
+    };
+
+    let loc = crate::backend::features::goto::resolve_instantiated_entity_location(
+        &map,
+        current_uri,
+        pos,
+    );
+    assert!(loc.is_none());
+}
+
+#[test]
 fn test_goto_definition_prioritizes_entity() {
     let files = vec![
         (

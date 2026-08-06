@@ -19,6 +19,52 @@ fn prefer_current_file(results: &mut Vec<&LookupResult>, current_uri: &Url) {
     }
 }
 
+/// Resolves goto-definition when the cursor sits on the unit-name of a
+/// direct entity instantiation (`label: entity lib.name`), bypassing the
+/// generic dotted-name chain resolver, which has no concept of instantiation
+/// syntax.
+///
+/// No JIT parse is needed either way: a shallow file's `Analysis.symbols`
+/// entry for the entity already points at its name token (from the fast
+/// regex scan), and a deep file's `entity_scope_trees` entry points at its
+/// full declaration — `file_declares_entity`'s "check both" pattern, reused
+/// here for the location itself rather than just existence.
+///
+/// Returns `None` when the cursor isn't on such a position, or the
+/// instantiation's library/name doesn't resolve to a known file, so the
+/// caller falls through to the existing chain/bare-word resolution.
+pub fn resolve_instantiated_entity_location(
+    analysis_map: &AnalysisMap,
+    current_uri: &Url,
+    pos: Position,
+) -> Option<Location> {
+    let analysis = analysis_map.get(current_uri)?;
+    let inst = crate::analysis::find_instance_at(&analysis.scope_trees, pos)?;
+    if inst.unit_kind != crate::analysis::InstantiatedUnitKind::Entity {
+        return None;
+    }
+    let target_uri =
+        crate::backend::units::resolve_entity_uris(analysis_map, inst, &analysis.library)
+            .into_iter()
+            .next()?;
+    let name_lc = inst.component.to_lowercase();
+    let target_analysis = analysis_map.get(&target_uri)?;
+    let range = target_analysis
+        .symbols
+        .get(&name_lc)
+        .map(|s| s.range)
+        .or_else(|| {
+            target_analysis
+                .entity_scope_trees
+                .get(&name_lc)
+                .map(|t| t.range)
+        })?;
+    Some(Location {
+        uri: target_uri,
+        range,
+    })
+}
+
 /// Applies goto-definition priority ordering to a pre-resolved result set.
 ///
 /// Identical prioritization to [`lookup_definition`] but operates on results

@@ -567,6 +567,15 @@ impl LanguageServer for Backend {
             parser.parse(&text, None).unwrap()
         };
 
+        {
+            let map = self.analysis_map.read().await;
+            if let Some(loc) =
+                features::goto::resolve_instantiated_entity_location(&map, &uri, position)
+            {
+                return Ok(Some(GotoDefinitionResponse::Array(vec![loc])));
+            }
+        }
+
         let chain = hover::get_qualified_chain_at_pos(tree.root_node(), &text, position);
         if chain.len() >= 2 {
             let map = self.analysis_map.read().await;
