@@ -359,8 +359,6 @@ impl ScopeTree {
 /// `label: entity lib.name`, so hover and goto-definition can resolve it as
 /// an instantiation instead of falling through to the generic dotted-name
 /// chain resolver, which has no concept of instantiation syntax.
-// Called only from tests until hover/goto wire it up; drop this allow then.
-#[allow(dead_code)]
 pub fn find_instance_at(scope_trees: &[ScopeTree], pos: Position) -> Option<&Instance> {
     for tree in scope_trees {
         for inst in tree.collect_all_instantiations() {
