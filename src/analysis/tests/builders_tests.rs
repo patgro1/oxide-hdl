@@ -864,6 +864,48 @@ end architecture;
 }
 
 #[test]
+fn test_instantiation_unit_range_points_at_name_token_only() {
+    let code = "\narchitecture rtl of test is\nbegin\n    u_uart: entity work.uart_rx\n        port map (\n            clk => clk\n        );\nend architecture;\n";
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let inst = &analysis.scope_trees[0].instantiations[0];
+    let range = inst
+        .unit_range
+        .expect("expected a unit_range for `entity work.uart_rx`");
+    assert_eq!(range.start.line, 3);
+    assert_eq!(range.start.character, 24);
+    assert_eq!(range.end.line, 3);
+    assert_eq!(range.end.character, 31);
+
+    // Sanity check: that span is exactly the text "uart_rx", not "work" or
+    // the whole `work.uart_rx`.
+    let lines: Vec<&str> = code.lines().collect();
+    let line = lines[range.start.line as usize];
+    let slice = &line[range.start.character as usize..range.end.character as usize];
+    assert_eq!(slice, "uart_rx");
+}
+
+#[test]
+fn test_instantiation_unit_range_plain_component_form() {
+    let code = "\narchitecture rtl of test is\nbegin\n    u_fifo: fifo_comp\n        port map (\n            clk => clk\n        );\nend architecture;\n";
+    let tree = parse_text(code);
+    let root = tree.root_node();
+    let analysis = extract_document_symbols(code, root);
+
+    let inst = &analysis.scope_trees[0].instantiations[0];
+    let range = inst
+        .unit_range
+        .expect("expected a unit_range for the plain component form");
+
+    let lines: Vec<&str> = code.lines().collect();
+    let line = lines[range.start.line as usize];
+    let slice = &line[range.start.character as usize..range.end.character as usize];
+    assert_eq!(slice, "fifo_comp");
+}
+
+#[test]
 fn test_instantiation_entity_with_architecture() {
     let code = r#"
 architecture rtl of test is

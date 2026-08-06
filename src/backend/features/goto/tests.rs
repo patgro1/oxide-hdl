@@ -84,6 +84,132 @@ fn setup_workspace(files: Vec<(&str, &str)>) -> (AnalysisMap, Vec<Url>) {
 }
 
 #[test]
+fn goto_instantiated_entity_name_resolves_to_deep_entity_declaration() {
+    let files = vec![
+        (
+            "uart_rx.vhd",
+            "entity uart_rx is\n  port (clk : in std_logic);\nend entity;\n",
+        ),
+        (
+            "top.vhd",
+            "\narchitecture rtl of top is\nbegin\n    u0: entity work.uart_rx\nend architecture;\n",
+        ),
+    ];
+    let (map, uris) = setup_workspace(files);
+    let target_uri = &uris[0];
+    let current_uri = &uris[1];
+
+    // Cursor inside the "uart_rx" token (chars 20..27 on this line — the
+    // "u0:" label is shorter than Task 2's "u_uart:" fixture).
+    let pos = Position {
+        line: 3,
+        character: 23,
+    };
+
+    let loc = crate::backend::features::goto::resolve_instantiated_entity_location(
+        &map,
+        current_uri,
+        pos,
+    )
+    .expect("expected a resolved location");
+    assert_eq!(&loc.uri, target_uri);
+}
+
+// `resolve_instantiated_entity_location` looks in `Analysis.symbols` first and
+// only falls back to `entity_scope_trees`. `setup_workspace` deep-parses every
+// fixture, so the other two tests exercise only the fallback. This one builds
+// the target file's `Analysis` by hand as a shallow, symbols-only entry — the
+// state a file is in after nothing but the fast regex scan — to cover the
+// first branch. Note the shallow range is `byte_to_range`'s zero-width
+// position at the start of the declaration's line, not the name token itself.
+#[test]
+fn goto_instantiated_entity_name_resolves_via_shallow_symbols_entry() {
+    let files = vec![(
+        "top.vhd",
+        "\narchitecture rtl of top is\nbegin\n    u0: entity work.uart_rx\nend architecture;\n",
+    )];
+    let (mut map, uris) = setup_workspace(files);
+    let current_uri = &uris[0];
+
+    // The target is known only shallowly: a `symbols` entry, no scope trees.
+    let target_uri = Url::parse("file:///uart_rx.vhd").unwrap();
+    let mut shallow = crate::analysis::Analysis::new();
+    shallow.library = "work".to_string();
+    shallow.parse_level = crate::analysis::ParseLevel::Shallow;
+    shallow.symbols.insert(
+        "uart_rx".to_string(),
+        crate::analysis::Symbol {
+            name: "uart_rx".to_string(),
+            kind: crate::analysis::OxideSymbolKind::Entity,
+            detail: Some("Entity".to_string()),
+            range: tower_lsp::lsp_types::Range {
+                start: Position {
+                    line: 4,
+                    character: 0,
+                },
+                end: Position {
+                    line: 4,
+                    character: 0,
+                },
+            },
+            children: Vec::new(),
+        },
+    );
+    map.insert(target_uri.clone(), shallow);
+    assert!(
+        map.get(&target_uri).unwrap().entity_scope_trees.is_empty(),
+        "fixture must have no deep scope tree, or the fallback branch would answer"
+    );
+
+    // Cursor inside the "uart_rx" token.
+    let pos = Position {
+        line: 3,
+        character: 23,
+    };
+
+    let loc = crate::backend::features::goto::resolve_instantiated_entity_location(
+        &map,
+        current_uri,
+        pos,
+    )
+    .expect("expected a resolved location from the shallow symbols entry");
+    assert_eq!(&loc.uri, &target_uri);
+    assert_eq!(
+        loc.range.start.line, 4,
+        "shallow goto lands on the declaration's line"
+    );
+}
+
+#[test]
+fn goto_instantiated_entity_name_misses_off_the_unit_range() {
+    let files = vec![
+        (
+            "uart_rx.vhd",
+            "entity uart_rx is\n  port (clk : in std_logic);\nend entity;\n",
+        ),
+        (
+            "top.vhd",
+            "\narchitecture rtl of top is\nbegin\n    u0: entity work.uart_rx\nend architecture;\n",
+        ),
+    ];
+    let (map, uris) = setup_workspace(files);
+    let current_uri = &uris[1];
+
+    // Cursor on the label "u0", not the entity name.
+    let pos = Position {
+        line: 3,
+        character: 6,
+    };
+
+    let loc = crate::backend::features::goto::resolve_instantiated_entity_location(
+        &map,
+        current_uri,
+        pos,
+    );
+    assert!(loc.is_none());
+}
+
+#[test]
 fn test_goto_definition_prioritizes_entity() {
     let files = vec![
         (

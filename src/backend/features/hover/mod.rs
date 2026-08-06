@@ -36,6 +36,7 @@ pub fn format_hover_result(res: &HoverResolution) -> String {
         ResolvedItem::Symbol(s) => match s.kind {
             OxideSymbolKind::ComponentInstantiation => format_instantiation_hover(&s.name, s),
             OxideSymbolKind::Function | OxideSymbolKind::Process => format_function_hover(s),
+            OxideSymbolKind::Entity => format_entity_hover(s),
             _ => format_basic(s),
         },
     }
@@ -129,10 +130,49 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
     md.push_str("```vhdl\n");
     // Pseudo header "entity ent is"
     md.push_str(&format!("entity {} is\n", definition.name));
+    md.push_str(&format_entity_interface_body(&definition.children));
+    md.push_str("end entity;\n");
+    md.push_str("\n```");
+    md
+}
 
-    // Generics
-    let generics: Vec<&Symbol> = definition
-        .children
+/// Formats a rich hover tooltip for the entity name inside a direct
+/// instantiation (`label: entity lib.name`), e.g. hovering `uart_rx` itself
+/// rather than the label `u0`.
+///
+/// # Arguments
+/// * `sym` - An `Entity`-kind symbol with its generics/ports as `children`
+///   (built by `build_entity_symbol`).
+///
+/// # Empty-children fallback
+/// `format_hover_result` dispatches *every* `Entity`-kind symbol here, not just
+/// the ones `resolve_instantiated_entity_hover` builds. Symbols reaching hover
+/// via the bare-word path (`get_identifier_from_ast` → `resolve_rich_hover` →
+/// `lookup_symbol`) carry no `children`, and so does the shallow synthetic
+/// symbol this feature builds before the JIT re-parse. Rendering those as
+/// `entity <name> is / end entity;` would be a confidently-wrong claim that the
+/// entity has no generics and no ports, so an empty `children` list falls back
+/// to [`format_basic`] instead.
+pub fn format_entity_hover(sym: &Symbol) -> String {
+    if sym.children.is_empty() {
+        return format_basic(sym);
+    }
+    let mut md = String::new();
+    md.push_str(&format!("**{}**\n\n", sym.name));
+    md.push_str("```vhdl\n");
+    md.push_str(&format!("entity {} is\n", sym.name));
+    md.push_str(&format_entity_interface_body(&sym.children));
+    md.push_str("end entity;\n");
+    md.push_str("\n```");
+    md
+}
+
+/// Renders the `generics (...)`/`ports (...)` body shared by
+/// `format_instantiation_hover` and `format_entity_hover` — both work from a
+/// flat list of `Generic`/`Constant`/`Port`-kind child symbols.
+fn format_entity_interface_body(children: &[Symbol]) -> String {
+    let mut md = String::new();
+    let generics: Vec<&Symbol> = children
         .iter()
         .filter(|c| c.kind == OxideSymbolKind::Generic || c.kind == OxideSymbolKind::Constant)
         .collect();
@@ -145,9 +185,7 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
         }
         md.push_str(");\n");
     }
-    // Ports
-    let ports: Vec<&Symbol> = definition
-        .children
+    let ports: Vec<&Symbol> = children
         .iter()
         .filter(|c| c.kind == OxideSymbolKind::Port)
         .collect();
@@ -160,9 +198,6 @@ pub fn format_instantiation_hover(instance_name: &str, definition: &Symbol) -> S
         }
         md.push_str(");\n");
     }
-
-    md.push_str("end entity;\n");
-    md.push_str("\n```");
     md
 }
 
@@ -242,6 +277,108 @@ pub fn get_qualified_chain_at_pos(root_node: Node, text: &str, pos: Position) ->
     vec![]
 }
 
+/// Converts a generic/port `Declaration` from a deep-parsed entity's scope
+/// tree into a child `Symbol`, with its direction/type/default pre-formatted
+/// into `detail` — the shape `format_entity_interface_body` expects.
+fn declaration_to_child_symbol(decl: &Declaration) -> Symbol {
+    let type_str = format_type_info(&decl.type_info);
+    let default_part = decl
+        .default_value
+        .as_ref()
+        .map(|v| format!(" := {}", v))
+        .unwrap_or_default();
+    let dir_str = if let DeclType::Port(d) = decl.decl_type {
+        format!("{} ", d)
+    } else {
+        String::new()
+    };
+    let kind = if matches!(decl.decl_type, DeclType::Generic) {
+        OxideSymbolKind::Generic
+    } else {
+        OxideSymbolKind::Port
+    };
+    Symbol {
+        name: decl.name.clone(),
+        kind,
+        detail: Some(format!("{}{}{}", dir_str, type_str, default_part)),
+        range: decl.range,
+        children: Vec::new(),
+    }
+}
+
+/// Builds an `Entity`-kind `Symbol` for `name` from a deep-parsed entity's
+/// `ScopeTree`, with its generics/ports copied in as children so
+/// `format_entity_hover` can render the real interface.
+fn build_entity_symbol(name: &str, tree: &crate::analysis::ScopeTree) -> Symbol {
+    let children = tree
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.decl_type, DeclType::Generic | DeclType::Port(_)))
+        .map(declaration_to_child_symbol)
+        .collect();
+    Symbol {
+        name: name.to_string(),
+        kind: OxideSymbolKind::Entity,
+        detail: None,
+        range: tree.range,
+        children,
+    }
+}
+
+/// Resolves hover when the cursor sits on the unit-name of a direct entity
+/// instantiation (`label: entity lib.name`).
+///
+/// This runs before *both* of `resolve_hover`'s generic paths, because neither
+/// has any concept of instantiation syntax:
+/// * the dotted-name chain resolver (`get_qualified_chain_at_pos` /
+///   `resolve_path_chain`) — at this cursor position the chain comes back
+///   empty, so it contributes nothing rather than something wrong; and
+/// * the bare-word fallback (`get_identifier_from_ast` → `resolve_rich_hover`
+///   → `lookup_symbol`) — this is the path that actually produced the old,
+///   meaningless `entity : void` output, by finding the entity's childless
+///   `Symbol` and rendering it through `format_basic`.
+///
+/// When the target entity is still shallow-indexed, returns a minimal result
+/// that still carries the correct `definition_uri` — `Backend::hover`'s
+/// existing needs-JIT check upgrades it and calls `resolve_hover` again,
+/// at which point this function finds the now-deep entity and returns the
+/// full signature. No new JIT-parse plumbing needed.
+///
+/// Returns `None` when the cursor isn't on such a position, or the
+/// instantiation's library/name doesn't resolve to a known file — the caller
+/// falls through to the existing chain/bare-word resolution unchanged.
+fn resolve_instantiated_entity_hover(
+    analysis_map: &AnalysisMap,
+    current_uri: &Url,
+    pos: Position,
+) -> Option<HoverResolution> {
+    let analysis = analysis_map.get(current_uri)?;
+    let inst = crate::analysis::find_instance_at(&analysis.scope_trees, pos)?;
+    if inst.unit_kind != crate::analysis::InstantiatedUnitKind::Entity {
+        return None;
+    }
+    let target_uri =
+        crate::backend::units::resolve_entity_uris(analysis_map, inst, &analysis.library)
+            .into_iter()
+            .next()?;
+    let target_analysis = analysis_map.get(&target_uri)?;
+    let name_lc = inst.component.to_lowercase();
+    let sym = match target_analysis.entity_scope_trees.get(&name_lc) {
+        Some(tree) => build_entity_symbol(&inst.component, tree),
+        None => Symbol {
+            name: inst.component.clone(),
+            kind: OxideSymbolKind::Entity,
+            detail: Some("Entity".to_string()),
+            range: tower_lsp::lsp_types::Range::default(),
+            children: Vec::new(),
+        },
+    };
+    Some(HoverResolution {
+        item: ResolvedItem::Symbol(sym),
+        definition_uri: Some(target_uri),
+    })
+}
+
 /// Main entry point for hover resolution. Handles both dot notation and standard lookups.
 ///
 /// Walks the AST upward from the cursor position looking for `selected_name` or `name`
@@ -264,6 +401,10 @@ pub fn resolve_hover(
     root_node: Node,
     pos: Position,
 ) -> Vec<HoverResolution> {
+    if let Some(res) = resolve_instantiated_entity_hover(analysis_map, current_uri, pos) {
+        return vec![res];
+    }
+
     let chain = get_qualified_chain_at_pos(root_node, text, pos);
     if !chain.is_empty() {
         let results = resolve_path_chain(&chain, current_uri, analysis_map, &pos);
@@ -617,3 +758,6 @@ fn format_component_hover(decl: &Declaration) -> String {
     md.push_str("end component;");
     md
 }
+
+#[cfg(test)]
+mod tests;

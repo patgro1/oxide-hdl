@@ -1251,6 +1251,7 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
         .map(|n| text[n.byte_range()].to_string());
 
     let mut component = "".to_string();
+    let mut unit_range = None;
     if let Some(name) = name_node {
         let selections: Vec<Node> = name
             .children(&mut name.walk())
@@ -1261,6 +1262,7 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
             // Dotted name: unit is the final segment, library the leading identifier.
             if let Some(iden) = find_child(*last, "identifier") {
                 component = text[iden.byte_range()].to_string();
+                unit_range = Some(node_to_range(iden));
             }
             if library.is_none()
                 && let Some(iden) = find_child(name, "identifier")
@@ -1269,6 +1271,7 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
             }
         } else if let Some(iden) = find_child(name, "identifier") {
             component = text[iden.byte_range()].to_string();
+            unit_range = Some(node_to_range(iden));
         }
     }
 
@@ -1284,6 +1287,7 @@ fn create_instance_from_node(node: Node, text: &str) -> Instance {
         unit_kind,
         range: node_to_range(node),
         selection_range,
+        unit_range,
     }
 }
 

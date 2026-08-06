@@ -19,6 +19,63 @@ fn prefer_current_file(results: &mut Vec<&LookupResult>, current_uri: &Url) {
     }
 }
 
+/// Resolves goto-definition when the cursor sits on the unit-name of a
+/// direct entity instantiation (`label: entity lib.name`).
+///
+/// This runs before *both* of the generic resolution paths, because neither
+/// has any concept of instantiation syntax: the dotted-name chain resolver
+/// (`get_qualified_chain_at_pos` / `resolve_path_chain`), which at this
+/// cursor position comes back with an empty chain and so contributes
+/// nothing, and the bare-word fallback (`get_identifier_from_ast` →
+/// `lookup_symbol`), which is the path that actually mishandles it — on the
+/// hover side the same fallback is what degraded to `format_basic`'s
+/// `entity : void`.
+///
+/// No JIT parse is needed either way: a shallow file's `Analysis.symbols`
+/// entry for the entity carries a range from the fast regex scan, which is a
+/// zero-width position at the *start of the line* holding the declaration
+/// (see `byte_to_range` in `backend::syntax::scanner`) rather than the name
+/// token's own column span — right file and right line, which is all an
+/// editor needs before its `didOpen` triggers a deep parse. A deep file's
+/// `entity_scope_trees` entry points at the full declaration. This is
+/// `file_declares_entity`'s "check both" pattern, reused here for the
+/// location itself rather than just existence.
+///
+/// Returns `None` when the cursor isn't on such a position, or the
+/// instantiation's library/name doesn't resolve to a known file, so the
+/// caller falls through to the existing chain/bare-word resolution.
+pub fn resolve_instantiated_entity_location(
+    analysis_map: &AnalysisMap,
+    current_uri: &Url,
+    pos: Position,
+) -> Option<Location> {
+    let analysis = analysis_map.get(current_uri)?;
+    let inst = crate::analysis::find_instance_at(&analysis.scope_trees, pos)?;
+    if inst.unit_kind != crate::analysis::InstantiatedUnitKind::Entity {
+        return None;
+    }
+    let target_uri =
+        crate::backend::units::resolve_entity_uris(analysis_map, inst, &analysis.library)
+            .into_iter()
+            .next()?;
+    let name_lc = inst.component.to_lowercase();
+    let target_analysis = analysis_map.get(&target_uri)?;
+    let range = target_analysis
+        .symbols
+        .get(&name_lc)
+        .map(|s| s.range)
+        .or_else(|| {
+            target_analysis
+                .entity_scope_trees
+                .get(&name_lc)
+                .map(|t| t.range)
+        })?;
+    Some(Location {
+        uri: target_uri,
+        range,
+    })
+}
+
 /// Applies goto-definition priority ordering to a pre-resolved result set.
 ///
 /// Identical prioritization to [`lookup_definition`] but operates on results

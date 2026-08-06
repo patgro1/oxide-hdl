@@ -10,6 +10,7 @@ fn instance(component: &str, architecture: Option<&str>) -> Instance {
         unit_kind: InstantiatedUnitKind::Entity,
         range: Range::default(),
         selection_range: Range::default(),
+        unit_range: None,
     }
 }
 

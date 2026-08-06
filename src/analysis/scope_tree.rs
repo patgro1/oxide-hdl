@@ -351,6 +351,33 @@ impl ScopeTree {
     }
 }
 
+/// Finds the instantiation whose unit-name token contains `pos`, searching
+/// every scope tree in `scope_trees` and their nested generate/block children
+/// (via `collect_all_instantiations`).
+///
+/// Used to detect when the cursor sits on the entity/component name inside
+/// `label: entity lib.name`, so hover and goto-definition can resolve it as
+/// an instantiation. The check must run before *both* of the generic
+/// resolution paths, since neither understands instantiation syntax: the
+/// dotted-name chain resolver (`get_qualified_chain_at_pos` /
+/// `resolve_path_chain`) and the bare-word fallback
+/// (`get_identifier_from_ast` → `lookup_symbol`). At this cursor position the
+/// chain resolver simply comes up empty, so it is the bare-word fallback that
+/// actually mishandles it — it finds the entity's shallow, childless `Symbol`
+/// and degrades to `format_basic`'s `entity : void`.
+pub fn find_instance_at(scope_trees: &[ScopeTree], pos: Position) -> Option<&Instance> {
+    for tree in scope_trees {
+        for inst in tree.collect_all_instantiations() {
+            if let Some(range) = inst.unit_range
+                && position_in_range(pos, range)
+            {
+                return Some(inst);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +430,103 @@ mod tests {
     fn is_attr_applied_no_attr() {
         let scope = make_test_scope("other_attr", &["my_sig"]);
         assert!(!scope.is_attr_applied("mark_debug", "my_sig"));
+    }
+
+    fn make_instance(component: &str, unit_range: Option<Range>) -> Instance {
+        Instance {
+            label: "u0".to_string(),
+            component: component.to_string(),
+            library: Some("work".to_string()),
+            architecture: None,
+            unit_kind: crate::analysis::InstantiatedUnitKind::Entity,
+            range: Range::default(),
+            selection_range: Range::default(),
+            unit_range,
+        }
+    }
+
+    fn range_at(line: u32, start: u32, end: u32) -> Range {
+        Range {
+            start: Position {
+                line,
+                character: start,
+            },
+            end: Position {
+                line,
+                character: end,
+            },
+        }
+    }
+
+    #[test]
+    fn find_instance_at_hits_when_pos_inside_unit_range() {
+        let mut scope = make_test_scope("mark_debug", &[]);
+        scope
+            .instantiations
+            .push(make_instance("uart_rx", Some(range_at(3, 24, 31))));
+
+        let found = find_instance_at(
+            std::slice::from_ref(&scope),
+            Position {
+                line: 3,
+                character: 27,
+            },
+        );
+        assert_eq!(found.map(|i| i.component.as_str()), Some("uart_rx"));
+    }
+
+    #[test]
+    fn find_instance_at_misses_just_outside_unit_range() {
+        let mut scope = make_test_scope("mark_debug", &[]);
+        scope
+            .instantiations
+            .push(make_instance("uart_rx", Some(range_at(3, 24, 31))));
+
+        // position_in_range treats the range's end as inclusive, so the true
+        // boundary is one character past 31 — use 32 to land unambiguously
+        // outside on either interpretation.
+        let found = find_instance_at(
+            std::slice::from_ref(&scope),
+            Position {
+                line: 3,
+                character: 32,
+            },
+        );
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_instance_at_ignores_instantiations_with_no_unit_range() {
+        let mut scope = make_test_scope("mark_debug", &[]);
+        scope.instantiations.push(make_instance("uart_rx", None));
+
+        let found = find_instance_at(
+            std::slice::from_ref(&scope),
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_instance_at_picks_the_right_one_among_several() {
+        let mut scope = make_test_scope("mark_debug", &[]);
+        scope
+            .instantiations
+            .push(make_instance("uart_rx", Some(range_at(3, 24, 31))));
+        scope
+            .instantiations
+            .push(make_instance("cpu", Some(range_at(5, 10, 13))));
+
+        let found = find_instance_at(
+            std::slice::from_ref(&scope),
+            Position {
+                line: 5,
+                character: 11,
+            },
+        );
+        assert_eq!(found.map(|i| i.component.as_str()), Some("cpu"));
     }
 }
