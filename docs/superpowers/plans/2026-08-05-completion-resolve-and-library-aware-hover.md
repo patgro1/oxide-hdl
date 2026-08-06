@@ -162,7 +162,7 @@ fn test_apply_entity_snippet_still_shallow_returns_unchanged() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib completion::tests::test_library_units_shallow_item_carries_resolve_data completion::tests::test_decode_entity_snippet_data_roundtrip completion::tests::test_apply_entity_snippet_fills_in_snippet_once_deep`
+Run: `cargo test backend::features::completion::tests::test_library_units_shallow_item_carries_resolve_data backend::features::completion::tests::test_decode_entity_snippet_data_roundtrip backend::features::completion::tests::test_apply_entity_snippet_fills_in_snippet_once_deep`
 Expected: FAIL to compile — `decode_entity_snippet_data`/`apply_entity_snippet` don't exist yet, and `item.data` is never set.
 
 - [ ] **Step 3: Implement the pure helpers**
@@ -244,7 +244,7 @@ In `src/backend/features/completion/mod.rs`, replace the `None` branch of the `m
 
 - [ ] **Step 5: Run the completion tests to verify they pass**
 
-Run: `cargo test --lib completion::tests::test_library_units_shallow_item_carries_resolve_data completion::tests::test_library_units_deep_item_carries_no_resolve_data completion::tests::test_decode_entity_snippet_data_roundtrip completion::tests::test_decode_entity_snippet_data_missing_returns_none completion::tests::test_apply_entity_snippet_fills_in_snippet_once_deep completion::tests::test_apply_entity_snippet_still_shallow_returns_unchanged`
+Run: `cargo test backend::features::completion::tests::test_library_units_shallow_item_carries_resolve_data backend::features::completion::tests::test_library_units_deep_item_carries_no_resolve_data backend::features::completion::tests::test_decode_entity_snippet_data_roundtrip backend::features::completion::tests::test_decode_entity_snippet_data_missing_returns_none backend::features::completion::tests::test_apply_entity_snippet_fills_in_snippet_once_deep backend::features::completion::tests::test_apply_entity_snippet_still_shallow_returns_unchanged`
 Expected: PASS (all 6).
 
 - [ ] **Step 6: Flip the capability flag and add the `completion_resolve` handler**
@@ -290,7 +290,7 @@ Add this handler directly after `completion()` (which currently ends at line 919
 
 - [ ] **Step 7: Build and run the full test suite**
 
-Run: `cargo build && cargo test --lib`
+Run: `cargo build && cargo test`
 Expected: builds clean, all tests pass (this also exercises anything relying on `CompletionOptions`/`CompletionItem` construction elsewhere still compiling).
 
 - [ ] **Step 8: Commit**
@@ -370,7 +370,7 @@ fn test_instantiation_unit_range_plain_component_form() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib analysis::tests::builders_tests::test_instantiation_unit_range_points_at_name_token_only analysis::tests::builders_tests::test_instantiation_unit_range_plain_component_form`
+Run: `cargo test analysis::tests::builders_tests::test_instantiation_unit_range_points_at_name_token_only analysis::tests::builders_tests::test_instantiation_unit_range_plain_component_form`
 Expected: FAIL to compile — `Instance` has no field `unit_range` yet.
 
 - [ ] **Step 3: Add the field to `Instance`**
@@ -469,7 +469,7 @@ In `src/backend/features/symbol/tests.rs`, in the `instance()` test helper (~lin
 
 - [ ] **Step 6: Run the tests to verify they pass, and the crate still builds**
 
-Run: `cargo build && cargo test --lib`
+Run: `cargo build && cargo test`
 Expected: builds clean (both fixture sites fixed), the two new tests pass, and every pre-existing instantiation test (`test_instantiation_simple_component`, `test_instantiation_entity_work`, `test_instantiation_entity_with_architecture`, etc.) still passes unchanged.
 
 - [ ] **Step 7: Commit**
@@ -597,7 +597,7 @@ Add to the `mod tests` block in `src/analysis/scope_tree.rs` (after `is_attr_app
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib analysis::scope_tree::tests::find_instance_at_hits_when_pos_inside_unit_range`
+Run: `cargo test analysis::scope_tree::tests::find_instance_at_hits_when_pos_inside_unit_range`
 Expected: FAIL to compile — `find_instance_at` doesn't exist, and `make_test_scope` doesn't set `instantiations` to anything mutable yet (it's already a field on the struct literal, so this compiles once the function exists — only the missing function blocks it).
 
 - [ ] **Step 3: Implement `find_instance_at`**
@@ -629,7 +629,7 @@ pub fn find_instance_at(scope_trees: &[ScopeTree], pos: Position) -> Option<&Ins
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib analysis::scope_tree::tests`
+Run: `cargo test analysis::scope_tree::tests`
 Expected: PASS (all, including the 4 new ones and the 5 pre-existing `is_attr_applied_*` ones).
 
 - [ ] **Step 5: Commit**
@@ -780,7 +780,7 @@ fn hover_on_ordinary_dotted_access_is_unaffected() {
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `cargo test --lib hover::tests`
+Run: `cargo test backend::features::hover::tests`
 Expected: FAIL — `hover_on_deep_instantiated_entity_shows_real_signature` and `hover_on_shallow_instantiated_entity_still_points_at_definition_uri` fail their assertions (today's behavior is the `void`/chain-resolution bug); `hover_on_ordinary_dotted_access_is_unaffected` should already pass (nothing to change there) — that's expected and fine at this stage.
 
 - [ ] **Step 4: Extract the shared Generics/Ports body and add `format_entity_hover`**
@@ -1041,12 +1041,12 @@ use crate::{
 
 - [ ] **Step 9: Run the tests to verify they pass**
 
-Run: `cargo test --lib hover::tests`
+Run: `cargo test backend::features::hover::tests`
 Expected: PASS (all 3).
 
 - [ ] **Step 10: Run the full suite**
 
-Run: `cargo build && cargo test --lib`
+Run: `cargo build && cargo test`
 Expected: builds clean, all tests pass — including every pre-existing hover-adjacent test elsewhere (`ComponentInstantiation`/label hover is untouched, since `format_instantiation_hover`'s public signature and output are unchanged).
 
 - [ ] **Step 11: Commit**
@@ -1145,7 +1145,7 @@ fn goto_instantiated_entity_name_misses_off_the_unit_range() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib goto::tests::goto_instantiated_entity_name_resolves_to_deep_entity_declaration`
+Run: `cargo test backend::features::goto::tests::goto_instantiated_entity_name_resolves_to_deep_entity_declaration`
 Expected: FAIL to compile — `resolve_instantiated_entity_location` doesn't exist yet.
 
 - [ ] **Step 3: Implement the pure resolver**
@@ -1196,7 +1196,7 @@ pub fn resolve_instantiated_entity_location(
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --lib goto::tests::goto_instantiated_entity_name_resolves_to_deep_entity_declaration goto::tests::goto_instantiated_entity_name_misses_off_the_unit_range`
+Run: `cargo test backend::features::goto::tests::goto_instantiated_entity_name_resolves_to_deep_entity_declaration backend::features::goto::tests::goto_instantiated_entity_name_misses_off_the_unit_range`
 Expected: PASS.
 
 - [ ] **Step 5: Wire it into `Backend::goto_definition`**
@@ -1225,7 +1225,7 @@ In `src/backend/mod.rs`, in `goto_definition` (~line 548-569), insert right afte
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `cargo build && cargo test --lib`
+Run: `cargo build && cargo test`
 Expected: builds clean, all tests pass — including every pre-existing goto test (`test_goto_definition_qualified_pkg_name_no_ambiguity`, etc.), since this new check only ever fires when `find_instance_at` hits, which none of the existing fixtures trigger.
 
 - [ ] **Step 7: Commit**
