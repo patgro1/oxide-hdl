@@ -466,8 +466,6 @@ pub struct Instance {
     /// entity/component/configuration, e.g. `uart_rx` in `entity work.uart_rx`.
     /// Distinct from `range` (the whole statement) and `selection_range` (the
     /// label). `None` when no identifiable name token exists.
-    // Read only by tests until hover/goto start consuming it; drop this allow then.
-    #[allow(dead_code)]
     pub unit_range: Option<Range>,
 }
 
